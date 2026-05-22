@@ -1,0 +1,86 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/wowsunpack",
+    "crates/wows-replays",
+    "crates/minimap-renderer",
+    "crates/replayshark",
+    "crates/wows-data-mgr",
+    "crates/wt-translations",
+]
+
+[workspace.package]
+version = "0.1.68"
+edition = "2024"
+rust-version = "1.92"
+license = "Apache-2.0"
+
+[workspace.metadata.crane]
+name = "wows-toolkit"
+
+[workspace.dependencies]
+# Internal crates (versions synced by scripts/bump-versions.sh)
+wowsunpack = { version = "0.31.0", path = "crates/wowsunpack", default-features = false }
+wows_replays = { version = "0.32.0", path = "crates/wows-replays", default-features = false }
+wows_minimap_renderer = { version = "0.25.0", path = "crates/minimap-renderer", default-features = false }
+wows-data-mgr = { version = "0.7.0", path = "crates/wows-data-mgr", default-features = false }
+wt-translations = { version = "0.2.0", path = "crates/wt-translations" }
+# Shared UI dependencies
+wgpu = { version = "29", default-features = true }
+# Shared external dependencies
+bon = "3.9.1"
+data-encoding = "2.10.0"
+bytemuck = { version = "1", features = ["derive"] }
+flate2 = { version = "1.1", features = ["zlib-rs"], default-features = false }
+gettext = "0.4"
+image = { version = "0.25", default-features = false }
+image_dds = { version = "0.7", default-features = false }
+itertools = "0.14"
+pickled = { version = "2.0.0-alpha6" }
+rkyv = "0.8.15"
+rootcause = "0.12"
+roxmltree = "0.21"
+serde = { version = "1", features = ["derive"] }
+serde_cbor = "0.11"
+serde_json = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+web-time = "1"
+winnow = "1.0"
+# Shared tool/CLI dependencies
+anyhow = "1.0"
+chrono = "0.4"
+clap = { version = "4.6.0", features = ["derive"] }
+convert_case = "0.11"
+glob = "0.3"
+jiff = "0.2"
+indicatif = "0.18.4"
+toml = "1.1"
+tracing-subscriber = "0.3"
+walkdir = "2.5"
+insta = { version = "1.47", features = ["yaml"] }
+sha2 = "0.10"
+rust-i18n = "3.1.5"
+sys-locale = "0.3"
+
+[patch.crates-io]
+# pickled = { path = "../pickled" }
+# egui = { git = "https://github.com/emilk/egui", branch = "main" }
+# eframe = { git = "https://github.com/emilk/egui", branch = "main" }
+# epaint = { git = "https://github.com/emilk/egui", branch = "main" }
+# emath = { git = "https://github.com/emilk/egui", branch = "main" }
+# egui_glow = { git = "https://github.com/emilk/egui", branch = "main" }
+# egui-wgpu = { git = "https://github.com/emilk/egui", branch = "main" }
+# egui-winit = { git = "https://github.com/emilk/egui", branch = "main" }
+# egui_extras = { git = "https://github.com/emilk/egui", branch = "main" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.profiling]
+inherits = "release"
+debug = true
