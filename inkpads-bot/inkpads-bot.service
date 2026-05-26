@@ -1,0 +1,26 @@
+[Unit]
+Description=InkPads Tactical Minimap Renderer Bot
+After=network.target
+
+[Service]
+Type=simple
+# Replace 'ubuntu' with the actual user running the bot on your VPS (do not run as root if possible)
+User=ubuntu
+Group=ubuntu
+
+# Adjust WorkingDirectory to point to your cloned repository's inkpads-bot directory
+WorkingDirectory=/opt/InkPads-minimap-renderer/inkpads-bot
+
+# Path to python3 executable and bot.py script
+ExecStart=/usr/bin/python3 bot.py
+
+# Ensure bot restarts automatically if it crashes
+Restart=on-failure
+RestartSec=5
+
+# Optional: Output redirect logs (handled automatically by journald)
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

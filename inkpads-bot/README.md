@@ -12,24 +12,57 @@ A Discord bot to receive `.wowsreplay` files from users, and return high-quality
 
 ### 1. Requirements
 - **Python 3.8+**
-- **FFmpeg** (Must be in your system PATH)
-- **World of Warships** installation (for game assets) | Curtailed snippet of game assets are WiP
+- **FFmpeg** (Must be in your system PATH/installed via package manager on VPS)
+- **World of Warships** installation (for game assets)
 
 ### 2. Configuration
 1. Copy `.env.example` to `.env`.
 2. Edit `.env` and provide your **DISCORD_TOKEN**.
-3. (Optional) Update `WOWS_PATH` if your game is installed in a non-standard location.
+3. Update `WOWS_PATH` to point to your game asset directory (on Linux, point this to where you uploaded/mounted the extracted WoWS client game files).
 
-### 3. Installation
-Run the setup script from the root directory or install manually:
-```bash
-pip install -r requirements.txt
-```
+### 3. Installation & Run
 
-### 4. Running the Bot
-```bash
-python bot.py
-```
+#### On Windows (Local Dev):
+1. Run `setup_bot.bat` from the root directory to install dependencies and initialize `.env`.
+2. Edit `inkpads-bot/.env`.
+3. Launch with:
+   ```bash
+   python inkpads-bot/bot.py
+   ```
+
+#### On Linux (VPS Deployment):
+1. Give execution permission to the setup script and run it:
+   ```bash
+   chmod +x setup_bot.sh
+   ./setup_bot.sh
+   ```
+2. Edit `inkpads-bot/.env`.
+3. Build the release binary:
+   ```bash
+   cargo build --release
+   ```
+4. Run the bot directly:
+   ```bash
+   python3 inkpads-bot/bot.py
+   ```
+
+### 4. Running as a Daemon (systemd on VPS)
+To keep the bot running persistently on a Linux VPS, use the provided `inkpads-bot.service` template:
+1. Copy the service template to the systemd folder:
+   ```bash
+   sudo cp inkpads-bot/inkpads-bot.service /etc/systemd/system/inkpads-bot.service
+   ```
+2. Edit `/etc/systemd/system/inkpads-bot.service` to update the paths, user, and group for your VPS.
+3. Reload systemd, enable, and start the service:
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable inkpads-bot.service
+   sudo systemctl start inkpads-bot.service
+   ```
+4. Monitor logs with:
+   ```bash
+   journalctl -u inkpads-bot.service -f
+   ```
 
 ## How to use in Discord
 Once the bot is running and invited to your server:

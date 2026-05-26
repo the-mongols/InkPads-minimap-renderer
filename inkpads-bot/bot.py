@@ -37,12 +37,15 @@ def find_renderer():
         p = Path(RENDERER_PATH).resolve()
         if p.exists(): return p
     
+    # Auto-detect OS suffix (.exe on Windows, empty on Linux/macOS)
+    suffix = '.exe' if os.name == 'nt' else ''
+    
     # Common locations relative to bot.py
     search_paths = [
-        Path('minimap_renderer.exe'),
-        Path('../target/release/minimap_renderer.exe'),
-        Path('../minimap_renderer.exe'),
-        Path('../scripts/minimap_renderer.exe')
+        Path(f'minimap_renderer{suffix}'),
+        Path(f'../target/release/minimap_renderer{suffix}'),
+        Path(f'../minimap_renderer{suffix}'),
+        Path(f'../scripts/minimap_renderer{suffix}')
     ]
     
     for p in search_paths:
