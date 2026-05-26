@@ -568,7 +568,7 @@ fn draw_score_bar(
     map_width: u32,
 ) {
     let width = map_width as f32;
-    let bar_height = 32.0;
+    let bar_height = 48.0;
     let max_score = max_score as f32;
     let half = width / 2.0;
     let center_gap = 2.0f32; // small gap between the two bars
@@ -599,9 +599,9 @@ fn draw_score_bar(
     let pill_color: [u8; 3] = [0, 0, 0];
     let pill_alpha = 0.55f32;
 
-    let score_scale = fonts.scale(14.0);
-    let timer_scale = fonts.scale(12.0);
-    let advantage_scale = fonts.scale(11.0);
+    let score_scale = fonts.scale(21.0);
+    let timer_scale = fonts.scale(18.0);
+    let advantage_scale = fonts.scale(16.0);
 
     let t0 = format!("{}", team0_score);
     let t1 = format!("{}", team1_score);
@@ -701,8 +701,8 @@ fn draw_score_bar(
 fn draw_timer(pm: &mut Pixmap, time_remaining: Option<i64>, elapsed: ElapsedClock, fonts: &GameFonts, map_width: u32) {
     let font = &fonts.primary;
     let center_x = map_width as i32 / 2;
-    let main_scale = fonts.scale(16.0);
-    let small_scale = fonts.scale(11.0);
+    let main_scale = fonts.scale(24.0);
+    let small_scale = fonts.scale(16.0);
 
     if let Some(remaining) = time_remaining {
         // Show time remaining as main timer (centered)
@@ -711,7 +711,7 @@ fn draw_timer(pm: &mut Pixmap, time_remaining: Option<i64>, elapsed: ElapsedCloc
         let remaining_text = format!("{:02}:{:02}", r_mins, r_secs);
         let (rw, _) = text_size(main_scale, font, &remaining_text);
         let rx = center_x - rw as i32 / 2;
-        draw_text_shadow(pm, [255, 255, 255], rx, 2, main_scale, font, &remaining_text);
+        draw_text_shadow(pm, [255, 255, 255], rx, 4, main_scale, font, &remaining_text);
 
         // Show elapsed as smaller text below
         let e_mins = (elapsed.seconds() as i32) / 60;
@@ -719,7 +719,7 @@ fn draw_timer(pm: &mut Pixmap, time_remaining: Option<i64>, elapsed: ElapsedCloc
         let elapsed_text = format!("+{:02}:{:02}", e_mins, e_secs);
         let (ew, _) = text_size(small_scale, font, &elapsed_text);
         let ex = center_x - ew as i32 / 2;
-        draw_text_shadow(pm, [180, 180, 180], ex, 18, small_scale, font, &elapsed_text);
+        draw_text_shadow(pm, [180, 180, 180], ex, 28, small_scale, font, &elapsed_text);
     } else {
         // Fallback: just show elapsed time centered (no timeLeft data yet)
         let mins = (elapsed.seconds() as i32) / 60;
@@ -727,7 +727,7 @@ fn draw_timer(pm: &mut Pixmap, time_remaining: Option<i64>, elapsed: ElapsedCloc
         let text = format!("{:02}:{:02}", mins, secs);
         let (w, _) = text_size(main_scale, font, &text);
         let x = center_x - w as i32 / 2;
-        draw_text_shadow(pm, [255, 255, 255], x, 2, main_scale, font, &text);
+        draw_text_shadow(pm, [255, 255, 255], x, 12, main_scale, font, &text);
     }
 }
 
@@ -794,7 +794,7 @@ fn draw_kill_feed(
     let text_h = text_h as i32;
 
     for (i, entry) in entries.iter().take(5).enumerate() {
-        let y = 32 + i as i32 * line_height;
+        let y = 48 + i as i32 * line_height;
         let icon_y = y + (text_h - icon_size) / 2;
 
         // Get death cause icon key
@@ -1910,7 +1910,7 @@ impl RenderTarget for ImageTarget {
             DrawCommand::TeamBuffs { friendly_buffs, enemy_buffs } => {
                 let icon_size = 16i32;
                 let gap = 2i32;
-                let buff_y = 32;
+                let buff_y = 48;
                 let count_scale = self.fonts.scale(10.0);
 
                 // Friendly buffs: left side, starting from x=4 + map_x_offset
@@ -2063,7 +2063,7 @@ impl RenderTarget for ImageTarget {
                 );
             }
             DrawCommand::ChatOverlay { entries } => {
-                draw_chat_overlay(&mut self.canvas, entries, &self.fonts, &self.ship_icons, 32, self.map_x_offset);
+                draw_chat_overlay(&mut self.canvas, entries, &self.fonts, &self.ship_icons, 48, self.map_x_offset);
             }
             DrawCommand::BattleResultOverlay { result, finish_type, color, subtitle_above } => {
                 let text = self.text_resolver.resolve(&TranslatableText::BattleResult(*result));
@@ -2404,7 +2404,7 @@ impl RenderTarget for ImageTarget {
                 }
             }
             DrawCommand::StatsActivityFeed { x, y, width, height, entries } => {
-                let sf = if self.large_elements { 1.8f32 } else { 1.0f32 };
+                let sf = if self.large_elements { 1.67f32 } else { 1.0f32 };
                 let padding = (8.0 * sf).round() as i32;
                 let inner_x = *x + padding;
                 let inner_w = *width - padding * 2;
