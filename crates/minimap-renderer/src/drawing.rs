@@ -2404,7 +2404,7 @@ impl RenderTarget for ImageTarget {
                 }
             }
             DrawCommand::StatsActivityFeed { x, y, width, height, entries } => {
-                let sf = if self.large_elements { 1.67f32 } else { 1.0f32 };
+                let sf = if self.large_elements { 1.5f32 } else { 1.0f32 };
                 let padding = (8.0 * sf).round() as i32;
                 let inner_x = *x + padding;
                 let inner_w = *width - padding * 2;
