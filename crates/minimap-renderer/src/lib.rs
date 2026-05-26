@@ -24,10 +24,10 @@ pub const HUD_HEIGHT: u32 = 0;
 /// Total canvas height: minimap + HUD.
 pub const CANVAS_HEIGHT: u32 = MINIMAP_SIZE + HUD_HEIGHT;
 /// Width of the stats side panel when enabled.
-pub const STATS_PANEL_WIDTH: u32 = 224;
+pub const STATS_PANEL_WIDTH: u32 = 256;
 /// Width of the stats side panel in 16:9 aspect ratio mode.
-/// 1200 + 224 = 1424 wide × 1200 tall.
-pub const STATS_PANEL_WIDTH_16_9: u32 = 224;
+/// 1200 + 256 = 1456 wide × 1200 tall.
+pub const STATS_PANEL_WIDTH_16_9: u32 = 256;
 
 #[cfg(feature = "rendering")]
 pub use assets::GameFonts;

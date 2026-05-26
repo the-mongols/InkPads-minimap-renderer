@@ -396,7 +396,7 @@ fn draw_ship_labels(
     fonts: &GameFonts,
     scale_factor: f32,
 ) {
-    let base_font_size = 10.0 * scale_factor;
+    let base_font_size = 12.0 * scale_factor;
     let line_count = ship_name.is_some() as i32;
     if line_count == 0 {
         return;
@@ -406,7 +406,7 @@ fn draw_ship_labels(
     let _color_on_ship = ship_name.is_some();
 
     // Position lines below the icon and health bar (icon radius ~12px * scale_factor + health bar space)
-    let icon_offset = (24.0 * scale_factor).round() as i32;
+    let icon_offset = (28.0 * scale_factor).round() as i32;
     let base_y = y + icon_offset;
     let cur_y = base_y;
 
@@ -434,7 +434,7 @@ fn draw_health_bar(
     let bar_w = 20.0f32 * scale_factor;
     let bar_h = 3.0f32 * scale_factor;
     let bar_x = x as f32 - bar_w / 2.0;
-    let bar_y = y as f32 + 14.0 * scale_factor;
+    let bar_y = y as f32 + 16.0 * scale_factor;
 
     let fill_w = (fraction.clamp(0.0, 1.0) * bar_w).round();
     let recoverable_w = (recoverable_fraction.clamp(0.0, 1.0) * bar_w).round();

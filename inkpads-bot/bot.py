@@ -116,6 +116,89 @@ def parse_replay_header(file_path):
         logger.warning(f"Error parsing replay header: {e}")
         return {}
 
+def clean_ship_name(raw_name):
+    if not raw_name:
+        return ""
+    # Strip prefix before hyphen or underscore
+    if "-" in raw_name:
+        parts = raw_name.split("-", 1)
+        name = parts[1]
+    elif "_" in raw_name:
+        parts = raw_name.split("_", 1)
+        name = parts[1]
+    else:
+        name = raw_name
+    return name.replace("_", " ").replace("-", " ").title()
+
+def get_map_display_name(raw_map):
+    if not raw_map:
+        return ""
+    
+    key = raw_map
+    if key.startswith("spaces/"):
+        key = key[7:]
+    
+    mapping = {
+        "00_CO_ocean": "Ocean",
+        "01_solomon_islands": "Solomon Islands",
+        "03_big_race": "Big Race",
+        "04_Archipelago": "Archipelago",
+        "05_Ring": "The Ring",
+        "08_Neighbors": "Neighbors",
+        "10_SG_new_dawn": "New Dawn",
+        "13_Border_Empire": "Empire's Border",
+        "14_Atlantic": "The Atlantic",
+        "15_NE_north": "North",
+        "16_OC_bees_to_honey": "Hotspot",
+        "17_NA_fault_line": "Fault Line",
+        "18_NE_ice_islands": "Islands of Ice",
+        "19_FH_shatter": "Shatter",
+        "20_CR_two_brothers": "Two Brothers",
+        "22_tierra_del_fuego": "Land of Fire",
+        "23_shards": "Shards",
+        "25_sea_hope": "Sea of Fortune",
+        "28_naval_mission": "Naval Station",
+        "33_GH_gold_harbor": "Riprap",
+        "34_OC_guam": "Guam",
+        "35_NE_north_winter": "Northern Lights",
+        "37_FC_mountain_range": "Mountain Range",
+        "38_J_warrior": "Warrior's Path",
+        "40_Okinawa": "Okinawa",
+        "41_Conquest": "Conquest",
+        "42_Neighbors": "Neighbors",
+        "44_Path_warrior": "Warrior's Path",
+        "47_Sleeping_Giant": "Sleeping Giant",
+        "50_Gold_harbor": "Riprap",
+        "51_Greece": "Greece",
+        "52_crashed_harbor": "Crash Zone Alpha",
+        "53_waterline": "Waterline",
+        "56_AngelWings": "Angel's Wings",
+        "s06_Atoll": "Narai",
+    }
+    
+    if key in mapping:
+        return mapping[key]
+        
+    # Fallback: clean up internal directory name
+    parts = key.split("_")
+    cleaned_parts = [p.capitalize() for p in parts if not p.isdigit()]
+    return " ".join(cleaned_parts)
+
+def format_date_time(raw_dt):
+    if not raw_dt:
+        return ""
+    from datetime import datetime
+    try:
+        dt = datetime.strptime(raw_dt, "%d.%m.%Y %H:%M:%S")
+        month = str(dt.month)
+        day = str(dt.day)
+        year = str(dt.year)[-2:]
+        time_str = dt.strftime("%I:%M %p").lstrip("0")
+        return f"{month}/{day}/{year} {time_str}"
+    except Exception:
+        return raw_dt
+
+
 async def send_webhook_payload(replay_path, red_replay_path, session_id):
     if not WEBHOOK_URL:
         return
@@ -223,11 +306,21 @@ async def render(
         if red_replay:
             await red_replay.save(red_replay_path)
         
+        # Parse header early for metadata
+        header = parse_replay_header(replay_path)
+        raw_ship = header.get("playerVehicle", "")
+        raw_map = header.get("mapName", "") or header.get("mapDisplayName", "")
+        raw_dt = header.get("dateTime", "")
+
+        ship_name = clean_ship_name(raw_ship)
+        map_name = get_map_display_name(raw_map)
+        formatted_dt = format_date_time(raw_dt)
+        logger.info(f"Render Session {session_id}: Meta extracted -> Ship={ship_name}, Map={map_name}, Time={formatted_dt}")
+
         # 2. Early verification and Webhook handover
         is_clan_battle = False
         if WEBHOOK_URL:
             try:
-                header = parse_replay_header(replay_path)
                 match_group = str(header.get("matchGroup", "")).lower()
                 game_type = str(header.get("gameType", "")).lower()
                 
@@ -240,6 +333,7 @@ async def render(
                     webhook_task = asyncio.create_task(send_webhook_payload(replay_path, red_replay_path, session_id))
             except Exception as e:
                 logger.warning(f"Early verification/webhook launch failed for session {session_id}: {e}")
+
 
         # 3. Build CLI Command
         cmd = [
@@ -306,16 +400,19 @@ async def render(
             # 6. Upload
             logger.info(f"Render Session {session_id}: Uploading result...")
             file = discord.File(output_path, filename=f"tactical_{replay.filename.replace('.wowsreplay', '.mp4')}")
-            embed = discord.Embed(
-                title="✨ Render Output Complete",
-                description=f"Analysis of `{replay.filename}` is ready.",
-                color=discord.Color.blue()
-            )
-            embed.add_field(name="Trails", value="Enabled" if show_trails else "Disabled", inline=True)
-            embed.add_field(name="Ranges", value="Enabled" if show_config else "Disabled", inline=True)
-            embed.add_field(name="Discord Layout", value="Enabled" if discord_layout else "Disabled", inline=True)
             
-            await interaction.followup.send(embed=embed, file=file)
+            # Format plain text details
+            details = []
+            if ship_name:
+                details.append(ship_name)
+            if map_name:
+                details.append(map_name)
+            if formatted_dt:
+                details.append(formatted_dt)
+                
+            content = " | ".join(details) if details else f"Render Complete: {replay.filename}"
+            
+            await interaction.followup.send(content=content, file=file)
         else:
             stderr_text = stderr.decode()
             error_lines = [l for l in stderr_text.splitlines() if l.strip()]
