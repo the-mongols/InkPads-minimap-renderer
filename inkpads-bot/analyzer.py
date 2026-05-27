@@ -33,6 +33,7 @@ class ReplayAnalyzer:
         self.sunk_ships = set()
         self.battle_start_clock: Optional[float] = None
         self.is_started = False
+        self.player_team = 0
         self.match_result = "UNKNOWN"
         self.arena_id = None
         self.match_date = None
@@ -60,7 +61,7 @@ class ReplayAnalyzer:
             return 0.0
         return max(0.0, clock - self.battle_start_clock)
 
-    def add_event(self, clock: float, etype: str, desc: str, team: Optional[int] = None):
+    def add_event(self, clock: float, etype: str, desc: str, team: Optional[int] = None, metadata: Optional[Dict[str, Any]] = None):
         elapsed = self._elapsed(clock)
         # Apply 14x time-scaling for VOD synchronization
         video_ts = round(elapsed / 14.0, 2)
@@ -77,6 +78,7 @@ class ReplayAnalyzer:
             "type": etype,
             "desc": desc,
             "team": team,
+            "metadata": metadata or {}
         })
 
     def _calculate_advantage(self, clock: float):
@@ -98,7 +100,20 @@ class ReplayAnalyzer:
             self.last_advantage_level = level
             self.last_advantage_team = team
             t_str = f"Team {chr(65 + team)}" if level != "Even" else "Both Teams"
-            self.add_event(clock, "MOMENTUM_SHIFT", f"{level} Advantage: {t_str} ({s0}-{s1})", team=team if level != "Even" else None)
+            
+            # Resolve team affiliation of the gaining team
+            gaining_clan = self._majority_clan(team) if level != "Even" else "None"
+            gaining_affiliation = "friendly" if (level != "Even" and team == self.player_team) else ("enemy" if level != "Even" else "None")
+            
+            metadata = {
+                "advantage_level": level,
+                "gaining_clan_tag": gaining_clan or "Unknown",
+                "gaining_team_affiliation": gaining_affiliation,
+                "friendly_score": s0 if self.player_team == 0 else s1,
+                "enemy_score": s1 if self.player_team == 0 else s0
+            }
+            
+            self.add_event(clock, "MOMENTUM_SHIFT", f"{level} Advantage: {t_str} ({s0}-{s1})", team=team if level != "Even" else None, metadata=metadata)
 
     def run(self) -> List[Dict[str, Any]]:
         if not os.path.exists(self.input_path):
@@ -160,6 +175,7 @@ class ReplayAnalyzer:
                     ship_id = p.get("ship_id")
                     spa_id = p.get("spa_id")
                     ship_name = p.get("ship_name") or p.get("ship_type_name") or "Unknown"
+                    max_health = p.get("maxHealth") or p.get("max_health") or 0
 
                     self.ships[eid] = {
                         "name": name,
@@ -167,10 +183,18 @@ class ReplayAnalyzer:
                         "clan": clan_tag,
                         "ship_id": ship_id,
                         "spa_id": spa_id,
-                        "ship_name": ship_name
+                        "ship_name": ship_name,
+                        "max_health": max_health
                     }
                     if clan_tag and team_id is not None:
                         self.team_clan_counts[team_id][clan_tag] += 1
+
+                # Resolve friendly team side early
+                if self.player_name:
+                    for s in self.ships.values():
+                        if s.get("name") == self.player_name:
+                            self.player_team = s.get("team")
+                            break
 
                 # League/Rating parsing
                 pb_info = arena.get("pre_battles_info", {})
@@ -250,8 +274,26 @@ class ReplayAnalyzer:
                 self.player_stats[eid]["potential"] = val
             elif prop == "health":
                 prev_h = self.player_stats[eid].get("current_health", val)
+                max_h = self.ships[eid].get("max_health", 0)
                 if val < prev_h:
-                    self.player_stats[eid]["received"] += (prev_h - val)
+                    dmg = prev_h - val
+                    self.player_stats[eid]["received"] += dmg
+                    if max_h > 0:
+                        pct = (dmg / max_h) * 100
+                        if pct >= 30.0:
+                            s = self.ships[eid]
+                            metadata = {
+                                "victim": {
+                                    "username": s["name"],
+                                    "ship_id": s["ship_id"],
+                                    "ship_name": s["ship_name"],
+                                    "clan_tag": s["clan"],
+                                    "team_affiliation": "friendly" if s["team"] == self.player_team else "enemy"
+                                },
+                                "damage_amount": dmg,
+                                "percent_health_lost": round(pct, 1)
+                            }
+                            self.add_event(clock, "CRITICAL_HIT", f"{s['name']} took critical damage: {dmg} ({pct:.1f}%)", team=s["team"], metadata=metadata)
                 self.player_stats[eid]["current_health"] = val
 
         if prop == "team_scores" and isinstance(val, list) and len(val) >= 2:
@@ -265,13 +307,35 @@ class ReplayAnalyzer:
             if new_team != prev_team and new_team != -1:
                 zone = self.zones[eid]
                 t_str = f"Team {chr(65 + new_team)}"
-                self.add_event(clock, "CAP", f"Zone {zone['label']} captured by {t_str}", team=new_team)
+                metadata = {
+                    "zone_label": zone["label"],
+                    "clan_tag": self._majority_clan(new_team) or "Unknown",
+                    "team_affiliation": "friendly" if new_team == self.player_team else "enemy"
+                }
+                self.add_event(clock, "CAP", f"Zone {zone['label']} captured by {t_str}", team=new_team, metadata=metadata)
 
         if prop == "isAlive" and val == 0 and eid in self.ships:
             if eid not in self.sunk_ships:
                 self.sunk_ships.add(eid)
                 s = self.ships[eid]
-                self.add_event(clock, "KILL", f"{s['name']} sunk", team=s["team"])
+                victim_meta = {
+                    "username": s["name"],
+                    "ship_id": s["ship_id"],
+                    "ship_name": s["ship_name"],
+                    "clan_tag": s["clan"],
+                    "team_affiliation": "friendly" if s["team"] == self.player_team else "enemy"
+                }
+                metadata = {
+                    "victim": victim_meta,
+                    "killer": {
+                        "username": "Unknown",
+                        "ship_id": 0,
+                        "ship_name": "Unknown",
+                        "clan_tag": "Unknown",
+                        "team_affiliation": "enemy"
+                    }
+                }
+                self.add_event(clock, "KILL", f"{s['name']} sunk", team=s["team"], metadata=metadata)
 
     def _handle_entity_method(self, clock: float, em: Dict[str, Any]):
         eid = em.get("entity_id")
@@ -284,7 +348,38 @@ class ReplayAnalyzer:
                 s = self.ships[eid]
                 killer_eid = args[8] if len(args) > 8 else None
                 killer_name = self.ships.get(killer_eid, {}).get("name") if killer_eid else "Unknown"
-                self.add_event(clock, "KILL", f"{s['name']} sunk by {killer_name}", team=s["team"])
+                
+                victim_meta = {
+                    "username": s["name"],
+                    "ship_id": s["ship_id"],
+                    "ship_name": s["ship_name"],
+                    "clan_tag": s["clan"],
+                    "team_affiliation": "friendly" if s["team"] == self.player_team else "enemy"
+                }
+                
+                k = self.ships.get(killer_eid)
+                if k:
+                    killer_meta = {
+                        "username": k["name"],
+                        "ship_id": k["ship_id"],
+                        "ship_name": k["ship_name"],
+                        "clan_tag": k["clan"],
+                        "team_affiliation": "friendly" if k["team"] == self.player_team else "enemy"
+                    }
+                else:
+                    killer_meta = {
+                        "username": killer_name,
+                        "ship_id": 0,
+                        "ship_name": "Unknown",
+                        "clan_tag": "Unknown",
+                        "team_affiliation": "enemy"
+                    }
+                    
+                metadata = {
+                    "victim": victim_meta,
+                    "killer": killer_meta
+                }
+                self.add_event(clock, "KILL", f"{s['name']} sunk by {killer_name}", team=s["team"], metadata=metadata)
 
         if method == "onConsumableActivated" and eid in self.ships:
             c_raw = str(args[0]).lower() if args else ""
@@ -292,7 +387,14 @@ class ReplayAnalyzer:
                 if "RADAR" not in self._active_consumables[eid]:
                     self._active_consumables[eid].add("RADAR")
                     s = self.ships[eid]
-                    self.add_event(clock, "RADAR", f"{s['name']} activated Radar", team=s["team"])
+                    metadata = {
+                        "username": s["name"],
+                        "ship_id": s["ship_id"],
+                        "ship_name": s["ship_name"],
+                        "clan_tag": s["clan"],
+                        "team_affiliation": "friendly" if s["team"] == self.player_team else "enemy"
+                    }
+                    self.add_event(clock, "RADAR", f"{s['name']} activated Radar", team=s["team"], metadata=metadata)
 
         if method == "onConsumableDeactivated" and eid in self.ships:
             c_raw = str(args[0]).lower() if args else ""
