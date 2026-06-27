@@ -3,6 +3,7 @@
 pub mod advantage;
 #[cfg(feature = "rendering")]
 pub mod assets;
+pub mod codec;
 pub mod config;
 pub mod draw_command;
 #[cfg(feature = "rendering")]
@@ -11,10 +12,10 @@ pub mod drawing;
 pub mod encoder;
 pub mod error;
 pub mod map_data;
+pub mod panel_math;
 #[cfg(feature = "rendering")]
 pub mod renderer;
 #[cfg(feature = "rendering")]
-pub mod sync;
 pub mod video;
 
 /// Minimap image size in pixels (square). Multiple of 16 for H.264 macroblock alignment.
@@ -26,11 +27,19 @@ pub const CANVAS_HEIGHT: u32 = MINIMAP_SIZE + HUD_HEIGHT;
 /// Width of the stats side panel when enabled.
 pub const STATS_PANEL_WIDTH: u32 = 256;
 /// Width of the stats side panel in 16:9 aspect ratio mode.
-/// 1200 + 256 = 1456 wide × 1200 tall.
 pub const STATS_PANEL_WIDTH_16_9: u32 = 256;
+/// Width of each team roster panel (left/right of the minimap) when enabled.
+pub const TEAM_ROSTER_WIDTH: u32 = 256;
+/// Halo thickness (in icon-pixel space) for the detected-teammate outline
+/// drawn around ship icons. Both renderers pad the outline texture by this
+/// amount on each side so the halo wraps fully around the icon's silhouette
+/// instead of being clipped to the icon's bounding box.
+pub const SHIP_ICON_OUTLINE_THICKNESS: u32 = 2;
 
 #[cfg(feature = "rendering")]
 pub use assets::GameFonts;
+pub use codec::EncoderKind;
+pub use codec::VideoCodec;
 pub use config::RenderOptions;
 pub use draw_command::ActivityFeedEntry;
 pub use draw_command::DrawCommand;
@@ -44,6 +53,8 @@ pub use draw_command::ShipVisibility;
 pub use drawing::ImageTarget;
 #[cfg(feature = "rendering")]
 pub use drawing::ShipIcon;
+#[cfg(feature = "rendering")]
+pub use encoder::EncoderConfig;
 #[cfg(feature = "rendering")]
 pub use encoder::EncoderStatus;
 #[cfg(feature = "rendering")]

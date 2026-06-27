@@ -16,6 +16,24 @@ pub use wowsunpack::game_types::Ribbon;
 
 use crate::map_data::MinimapPos;
 
+/// Cell metrics for the stats-panel ribbon grid. Cells are fixed width so the
+/// command emitter (which positions the activity feed below the grid) and the
+/// render backends agree exactly on rows-per-line. `CELL_W` fits the widest
+/// ribbon icon (~2.6:1 at `ICON` height) plus a 2-digit count.
+pub const STATS_RIBBON_ICON: i32 = 18;
+pub const STATS_RIBBON_CELL_W: i32 = 76;
+pub const STATS_RIBBON_ROW_H: i32 = 24;
+
+/// Opacity for the ammo-colored shell tip dot. Dimmed so the tips read as
+/// accents on the tracer rather than dominating the map. Shared by every render
+/// backend.
+pub const SHOT_TIP_ALPHA: f32 = 0.4;
+
+/// Opacity for secondary (ATBA) shell tracers and tips. Secondary batteries fire
+/// far more shots than the main battery, so dimming them keeps the map readable
+/// while still showing the fire. Shared by every render backend.
+pub const SECONDARY_SHOT_ALPHA: f32 = 0.25;
+
 /// The type of building icon to display on the minimap.
 ///
 /// Derived from the building's Species in GameParams.
@@ -267,6 +285,11 @@ pub struct RibbonCount {
     pub count: usize,
     /// Localized display name (resolved via translate_ribbon, falls back to English).
     pub display_name: String,
+    /// Lowercased ribbon icon key (RIBBON_*.to_lowercase()); for subribbons the
+    /// renderers prepend "sub" to look up the subribbon map.
+    pub icon_key: String,
+    /// When true, renderers prefer the subribbon icon (the "sub"+icon_key atlas).
+    pub is_subribbon: bool,
 }
 
 /// An entry in the merged activity feed (kills + chat), sorted by game clock.
@@ -308,6 +331,16 @@ pub struct DamageBreakdownEntry {
 pub enum DrawCommand {
     /// Artillery tracer line segment
     ShotTracer { from: MinimapPos, to: MinimapPos, color: [u8; 3] },
+    /// Ammo-colored dot at a shell tracer's leading point (the shell tip)
+    ShotTracerTip { at: MinimapPos, color: [u8; 3] },
+    /// Secondary (ATBA) tracer line segment. Same shape as `ShotTracer` but
+    /// rendered at `SECONDARY_SHOT_ALPHA` so dense secondary fire de-emphasizes
+    /// itself relative to main-battery tracers. The line (vs a lone dot) keeps it
+    /// distinguishable from torpedoes.
+    SecondaryShotTracer { from: MinimapPos, to: MinimapPos, color: [u8; 3] },
+    /// Secondary (ATBA) shell dot. Same shape as `ShotTracerTip` but rendered at
+    /// `SECONDARY_SHOT_ALPHA` to match its tracer line.
+    SecondaryShotTracerTip { at: MinimapPos, color: [u8; 3] },
     /// Torpedo dot
     Torpedo { pos: MinimapPos, color: [u8; 3] },
     /// Smoke puff circle (alpha blended)
@@ -331,6 +364,10 @@ pub enum DrawCommand {
         ship_name: Option<String>,
         /// Whether this ship is a detected teammate (ally visible but not self)
         is_detected_teammate: bool,
+        /// Whether this player is currently disconnected (latest connection
+        /// event before the current clock is `Disconnected`). Draws a red
+        /// outline around the icon, mirroring `is_detected_teammate`.
+        is_disconnected: bool,
         /// Override color for player name based on selected armament
         /// (e.g. orange=HE, light blue=AP, green=torp). None = default white.
         name_color: Option<[u8; 3]>,
@@ -340,7 +377,6 @@ pub enum DrawCommand {
         entity_id: EntityId,
         pos: MinimapPos,
         fraction: f32,
-        recoverable_fraction: f32,
         fill_color: [u8; 3],
         background_color: [u8; 3],
         background_alpha: f32,
@@ -391,11 +427,11 @@ pub enum DrawCommand {
         #[cfg_attr(feature = "rkyv", rkyv(with = rkyv::with::Skip))]
         flag_icon: Option<RgbaImage>,
     },
-    /// Turret direction indicator line from ship center
-    TurretDirection {
+    /// Camera/look direction indicator line from ship center
+    CameraDirection {
         entity_id: EntityId,
         pos: MinimapPos,
-        /// Turret yaw in radians (world-space, already includes ship heading)
+        /// Camera yaw in radians (world-space, already includes ship heading)
         yaw: f32,
         color: [u8; 3],
         /// Line length in pixels
@@ -555,6 +591,12 @@ pub enum DrawCommand {
         hp_fraction: f32,
         hp_current: f32,
         hp_max: f32,
+        hp_healable: f32,
+        /// HP the active/next heal charge will restore (the brighter part of
+        /// the healable region). The remainder of `hp_healable` is drawn dimmer.
+        hp_healable_per_charge: f32,
+        /// Repair Party (heal) availability for this ship (drives healable region).
+        heal_availability: ConsumableAvailability,
         /// Player name to display above the silhouette.
         player_name: Option<String>,
         /// Clan tag (e.g. "CLAN"), empty string or None if none.
@@ -578,54 +620,211 @@ pub enum DrawCommand {
         spotting_breakdowns: Vec<DamageBreakdownEntry>,
         damage_potential: f64,
         potential_breakdowns: Vec<DamageBreakdownEntry>,
-        compact: bool,
     },
-     /// Merged kill feed + chat activity log in the stats panel
-     StatsActivityFeed { x: i32, y: i32, width: i32, height: i32, entries: Vec<ActivityFeedEntry> },
-     /// On-screen ribbon notification (pop-up)
-     RibbonPopUp {
-         ribbon: Ribbon,
-         /// Localized name
-         display_name: String,
-         /// How long ago the ribbon was earned (0.0 = just now, 1.0 = 3s ago)
-         /// Used for fade-out and slide-up animations.
-         age_fraction: f32,
-     },
- }
- 
- impl DrawCommand {
-     /// Returns true if this is a HUD overlay element (score bar, timer, kill feed, etc.)
-     /// that should be drawn unclipped, outside the map viewport area.
-     pub fn is_hud(&self) -> bool {
-         matches!(
-             self,
-             Self::ScoreBar { .. }
-                 | Self::Timer { .. }
-                 | Self::PreBattleCountdown { .. }
-                 | Self::KillFeed { .. }
-                 | Self::BattleResultOverlay { .. }
-                 | Self::TeamBuffs { .. }
-                 | Self::TeamAdvantage { .. }
-                 | Self::ChatOverlay { .. }
-                 | Self::StatsPanel { .. }
-                 | Self::StatsSilhouette { .. }
-                 | Self::StatsDamage { .. }
-                 | Self::StatsActivityFeed { .. }
-                 | Self::RibbonPopUp { .. }
-         )
-     }
- 
-     /// Returns true if this is a stats-panel element that should be rendered
-     /// in the side panel rather than on the main canvas.
-     pub fn is_stats(&self) -> bool {
-         matches!(
-             self,
-             Self::StatsPanel { .. }
-                 | Self::StatsSilhouette { .. }
-                 | Self::StatsDamage { .. }
-                 | Self::StatsActivityFeed { .. }
-         )
-     }
+    /// Compact ribbon summary in the stats panel
+    StatsRibbons { x: i32, y: i32, width: i32, ribbons: Vec<RibbonCount> },
+    /// Merged kill feed + chat activity log in the stats panel
+    StatsActivityFeed { x: i32, y: i32, width: i32, height: i32, entries: Vec<ActivityFeedEntry> },
+    /// Per-team roster panel: list of ships with HP, name, and consumable slots.
+    /// Positioned in a gutter beside the map (left or right depending on `side`).
+    TeamRoster { side: RosterSide, x: i32, y: i32, width: i32, height: i32, rows: Vec<RosterRow> },
+}
+
+/// Which gutter a [`DrawCommand::TeamRoster`] sits in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+pub enum RosterSide {
+    /// Player's own team (rendered left of the map in the default layout).
+    Friendly,
+    /// Opposing team (rendered right of the map).
+    Enemy,
+}
+
+/// Availability of a consumable: unavailable (reloading or out of charges),
+/// ready (a charge remains and not running), or active (currently running).
+/// Drives visibility and color of the healable-HP region and the charge-count
+/// label color in the roster.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+pub enum ConsumableAvailability {
+    /// No charge ready (reloading or out of charges) and none running. Hide the region.
+    Unavailable,
+    /// At least one charge remains and nothing running. Gray region.
+    Ready,
+    /// Currently running. White region.
+    Active,
+}
+
+impl ConsumableAvailability {
+    /// RGB for the healable-HP region, or `None` when the region should be
+    /// hidden. Shared by every render backend so the gray (ready) / white
+    /// (actively healing) treatment stays in sync.
+    pub const fn healable_rgb(self) -> Option<[u8; 3]> {
+        match self {
+            ConsumableAvailability::Unavailable => None,
+            ConsumableAvailability::Ready => Some([140, 140, 140]),
+            ConsumableAvailability::Active => Some([255, 255, 255]),
+        }
+    }
+
+    /// RGB for a roster consumable's charge-count label. Yellow while the
+    /// consumable is running, normal gray when ready, muted gray when it is
+    /// unavailable (reloading or out of charges) so the unavailable state
+    /// recedes rather than draws attention.
+    pub const fn charge_count_rgb(self) -> [u8; 3] {
+        match self {
+            ConsumableAvailability::Active => [255, 220, 80],
+            ConsumableAvailability::Ready => [220, 220, 220],
+            ConsumableAvailability::Unavailable => [90, 90, 90],
+        }
+    }
+}
+
+/// Charcoal tint for the stats-panel ship silhouette base/outline. Shared so
+/// both render backends match.
+pub const SILHOUETTE_BASE_RGB: [u8; 3] = [55, 55, 60];
+
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+pub struct RosterRow {
+    /// Per-session entity ID for this player's ship. Acts as a stable lookup
+    /// key for the desktop renderer's per-player build snapshot, so the build
+    /// popover can resolve hovered rows back to a `ResolvedBuild`.
+    pub entity_id: EntityId,
+    /// Raw arena-side team id for this player. The desktop renderer uses this
+    /// to decide whether the build popover may show enemy loadouts (only when
+    /// at least one merged replay's recording player is on the same team).
+    pub team_id: i64,
+    pub player_name: String,
+    pub clan_tag: Option<String>,
+    pub clan_color: Option<[u8; 3]>,
+    pub ship_name: String,
+    pub ship_param_id: Option<GameParamId>,
+    /// Lookup key for the ship class icon (DD/CA/BB/CV/SS). Matches a key in
+    /// the renderer's `ship_icons` texture map (the species name).
+    pub class_icon_key: Option<String>,
+    /// Parsed ship species, used as the primary roster sort key so the order
+    /// follows the in-game class hierarchy (CV/BB/CA/DD/SS) rather than the
+    /// alphabetical fall-back of `class_icon_key`.
+    pub species: Option<wowsunpack::game_params::types::Species>,
+    pub hp_current: f32,
+    pub hp_max: f32,
+    /// Portion of missing HP that the ship can still restore via Repair Party
+    /// (regen-crew limit minus already-regenerated). Drawn as a darker segment
+    /// in the HP bar between current HP and permanent damage.
+    pub hp_healable: f32,
+    /// HP the active/next heal charge will restore (the brighter part of
+    /// the healable region). The remainder of `hp_healable` is drawn dimmer.
+    pub hp_healable_per_charge: f32,
+    /// Repair Party (heal) availability for this ship (drives healable HP-bar segment).
+    pub heal_availability: ConsumableAvailability,
+    pub is_dead: bool,
+    /// Highlight this row (player's own ship, or own division-mate).
+    pub is_self: bool,
+    /// True while the ship is currently visible to the opposing team. Drives
+    /// the yellow name highlight.
+    pub is_spotted: bool,
+    /// True if the most recent connection event for this player at the current
+    /// clock is `Disconnected`. Drives the red outline on the icon.
+    pub is_disconnected: bool,
+    /// Number of kills the player has scored at the current clock.
+    pub kills: u32,
+    /// Total damage dealt by the player at the current clock.
+    pub damage_dealt: f32,
+    /// Seconds elapsed since this player's last observed damage event, or
+    /// `None` if they have never dealt damage. UI fades the recent-damage
+    /// indicator over this duration.
+    pub seconds_since_damage: Option<f32>,
+    pub consumables: Vec<RosterConsumable>,
+}
+
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+pub struct RosterConsumable {
+    /// Lookup key in the consumable icon map (Ability param index, e.g.
+    /// `"PCY009_CrashCrewPremium"`).
+    pub icon_key: String,
+    /// User-facing display name. Localized when game translations are
+    /// available, otherwise the raw consumable type.
+    pub display_name: String,
+    /// Localized description (the in-game tooltip text). Empty when no
+    /// translation is available.
+    pub description: String,
+    pub total_charges: ChargeCount,
+    pub charges_used: u32,
+    pub work_time_secs: f32,
+    pub reload_time_secs: f32,
+    /// Seconds of activation remaining, or `None` when not active.
+    pub active_remaining_secs: Option<f32>,
+    /// Availability of this consumable (drives the charge-count label color).
+    pub availability: ConsumableAvailability,
+}
+
+/// Mirror of `wowsunpack::game_types::ChargeCount` for the draw command
+/// layer. Kept local so this crate avoids a full wowsunpack dep when
+/// built with `rendering` off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+pub enum ChargeCount {
+    Unlimited,
+    Finite(u32),
+}
+
+impl ChargeCount {
+    pub fn remaining(self, used: u32) -> Self {
+        match self {
+            Self::Unlimited => Self::Unlimited,
+            Self::Finite(n) => Self::Finite(n.saturating_sub(used)),
+        }
+    }
+}
+
+#[cfg(feature = "rendering")]
+impl From<wowsunpack::game_types::ChargeCount> for ChargeCount {
+    fn from(value: wowsunpack::game_types::ChargeCount) -> Self {
+        match value {
+            wowsunpack::game_types::ChargeCount::Unlimited => Self::Unlimited,
+            wowsunpack::game_types::ChargeCount::Finite(n) => Self::Finite(n),
+        }
+    }
+}
+
+impl DrawCommand {
+    /// Returns true if this is a HUD overlay element (score bar, timer, kill feed, etc.)
+    /// that should be drawn unclipped, outside the map viewport area.
+    pub fn is_hud(&self) -> bool {
+        matches!(
+            self,
+            Self::ScoreBar { .. }
+                | Self::Timer { .. }
+                | Self::PreBattleCountdown { .. }
+                | Self::KillFeed { .. }
+                | Self::BattleResultOverlay { .. }
+                | Self::TeamBuffs { .. }
+                | Self::TeamAdvantage { .. }
+                | Self::ChatOverlay { .. }
+                | Self::StatsPanel { .. }
+                | Self::StatsSilhouette { .. }
+                | Self::StatsDamage { .. }
+                | Self::StatsRibbons { .. }
+                | Self::StatsActivityFeed { .. }
+                | Self::TeamRoster { .. }
+        )
+    }
+
+    /// Returns true if this is a stats-panel element that should be rendered
+    /// in the side panel rather than on the main canvas.
+    pub fn is_stats(&self) -> bool {
+        matches!(
+            self,
+            Self::StatsPanel { .. }
+                | Self::StatsSilhouette { .. }
+                | Self::StatsDamage { .. }
+                | Self::StatsRibbons { .. }
+                | Self::StatsActivityFeed { .. }
+                | Self::TeamRoster { .. }
+        )
+    }
 }
 
 /// Trait for rendering backends that consume `DrawCommand`s.

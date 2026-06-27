@@ -1,10 +1,13 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use image::RgbaImage;
 use wowsunpack::data::ResourceLoader;
+use wowsunpack::data::TranslationKey;
 use wowsunpack::data::Version;
 use wowsunpack::game_params::provider::GameMetadataProvider;
+use wowsunpack::game_params::types::AmmoType;
 use wowsunpack::game_params::types::GameParamProvider;
 use wowsunpack::game_params::types::Meters;
 use wowsunpack::game_params::types::PlaneCategory;
@@ -19,8 +22,16 @@ use wowsunpack::game_types::BattleResult;
 use wowsunpack::game_types::DamageStatCategory;
 use wowsunpack::game_types::DamageStatWeapon;
 
+use wows_battle_world::EntityTrack;
+use wows_battle_world::PositionTimeline;
+use wows_battle_world::SalvoFlightTimes;
+use wows_battle_world::SampledPos;
+use wows_battle_world::view::BattleView;
+use wows_replay_insights::build::ResolvedBuild;
 use wows_replays::analyzer::battle_controller::ChatChannel;
-use wows_replays::analyzer::battle_controller::listener::BattleControllerState;
+use wows_replays::analyzer::battle_controller::ConnectionChangeKind;
+use wows_replays::analyzer::battle_controller::state::ActiveConsumable;
+use wows_replays::analyzer::battle_controller::state::ConsumableInventory;
 use wows_replays::analyzer::battle_controller::state::ControlPointType;
 use wows_replays::analyzer::decoder::Consumable;
 use wows_replays::types::EntityId;
@@ -36,10 +47,14 @@ use crate::draw_command::ActivityFeedKind;
 use crate::draw_command::BuildingIconType;
 use crate::draw_command::BuildingRelation;
 use crate::draw_command::ChatEntry;
+use crate::draw_command::ConsumableAvailability;
 use crate::draw_command::DamageBreakdownEntry;
 use crate::draw_command::DrawCommand;
 use crate::draw_command::FontHint;
 use crate::draw_command::KillFeedEntry;
+use crate::draw_command::RibbonCount;
+use crate::draw_command::STATS_RIBBON_CELL_W;
+use crate::draw_command::STATS_RIBBON_ROW_H;
 use crate::draw_command::ShipConfigCircleKind;
 use crate::draw_command::ShipVisibility;
 use crate::map_data;
@@ -49,8 +64,88 @@ use crate::MINIMAP_SIZE;
 use crate::STATS_PANEL_WIDTH;
 
 // How long various effects persist in game-seconds
-const TRACER_LEN: f32 = 0.12; // fraction of total shot path length
+const TRACER_LEN: f32 = 0.12; // fraction of total shot path length, at the largest caliber
+// Caliber (mm) at or above which a tracer draws full length; smaller calibers scale down.
+const MAX_TRACER_CALIBER_MM: f32 = 460.0;
+// Floor on the caliber length ratio so small-caliber tracers stay visible.
+const MIN_TRACER_LEN_RATIO: f32 = 0.3;
 const KILL_FEED_DURATION: f32 = 10.0;
+
+/// Gaps larger than this between consecutive samples imply a spotting break /
+/// AOI exit, so we snap (hold nearest) instead of interpolating across them.
+const MAX_SAMPLE_GAP: f32 = 2.0;
+
+/// Interpolate one sorted (clock, value) track at `clock`. Lerps the bracketing
+/// pair when within `MAX_SAMPLE_GAP`; returns `None` outside the track's range,
+/// or when the bracket gap exceeds the threshold (a spotting break) so the
+/// caller can fall back to another source.
+fn interp_track<T: Copy>(samples: &[(GameClock, T)], clock: GameClock, lerp: impl Fn(T, T, f32) -> T) -> Option<T> {
+    if samples.is_empty() {
+        return None;
+    }
+    if clock.0 < samples[0].0.0 || clock.0 > samples[samples.len() - 1].0.0 {
+        return None;
+    }
+    let hi = samples.partition_point(|s| s.0.0 <= clock.0);
+    if hi == 0 {
+        return Some(samples[0].1);
+    }
+    let (ca, va) = samples[hi - 1];
+    if clock.0 == ca.0 {
+        return Some(va);
+    }
+    if hi >= samples.len() {
+        return Some(va);
+    }
+    let (cb, vb) = samples[hi];
+    let dt = cb.0 - ca.0;
+    if dt <= 0.0 || dt > MAX_SAMPLE_GAP {
+        return None;
+    }
+    let t = (clock.0 - ca.0) / dt;
+    Some(lerp(va, vb, t))
+}
+
+/// Interpolate an entity's position, preferring the dense world track and
+/// falling back to the sparse minimap track only where world coverage is absent
+/// (e.g. a ship spotted by radar while outside the recording player's AOI).
+pub(crate) fn interpolate_track(track: &EntityTrack, clock: GameClock) -> Option<SampledPos> {
+    if let Some(w) = interp_track(&track.world, clock, |a, b, t| a.lerp(b, t)) {
+        return Some(SampledPos::World(w));
+    }
+    if let Some(m) = interp_track(&track.minimap, clock, |a, b, t| a.lerp(b, t)) {
+        return Some(SampledPos::Minimap(m));
+    }
+    None
+}
+
+/// Seconds a shell is in flight, used to pace its tracer along origin->target.
+/// Prefer the server's authoritative time-to-impact; the muzzle-speed estimate
+/// ignores drag deceleration and lands the tracer early at long range.
+fn tracer_flight_duration(distance: f32, speed: f32, server_time_left: f32) -> f32 {
+    if server_time_left > 0.0 {
+        server_time_left
+    } else if speed > 0.0 {
+        distance / speed
+    } else {
+        3.0
+    }
+}
+
+/// Resolve a salvo's tracer flight duration from learned impact times: pick the
+/// same shooter's nearest-in-time salvo (exact match when this salvo itself
+/// hit), else fall back to `fallback` (the serverTimeLeft/muzzle estimate).
+pub(crate) fn resolve_salvo_flight(times: Option<&Vec<(GameClock, f32)>>, fired_at: GameClock, fallback: f32) -> f32 {
+    let Some(list) = times else { return fallback };
+    let mut best: Option<(f32, f32)> = None;
+    for &(fa, fl) in list {
+        let dt = (fa.0 - fired_at.0).abs();
+        if best.map(|b| dt < b.0).unwrap_or(true) {
+            best = Some((dt, fl));
+        }
+    }
+    best.map(|b| b.1).unwrap_or(fallback)
+}
 
 // Visual constants
 const SMOKE_COLOR: [u8; 3] = [200, 200, 200];
@@ -63,6 +158,91 @@ const HP_BAR_BG_ALPHA: f32 = 0.7;
 const UNDETECTED_OPACITY: f32 = 0.4;
 const TEAM0_COLOR: [u8; 3] = [76, 232, 170]; // Green
 const TEAM1_COLOR: [u8; 3] = [254, 77, 42]; // Red
+
+/// Pure availability decision from observed facts. `Active` (while running, if
+/// alive) takes precedence; otherwise `Ready` only when a charge remains AND
+/// the consumable is not mid-reload; else `Unavailable` (reloading or empty).
+fn availability_from(
+    is_dead: bool,
+    active_now: bool,
+    reloading: bool,
+    charge_remaining: bool,
+) -> ConsumableAvailability {
+    if !is_dead && active_now {
+        ConsumableAvailability::Active
+    } else if charge_remaining && !reloading {
+        ConsumableAvailability::Ready
+    } else {
+        ConsumableAvailability::Unavailable
+    }
+}
+
+fn is_heal_consumable(c: &Recognized<Consumable>) -> bool {
+    matches!(c.known(), Some(Consumable::RepairParty) | Some(Consumable::RegenerateHealth))
+}
+
+/// HP span of the heal's bright region for an entity. While a heal is running
+/// this is the restore still owed by the current activation
+/// (`rate * work_time_left`), so the bright region's far edge (`current HP +
+/// span`) holds at the activation's target HP as the ship heals up to it.
+/// With no heal running it is a full charge's worth (`rate * work_time`) as a
+/// preview. `rate = units + speed * max_health`. `None` when the ship has no
+/// heal slot or the rate params are absent.
+fn heal_bright_amount(
+    active: &HashMap<EntityId, Vec<ActiveConsumable>>,
+    inventories: &HashMap<EntityId, Vec<ConsumableInventory>>,
+    entity_id: EntityId,
+    clock: GameClock,
+    max_health: f32,
+) -> Option<f32> {
+    let slot = inventories.get(&entity_id).into_iter().flatten().find(|s| is_heal_consumable(&s.consumable))?;
+    let speed = slot.regen_hp_speed?;
+    let units = slot.regen_hp_speed_units.unwrap_or(0.0);
+    let rate = units + speed * max_health;
+    let work_left = active
+        .get(&entity_id)
+        .into_iter()
+        .flatten()
+        .filter(|a| is_heal_consumable(&a.consumable))
+        .map(|a| a.activated_at.seconds() + a.duration - clock.seconds())
+        .rfind(|t| *t > 0.0);
+    Some((rate * work_left.unwrap_or(slot.work_time)).max(0.0))
+}
+
+/// Availability of the consumable(s) matched by `matches` for an entity,
+/// estimating reload cooldown locally from the latest activation:
+/// Active during work, Unavailable during the following reload_time window,
+/// then Ready if a charge remains else Unavailable.
+///
+/// Reload is a local estimate (the server broadcasts only activation events,
+/// not a cooldown countdown); it runs long for ships that refund consumables
+/// early, until their next activation packet arrives.
+fn consumable_availability(
+    active: &HashMap<EntityId, Vec<ActiveConsumable>>,
+    inventories: &HashMap<EntityId, Vec<ConsumableInventory>>,
+    entity_id: EntityId,
+    clock: GameClock,
+    is_dead: bool,
+    matches: impl Fn(&Recognized<Consumable>) -> bool,
+) -> ConsumableAvailability {
+    // Latest matching activation (the `active` list is appended chronologically).
+    let last = active.get(&entity_id).into_iter().flatten().filter(|a| matches(&a.consumable)).last();
+    let slot = inventories.get(&entity_id).into_iter().flatten().find(|s| matches(&s.consumable));
+    let reload_time = slot.map(|s| s.reload_time).unwrap_or(0.0);
+    let charge_remaining = slot.is_some_and(|s| {
+        let r = s.charges_remaining();
+        r.is_unlimited() || r.finite().is_some_and(|n| n > 0)
+    });
+    let (active_now, reloading) = match last {
+        Some(a) => {
+            let work_end = a.activated_at.seconds() + a.duration;
+            let now = clock.seconds();
+            (now < work_end, now >= work_end && now < work_end + reload_time)
+        }
+        None => (false, false),
+    };
+    availability_from(is_dead, active_now, reloading, charge_remaining)
+}
 
 /// Per-consumable radius circle color, with friendly/enemy variants.
 fn consumable_radius_color(consumable: &Recognized<Consumable>, is_friendly: bool) -> [u8; 3] {
@@ -77,6 +257,17 @@ fn consumable_radius_color(consumable: &Recognized<Consumable>, is_friendly: boo
         (Some(Consumable::SubmarineSurveillance), false) => [160, 30, 60], // Dark crimson
         (_, true) => TEAM0_COLOR,
         (_, false) => TEAM1_COLOR,
+    }
+}
+
+/// Color for a shell ammo type. Single source of truth shared by the ship-name
+/// armament color and the shell-tracer tip so they cannot drift apart.
+fn ammo_type_color(ammo: &AmmoType) -> [u8; 3] {
+    match ammo {
+        AmmoType::AP => [140, 200, 255],
+        AmmoType::HE => [255, 180, 80],
+        AmmoType::SAP => [255, 100, 100],
+        AmmoType::Unknown(_) => [140, 200, 255],
     }
 }
 
@@ -170,6 +361,10 @@ pub struct MinimapRenderer<'a> {
     ship_ability_icons: HashMap<(EntityId, Recognized<Consumable>), String>,
     /// Per-ship consumable variants for detection radius lookup: (entity_id, Consumable) -> (ability_name, variant_name)
     ship_ability_variants: HashMap<(EntityId, Recognized<Consumable>), (String, String)>,
+    /// Detection radius per ship consumable, resolved from the ship's equipped
+    /// abilities: (entity_id, Consumable) -> radius. Fallback for when the
+    /// default-ability-slot variant lookup is unavailable (e.g. old replays).
+    ship_ability_radii: HashMap<(EntityId, Recognized<Consumable>), Meters>,
     /// Per-player clan tag: entity_id -> clan tag string
     player_clan_tags: HashMap<EntityId, String>,
     /// Per-player clan color: entity_id -> RGB color (None = use team color)
@@ -196,6 +391,37 @@ pub struct MinimapRenderer<'a> {
     self_silhouette: Option<RgbaImage>,
     /// Cached self player entity ID (populated from controller state).
     self_entity_id: Option<EntityId>,
+
+    /// Static per-entity facts scanned from all merged replay streams at
+    /// session load. Lets the roster show max HP, ship config, and inventory
+    /// for ships that haven't surfaced via the primary perspective yet.
+    /// Empty for single-replay sessions until populated.
+    vehicle_facts: HashMap<EntityId, wows_replays::analyzer::battle_controller::merged::VehicleFacts>,
+
+    /// Per-entity merged damage events from all perspectives. Lets the
+    /// roster show damage dealt by teammates against enemies that the
+    /// primary perspective never spotted. Empty until populated.
+    damage_events: HashMap<EntityId, Vec<wows_replays::analyzer::battle_controller::DamageEvent>>,
+
+    /// True when this renderer is driving a session with one or more alt
+    /// perspectives merged in. Enables the spotted outline on enemy icons,
+    /// which conveys real information only when enemy positions are visible
+    /// even before the primary spots them. In single-replay mode the enemy
+    /// icon's mere presence already implies detection, so the outline is
+    /// suppressed to avoid visual noise.
+    has_merged_perspectives: bool,
+
+    /// Continuous render clock for live playback, set per frame. When present it
+    /// drives smooth timing instead of the packet clock; None for timelapse/video
+    /// where each frame is a discrete sample.
+    render_clock: Option<GameClock>,
+
+    /// Future-aware per-entity position samples for interpolation. None falls
+    /// back to discrete packet positions.
+    position_timeline: Option<Arc<PositionTimeline>>,
+
+    /// Real per-salvo flight times learned from impacts, for tracer pacing.
+    salvo_flight_times: Option<Arc<SalvoFlightTimes>>,
 }
 
 impl<'a> MinimapRenderer<'a> {
@@ -218,6 +444,7 @@ impl<'a> MinimapRenderer<'a> {
             player_relations: HashMap::new(),
             ship_ability_icons: HashMap::new(),
             ship_ability_variants: HashMap::new(),
+            ship_ability_radii: HashMap::new(),
             player_clan_tags: HashMap::new(),
             player_clan_colors: HashMap::new(),
             resolved_entities: HashSet::new(),
@@ -229,12 +456,93 @@ impl<'a> MinimapRenderer<'a> {
             flag_icons: HashMap::new(),
             self_silhouette: None,
             self_entity_id: None,
+            vehicle_facts: HashMap::new(),
+            damage_events: HashMap::new(),
+            has_merged_perspectives: false,
+            render_clock: None,
+            position_timeline: None,
+            salvo_flight_times: None,
         }
+    }
+
+    /// Set the continuous render clock for the next frame. Live playback calls
+    /// this each frame so motion is smoothed toward real time; timelapse/video
+    /// leaves it unset and renders at the packet clock.
+    pub fn set_render_clock(&mut self, clock: GameClock) {
+        self.render_clock = Some(clock);
+    }
+
+    /// Install the shared position timeline used to smooth motion between packets.
+    pub fn set_position_timeline(&mut self, timeline: Arc<PositionTimeline>) {
+        self.position_timeline = Some(timeline);
+    }
+
+    /// Install per-salvo flight times pre-scanned from impacts, for tracer pacing.
+    pub fn set_salvo_flight_times(&mut self, times: Arc<SalvoFlightTimes>) {
+        self.salvo_flight_times = Some(times);
+    }
+
+    fn interpolated_pos(&self, entity_id: EntityId, render_clock: GameClock) -> Option<SampledPos> {
+        let track = self.position_timeline.as_ref()?.get(&entity_id)?;
+        interpolate_track(track, render_clock)
+    }
+
+    /// Resolve a ship's minimap pixel position the same way the ship icon is
+    /// drawn: interpolated when a render clock is set, else the latest discrete
+    /// world position, else the quantized minimap position.
+    fn resolve_ship_px(
+        &self,
+        entity_id: EntityId,
+        map_info: &map_data::MapInfo,
+        ship_positions: &HashMap<EntityId, &wows_battle_world::components::Transform3d>,
+        minimap_positions: &HashMap<EntityId, &wows_battle_world::components::MinimapPlacement>,
+    ) -> Option<map_data::MinimapPos> {
+        match self.render_clock.and_then(|rc| self.interpolated_pos(entity_id, rc)) {
+            Some(SampledPos::World(p)) => Some(map_info.world_to_minimap(p, MINIMAP_SIZE)),
+            Some(SampledPos::Minimap(n)) => Some(map_info.normalized_to_minimap(&n, MINIMAP_SIZE)),
+            None => {
+                if let Some(w) = ship_positions.get(&entity_id) {
+                    Some(map_info.world_to_minimap(w.pos, MINIMAP_SIZE))
+                } else {
+                    minimap_positions.get(&entity_id).map(|mm| map_info.normalized_to_minimap(&mm.pos, MINIMAP_SIZE))
+                }
+            }
+        }
+    }
+
+    /// Mark whether this renderer is driving a merged session (primary plus
+    /// one or more alt perspectives). Call before the first frame; affects
+    /// whether enemy ship icons get the spotted outline.
+    pub fn set_merged_perspectives(&mut self, has_alts: bool) {
+        self.has_merged_perspectives = has_alts;
     }
 
     /// Set the ship silhouette image for the self player's stats panel.
     pub fn set_self_silhouette(&mut self, silhouette: RgbaImage) {
         self.self_silhouette = Some(silhouette);
+    }
+
+    /// Install a pre-scanned per-entity facts cache. Driven by
+    /// `wows_replays::analyzer::battle_controller::merged::scan_vehicle_facts`
+    /// once per session. Roster emission falls back to these values when the
+    /// live `VehicleEntity` for a ship hasn't surfaced yet (common in merged
+    /// replays for ships the primary perspective never spots).
+    pub fn set_vehicle_facts(
+        &mut self,
+        facts: HashMap<EntityId, wows_replays::analyzer::battle_controller::merged::VehicleFacts>,
+    ) {
+        self.vehicle_facts = facts;
+    }
+
+    /// Install a pre-merged per-entity damage event list. Driven by
+    /// `wows_battle_world::merged::gather_damage_events`.
+    /// Used by the roster to surface damage that the primary perspective
+    /// alone couldn't observe (teammates vs unspotted enemies).
+    pub fn set_damage_events(
+        &mut self,
+        events: HashMap<EntityId, Vec<wows_replays::analyzer::battle_controller::DamageEvent>>,
+    ) {
+        self.damage_events = events;
     }
 
     /// Set the flag icons for base-type capture points.
@@ -257,6 +565,7 @@ impl<'a> MinimapRenderer<'a> {
         self.player_relations.clear();
         self.ship_ability_icons.clear();
         self.ship_ability_variants.clear();
+        self.ship_ability_radii.clear();
         self.player_clan_tags.clear();
         self.player_clan_colors.clear();
         self.resolved_entities.clear();
@@ -271,7 +580,7 @@ impl<'a> MinimapRenderer<'a> {
     /// Populate player info from controller state (once).
     ///
     /// Uses `player_entities` (populated from onArenaStateReceived packet parsing).
-    pub fn populate_players(&mut self, controller: &dyn BattleControllerState) {
+    pub fn populate_players(&mut self, controller: &BattleView<'_>) {
         if self.players_populated {
             return;
         }
@@ -290,7 +599,9 @@ impl<'a> MinimapRenderer<'a> {
             let player_name = {
                 let raw_name = player.initial_state().username();
                 if player.is_bot() && raw_name.starts_with("IDS_") {
-                    self.game_params.localized_name_from_id(raw_name).unwrap_or_else(|| raw_name.to_string())
+                    self.game_params
+                        .localized_name_from_id(&TranslationKey::new(raw_name))
+                        .unwrap_or_else(|| raw_name.to_string())
                 } else {
                     raw_name.to_string()
                 }
@@ -349,10 +660,8 @@ impl<'a> MinimapRenderer<'a> {
             for (entity_id, player) in players {
                 if player.relation().is_self() {
                     self.self_entity_id = Some(*entity_id);
-                    if let Some(entity) = controller.entities_by_id().get(entity_id)
-                        && let Some(vehicle) = entity.vehicle_ref()
-                    {
-                        self.self_team_id = Some(vehicle.borrow().props().team_id() as i64);
+                    if let Some(props) = controller.vehicle_props(*entity_id) {
+                        self.self_team_id = Some(props.team_id() as i64);
                     }
                     break;
                 }
@@ -379,20 +688,16 @@ impl<'a> MinimapRenderer<'a> {
     /// For each vehicle entity, reads `ship_config().abilities()` (equipped GameParam IDs),
     /// looks up each ability in GameParams to get its `consumable_type` and `name`,
     /// and maps `(EntityId, Consumable)` → PCY name for icon lookup.
-    pub fn update_ship_abilities(&mut self, controller: &dyn BattleControllerState) {
-        for (entity_id, entity) in controller.entities_by_id() {
-            if self.resolved_entities.contains(entity_id) {
+    pub fn update_ship_abilities(&mut self, controller: &BattleView<'_>) {
+        for (entity_id, props) in controller.vehicle_props_all() {
+            if self.resolved_entities.contains(&entity_id) {
                 continue;
             }
-            let Some(vehicle) = entity.vehicle_ref() else {
-                continue;
-            };
-            let vehicle = vehicle.borrow();
-            let abilities = vehicle.props().ship_config().abilities();
+            let abilities = props.ship_config().abilities();
             if abilities.is_empty() {
                 continue;
             }
-            self.resolved_entities.insert(*entity_id);
+            self.resolved_entities.insert(entity_id);
             for &ability_id in abilities {
                 let Some(param) = GameParamProvider::game_param_by_id(self.game_params, ability_id) else {
                     continue;
@@ -406,7 +711,13 @@ impl<'a> MinimapRenderer<'a> {
                 };
                 let consumable_type = cat.consumable_type_raw().to_string();
                 let consumable = Consumable::from_consumable_type(&consumable_type, self.version);
-                self.ship_ability_icons.insert((*entity_id, consumable), param.name().to_string());
+                // Cache the detection radius from the equipped ability so radar/hydro
+                // activation circles render even when the default-ability-slot
+                // variant lookup is unavailable.
+                if let Some(radius) = ability.categories().values().find_map(|c| c.detection_radius()) {
+                    self.ship_ability_radii.insert((entity_id, consumable.clone()), radius);
+                }
+                self.ship_ability_icons.insert((entity_id, consumable), param.name().to_string());
             }
         }
     }
@@ -427,22 +738,58 @@ impl<'a> MinimapRenderer<'a> {
     /// Returns radius in meters, or None if not a detection consumable
     /// or if the lookup fails.
     fn get_consumable_radius(&self, entity_id: EntityId, consumable: Recognized<Consumable>) -> Option<Meters> {
-        // Look up ship-specific ability variant (cached from populate_players)
-        let (ability_name, variant_name) = self.ship_ability_variants.get(&(entity_id, consumable))?;
-        let param = GameParamProvider::game_param_by_name(self.game_params, ability_name)?;
-        let ability = param.ability()?;
-        let cat = ability.get_category(variant_name)?;
-        cat.detection_radius()
+        // Preferred: the exact equipped variant cached from the ship's default
+        // ability slots (populate_players).
+        if let Some((ability_name, variant_name)) = self.ship_ability_variants.get(&(entity_id, consumable.clone()))
+            && let Some(param) = GameParamProvider::game_param_by_name(self.game_params, ability_name)
+            && let Some(ability) = param.ability()
+            && let Some(cat) = ability.get_category(variant_name)
+            && let Some(radius) = cat.detection_radius()
+        {
+            return Some(radius);
+        }
+        // Fallback: radius resolved from the ship's equipped abilities
+        // (update_ship_abilities), which is available even when the slot variant
+        // lookup above is not (e.g. old replays).
+        self.ship_ability_radii.get(&(entity_id, consumable)).copied()
+    }
+
+    /// Resolve a radar/hydro consumable's detection radius via the ship's range
+    /// data, the same source the static ship-config circles use. A final
+    /// fallback for when the per-ship ability caches carry no radius.
+    fn consumable_radius_from_ranges(
+        &self,
+        controller: &BattleView<'_>,
+        entity_id: EntityId,
+        consumable: Recognized<Consumable>,
+    ) -> Option<Meters> {
+        let consumable = consumable.into_known()?;
+        if !matches!(consumable, Consumable::Radar | Consumable::HydroacousticSearch) {
+            return None;
+        }
+        let &ship_param_id = self.ship_param_ids.get(&entity_id)?;
+        let ship_param = GameParamProvider::game_param_by_id(self.game_params, ship_param_id)?;
+        let vehicle = ship_param.vehicle()?;
+        let hull_name = controller.vehicle_props(entity_id).and_then(|props| {
+            let hull_id = props.ship_config().hull()?;
+            GameParamProvider::game_param_by_id(self.game_params, hull_id).map(|p| p.name().to_string())
+        });
+        let ranges = vehicle.resolve_ranges(Some(self.game_params), hull_name.as_deref(), self.version);
+        match consumable {
+            Consumable::Radar => ranges.radar_m,
+            Consumable::HydroacousticSearch => ranges.hydro_m,
+            _ => None,
+        }
     }
 
     /// Update squadron info for any new planes in the controller.
-    pub fn update_squadron_info(&mut self, controller: &dyn BattleControllerState) {
+    pub fn update_squadron_info(&mut self, controller: &BattleView<'_>) {
         // Clean up stale entries for removed planes so reused IDs get fresh data
         let active = controller.active_planes();
         self.squadron_info.retain(|id, _| active.contains_key(id));
 
         for (plane_id, plane) in active {
-            if self.squadron_info.contains_key(plane_id) {
+            if self.squadron_info.contains_key(&plane_id) {
                 continue;
             }
             let param = GameParamProvider::game_param_by_id(self.game_params, plane.params_id);
@@ -461,48 +808,37 @@ impl<'a> MinimapRenderer<'a> {
                 PlaneCategory::Controllable => "controllable",
             };
             let is_consumable = is_consumable && !matches!(category, PlaneCategory::Airsupport);
-            self.squadron_info.insert(*plane_id, SquadronInfo { icon_base, icon_dir, is_consumable });
+            self.squadron_info.insert(plane_id, SquadronInfo { icon_base, icon_dir, is_consumable });
         }
     }
 
-    /// Get the armament/ammo label for a ship based on its selected weapon and ammo.
     /// Get the armament color for a ship based on its selected weapon/ammo.
-    fn get_armament_color(&self, entity_id: &EntityId, controller: &dyn BattleControllerState) -> Option<[u8; 3]> {
-        const COLOR_AP: [u8; 3] = [140, 200, 255]; // light blue
-        const COLOR_HE: [u8; 3] = [255, 180, 80]; // orange
-        const COLOR_SAP: [u8; 3] = [255, 100, 100]; // pinkish red
+    fn get_armament_color(&self, entity_id: &EntityId, controller: &BattleView<'_>) -> Option<[u8; 3]> {
         const COLOR_TORP: [u8; 3] = [100, 255, 160]; // green
         const COLOR_PLANES: [u8; 3] = [200, 160, 255]; // lavender
         const COLOR_SONAR: [u8; 3] = [100, 220, 255]; // cyan
 
-        let vehicle = controller.entities_by_id().get(entity_id)?.vehicle_ref()?;
-        let vehicle = vehicle.borrow();
-        let weapon = vehicle.props().selected_weapon().known()?;
+        let props = controller.vehicle_props(*entity_id)?;
+        let weapon = props.selected_weapon().known()?;
+        let selected_ammo = controller.selected_ammo();
         match weapon {
             WeaponType::Artillery => {
-                let ammo_param_id = controller.selected_ammo().get(entity_id)?;
+                let ammo_param_id = selected_ammo.get(entity_id)?;
                 let param = GameParamProvider::game_param_by_id(self.game_params, *ammo_param_id)?;
                 let projectile = param.projectile()?;
-                let color = match projectile.ammo_type() {
-                    "AP" => COLOR_AP,
-                    "HE" => COLOR_HE,
-                    "CS" => COLOR_SAP,
-                    _ => COLOR_AP,
-                };
-                Some(color)
+                Some(ammo_type_color(&AmmoType::from_game_str(projectile.ammo_type())))
             }
             WeaponType::Torpedoes => Some(COLOR_TORP),
             WeaponType::Planes => Some(COLOR_PLANES),
             WeaponType::Pinger => Some(COLOR_SONAR),
-            WeaponType::Secondaries => Some(COLOR_HE),
+            WeaponType::Secondaries => Some(ammo_type_color(&AmmoType::HE)),
         }
     }
 
     /// Get the depth suffix for a submarine (e.g. " (Scope)", " (30m)").
-    fn get_depth_suffix(&self, entity_id: &EntityId, controller: &dyn BattleControllerState) -> Option<&'static str> {
-        let vehicle = controller.entities_by_id().get(entity_id)?.vehicle_ref()?;
-        let vehicle = vehicle.borrow();
-        match vehicle.props().buoyancy_current_state().known()? {
+    fn get_depth_suffix(&self, entity_id: &EntityId, controller: &BattleView<'_>) -> Option<&'static str> {
+        let props = controller.vehicle_props(*entity_id)?;
+        match props.buoyancy_current_state().known()? {
             BuoyancyState::Periscope => Some(" (Scope)"),
             BuoyancyState::SemiDeepWater => Some(" (30m)"),
             BuoyancyState::DeepWater => Some(" (60m)"),
@@ -520,10 +856,9 @@ impl<'a> MinimapRenderer<'a> {
         speed_raw: u16,
     ) {
         let history = self.position_history.entry(entity_id).or_default();
-        // Deduplicate: skip if same pixel as last recorded position
         if let Some(last) = history.last()
-            && last.0.x == pos.x
-            && last.0.y == pos.y
+            && (last.0.x - pos.x).abs() < 0.25
+            && (last.0.y - pos.y).abs() < 0.25
         {
             return;
         }
@@ -536,39 +871,30 @@ impl<'a> MinimapRenderer<'a> {
     /// it returns `true` will have their positions recorded.
     pub fn record_positions(
         &mut self,
-        controller: &dyn BattleControllerState,
+        controller: &BattleView<'_>,
         clock: GameClock,
         filter: impl Fn(&EntityId) -> bool,
     ) {
         let Some(map_info) = self.map_info.clone() else {
             return;
         };
-        let entities = controller.entities_by_id();
-        let ship_positions = controller.ship_positions();
+        let ship_positions = controller.positions();
         let minimap_positions = controller.minimap_positions();
-        for (entity_id, ship_pos) in ship_positions {
+        for (entity_id, transform) in &ship_positions {
             if !filter(entity_id) {
                 continue;
             }
-            let px = map_info.world_to_minimap(ship_pos.position, MINIMAP_SIZE);
-            let speed_raw = entities
-                .get(entity_id)
-                .and_then(|e| e.vehicle_ref())
-                .map(|v| v.borrow().props().server_speed_raw())
-                .unwrap_or(0);
+            let px = map_info.world_to_minimap(transform.pos, MINIMAP_SIZE);
+            let speed_raw = controller.vehicle_props(*entity_id).map(|p| p.server_speed_raw()).unwrap_or(0);
             self.record_position(*entity_id, px, clock, speed_raw);
         }
-        for (entity_id, mm) in minimap_positions {
+        for (entity_id, mm) in &minimap_positions {
             if !filter(entity_id) {
                 continue;
             }
             if !ship_positions.contains_key(entity_id) {
-                let px = map_info.normalized_to_minimap(&mm.position, MINIMAP_SIZE);
-                let speed_raw = entities
-                    .get(entity_id)
-                    .and_then(|e| e.vehicle_ref())
-                    .map(|v| v.borrow().props().server_speed_raw())
-                    .unwrap_or(0);
+                let px = map_info.normalized_to_minimap(&mm.pos, MINIMAP_SIZE);
+                let speed_raw = controller.vehicle_props(*entity_id).map(|p| p.server_speed_raw()).unwrap_or(0);
                 self.record_position(*entity_id, px, clock, speed_raw);
             }
         }
@@ -579,15 +905,13 @@ impl<'a> MinimapRenderer<'a> {
     /// The result is normalized so that team0 = friendly (replay owner's team)
     /// and team1 = enemy. When the replay owner is on internal team 1, all
     /// per-team values are swapped. See TEAM_ADVANTAGE_SCORING.md for details.
-    fn calculate_team_advantage(&self, controller: &dyn BattleControllerState) -> crate::advantage::AdvantageResult {
+    fn calculate_team_advantage(&self, controller: &BattleView<'_>) -> crate::advantage::AdvantageResult {
         use crate::advantage::ScoringParams;
         use crate::advantage::TeamState;
         use crate::advantage::calculate_advantage;
         use crate::advantage::swap_breakdown;
-        use std::cell::RefCell;
 
         let players = controller.player_entities();
-        let entities = controller.entities_by_id();
         let swap = self.self_team_id == Some(1);
 
         let mut teams = [TeamState::new(), TeamState::new()];
@@ -633,11 +957,7 @@ impl<'a> MinimapRenderer<'a> {
                 cc.total += 1;
             }
 
-            if let Some(entity) = entities.get(entity_id)
-                && let Some(vehicle) = entity.vehicle_ref()
-            {
-                let v = RefCell::borrow(vehicle);
-                let props = v.props();
+            if let Some(props) = controller.vehicle_props(*entity_id) {
                 teams[team].ships_known += 1;
                 teams[team].max_hp += props.max_health();
                 if props.is_alive() {
@@ -683,12 +1003,14 @@ impl<'a> MinimapRenderer<'a> {
     }
 
     /// Produce draw commands for the current frame from controller state.
-    pub fn draw_frame(&mut self, controller: &dyn BattleControllerState) -> Vec<DrawCommand> {
+    pub fn draw_frame(&mut self, controller: &BattleView<'_>) -> Vec<DrawCommand> {
         let Some(map_info) = self.map_info.clone() else {
             return Vec::new();
         };
 
-        let clock = controller.clock();
+        // During live playback the continuous render clock paces motion between
+        // packets; timelapse/video leaves it unset and uses the packet clock.
+        let clock = self.render_clock.unwrap_or_else(|| controller.clock());
         let mut commands = Vec::new();
 
         // 1. Score bar
@@ -931,15 +1253,54 @@ impl<'a> MinimapRenderer<'a> {
         if self.options.show_tracers {
             for shot in controller.active_shots() {
                 let owner = shot.salvo.owner_id;
-                let relation = self.player_relations.get(&owner).copied().unwrap_or(Relation::new(2));
+                // Color the salvo by its owner's actual relation. Skip rather than guess
+                // when the owner is not in the arena roster -- a wrong-colored tracer is
+                // worse than none.
+                let Some(relation) = self.player_relations.get(&owner).copied() else {
+                    continue;
+                };
                 let color = ship_color_rgb(relation, self.division_mates.contains(&owner));
+                // Resolve the salvo's projectile once (all shots share it): caliber sets
+                // the tracer length (larger guns draw longer) and ammo type tints the tip.
+                let salvo_param = GameParamProvider::game_param_by_id(self.game_params, shot.salvo.params_id);
+                let projectile = salvo_param.as_ref().and_then(|p| p.projectile());
+                let tracer_len = match projectile.and_then(|p| p.bullet_diametr()) {
+                    Some(diametr_m) => {
+                        let ratio = ((diametr_m * 1000.0) / MAX_TRACER_CALIBER_MM).clamp(MIN_TRACER_LEN_RATIO, 1.0);
+                        TRACER_LEN * ratio
+                    }
+                    // Caliber genuinely unavailable: keep the full-length tracer so the
+                    // salvo stays visible rather than shrinking to the floor.
+                    None => TRACER_LEN,
+                };
+                let tip_color = if self.options.show_armament {
+                    projectile.map(|p| ammo_type_color(&AmmoType::from_game_str(p.ammo_type())))
+                } else {
+                    None
+                };
+                // Secondary fire rides the same receiveArtilleryShots path as the main
+                // battery; the only discriminator is whether the shell is one of the
+                // owner ship's ATBA ammo. Dim those so they read as secondaries. When the
+                // owner or its ammo set cannot be resolved (unknown ship, or builds whose
+                // data predates secondary_battery_ammo) this stays false and the salvo
+                // renders as main battery, matching pre-classification behavior.
+                let is_secondary =
+                    controller.vehicle_props(owner).map(|v| v.ship_config().ship_params_id()).is_some_and(|ship_id| {
+                        wowsunpack::game_params::types::is_secondary_ammo(
+                            self.game_params,
+                            ship_id,
+                            shot.salvo.params_id,
+                        )
+                    });
                 for shot_data in &shot.salvo.shots {
                     let origin = shot_data.origin;
                     let target = shot_data.target;
                     let dx = target.x - origin.x;
                     let dz = target.z - origin.z;
                     let distance = (dx * dx + dz * dz).sqrt();
-                    let flight_duration = if shot_data.speed > 0.0 { distance / shot_data.speed } else { 3.0 };
+                    let fallback = tracer_flight_duration(distance, shot_data.speed, shot_data.server_time_left);
+                    let owner_times = self.salvo_flight_times.as_ref().and_then(|t| t.get(&owner));
+                    let flight_duration = resolve_salvo_flight(owner_times, shot.fired_at, fallback);
 
                     let elapsed = clock - shot.fired_at;
                     if elapsed < 0.0 || elapsed > flight_duration {
@@ -947,12 +1308,20 @@ impl<'a> MinimapRenderer<'a> {
                     }
                     let frac = elapsed / flight_duration;
                     let head = origin.lerp(target, frac);
-                    let tail = origin.lerp(target, (frac - TRACER_LEN).max(0.0));
-                    commands.push(DrawCommand::ShotTracer {
-                        from: map_info.world_to_minimap(tail, MINIMAP_SIZE),
-                        to: map_info.world_to_minimap(head, MINIMAP_SIZE),
-                        color,
-                    });
+                    let tail = origin.lerp(target, (frac - tracer_len).max(0.0));
+                    let head_minimap = map_info.world_to_minimap(head, MINIMAP_SIZE);
+                    let from = map_info.world_to_minimap(tail, MINIMAP_SIZE);
+                    if is_secondary {
+                        commands.push(DrawCommand::SecondaryShotTracer { from, to: head_minimap, color });
+                        if let Some(tip) = tip_color {
+                            commands.push(DrawCommand::SecondaryShotTracerTip { at: head_minimap, color: tip });
+                        }
+                    } else {
+                        commands.push(DrawCommand::ShotTracer { from, to: head_minimap, color });
+                        if let Some(tip) = tip_color {
+                            commands.push(DrawCommand::ShotTracerTip { at: head_minimap, color: tip });
+                        }
+                    }
                 }
             }
         }
@@ -969,8 +1338,13 @@ impl<'a> MinimapRenderer<'a> {
                 if world.x.abs() > half_space || world.z.abs() > half_space {
                     continue;
                 }
-                let relation = self.player_relations.get(&torp.torpedo.owner_id).copied().unwrap_or(Relation::new(2));
-                let is_div = self.division_mates.contains(&torp.torpedo.owner_id);
+                let owner = torp.torpedo.owner_id;
+                // Color by the owner's actual relation; skip rather than guess when the
+                // owner is not in the arena roster.
+                let Some(relation) = self.player_relations.get(&owner).copied() else {
+                    continue;
+                };
+                let is_div = self.division_mates.contains(&owner);
                 let color = ship_color_rgb(relation, is_div);
                 commands.push(DrawCommand::Torpedo { pos: map_info.world_to_minimap(world, MINIMAP_SIZE), color });
             }
@@ -978,19 +1352,16 @@ impl<'a> MinimapRenderer<'a> {
 
         // 4. Smoke screens
         if self.options.show_smoke {
-            for entity in controller.entities_by_id().values() {
-                if let Some(smoke_ref) = entity.smoke_screen_ref() {
-                    let smoke = smoke_ref.borrow();
-                    let px_radius = (smoke.radius.value() / map_info.space_size as f32 * MINIMAP_SIZE as f32) as i32;
-                    for point in &smoke.points {
-                        let px = map_info.world_to_minimap(*point, MINIMAP_SIZE);
-                        commands.push(DrawCommand::Smoke {
-                            pos: px,
-                            radius: px_radius.max(3),
-                            color: SMOKE_COLOR,
-                            alpha: SMOKE_ALPHA,
-                        });
-                    }
+            for smoke in controller.smoke_screens().values() {
+                let px_radius = (smoke.radius.value() / map_info.space_size as f32 * MINIMAP_SIZE as f32) as i32;
+                for point in &smoke.points {
+                    let px = map_info.world_to_minimap(*point, MINIMAP_SIZE);
+                    commands.push(DrawCommand::Smoke {
+                        pos: px,
+                        radius: px_radius.max(3),
+                        color: SMOKE_COLOR,
+                        alpha: SMOKE_ALPHA,
+                    });
                 }
             }
         }
@@ -1006,62 +1377,59 @@ impl<'a> MinimapRenderer<'a> {
 
         // 6. Buildings
         if self.options.show_buildings {
-            for entity in controller.entities_by_id().values() {
-                if let Some(building_ref) = entity.building_ref() {
-                    let building = building_ref.borrow();
-                    if building.is_hidden {
-                        continue;
-                    }
-                    let px = map_info.world_to_minimap(building.position, MINIMAP_SIZE);
-
-                    // Determine relation (ally/enemy/neutral) relative to recording player
-                    let team = building.team_id as i64;
-                    let is_ally = self.self_team_id.is_some_and(|t| t == team);
-                    let is_neutral = team < 0;
-
-                    let relation = if !building.is_alive {
-                        BuildingRelation::Dead
-                    } else if building.is_suppressed {
-                        if is_neutral {
-                            BuildingRelation::SuppressedNeutral
-                        } else if is_ally {
-                            BuildingRelation::SuppressedAlly
-                        } else {
-                            BuildingRelation::SuppressedEnemy
-                        }
-                    } else if is_neutral {
-                        BuildingRelation::Neutral
-                    } else if is_ally {
-                        BuildingRelation::Ally
-                    } else {
-                        BuildingRelation::Enemy
-                    };
-
-                    let color = if building.is_alive {
-                        cap_point_color(building.team_id as i64, self.self_team_id)
-                    } else {
-                        [40, 40, 40]
-                    };
-
-                    // Look up building species from GameParams
-                    let icon_type = GameParamProvider::game_param_by_id(self.game_params, building.params_id)
-                        .and_then(|p| p.species().cloned())
-                        .and_then(|s| s.known().cloned())
-                        .and_then(|s| species_to_building_icon_type(&s));
-
-                    commands.push(DrawCommand::Building {
-                        pos: px,
-                        color,
-                        is_alive: building.is_alive,
-                        icon_type,
-                        relation,
-                    });
+            for building in controller.buildings().values() {
+                if building.is_hidden {
+                    continue;
                 }
+                let px = map_info.world_to_minimap(building.position, MINIMAP_SIZE);
+
+                // Determine relation (ally/enemy/neutral) relative to recording player
+                let team = building.team_id.raw();
+                let is_ally = self.self_team_id.is_some_and(|t| t == team);
+                let is_neutral = team < 0;
+
+                let relation = if !building.is_alive {
+                    BuildingRelation::Dead
+                } else if building.is_suppressed {
+                    if is_neutral {
+                        BuildingRelation::SuppressedNeutral
+                    } else if is_ally {
+                        BuildingRelation::SuppressedAlly
+                    } else {
+                        BuildingRelation::SuppressedEnemy
+                    }
+                } else if is_neutral {
+                    BuildingRelation::Neutral
+                } else if is_ally {
+                    BuildingRelation::Ally
+                } else {
+                    BuildingRelation::Enemy
+                };
+
+                let color = if building.is_alive {
+                    cap_point_color(building.team_id.raw(), self.self_team_id)
+                } else {
+                    [40, 40, 40]
+                };
+
+                // Look up building species from GameParams
+                let icon_type = GameParamProvider::game_param_by_id(self.game_params, building.params_id)
+                    .and_then(|p| p.species().cloned())
+                    .and_then(|s| s.known().cloned())
+                    .and_then(|s| species_to_building_icon_type(&s));
+
+                commands.push(DrawCommand::Building {
+                    pos: px,
+                    color,
+                    is_alive: building.is_alive,
+                    icon_type,
+                    relation,
+                });
             }
         }
 
         // 6. Ships
-        let ship_positions = controller.ship_positions();
+        let ship_positions = controller.positions();
         let minimap_positions = controller.minimap_positions();
 
         // Collect all entity IDs that have either world or minimap positions
@@ -1073,12 +1441,11 @@ impl<'a> MinimapRenderer<'a> {
 
         // Lazily resolve species for non-player vehicle entities (e.g. NPC enemies
         // in Operations) by looking up ship_params_id from shipConfig in GameParams.
-        let entities = controller.entities_by_id();
         for entity_id in &all_ship_ids {
             if !self.player_species.contains_key(entity_id)
-                && let Some(vehicle_ref) = entities.get(entity_id).and_then(|e| e.vehicle_ref())
+                && let Some(props) = controller.vehicle_props(*entity_id)
             {
-                let ship_id = vehicle_ref.borrow().props().ship_config().ship_params_id();
+                let ship_id = props.ship_config().ship_params_id();
                 if ship_id.raw() != 0
                     && let Some(param) = GameParamProvider::game_param_by_id(self.game_params, ship_id)
                     && let Some(species) = param.species().and_then(|s| s.known())
@@ -1094,7 +1461,7 @@ impl<'a> MinimapRenderer<'a> {
             // (e.g. reinforcement wave bots in Operations that never entered the AOI).
             let is_known_ship = self.player_relations.contains_key(entity_id)
                 || self.player_species.contains_key(entity_id)
-                || entities.get(entity_id).and_then(|e| e.vehicle_ref()).is_some()
+                || controller.vehicle_props(*entity_id).is_some()
                 || minimap_positions.contains_key(entity_id);
             if !is_known_ship {
                 continue;
@@ -1133,50 +1500,38 @@ impl<'a> MinimapRenderer<'a> {
             // visibility_flags from the Vehicle entity: bitmask of detection
             // reasons (radar, hydro, direct vision, etc.). Non-zero means the
             // ship is confirmed detected through game mechanics.
-            let vis_flags = controller
-                .entities_by_id()
-                .get(entity_id)
-                .and_then(|e| e.vehicle_ref())
-                .map(|v| v.borrow().props().visibility_flags())
-                .unwrap_or(0);
+            let vis_flags = controller.vehicle_props(*entity_id).map(|p| p.visibility_flags()).unwrap_or(0);
 
-            // Get health and recoverable health fraction from entity
-            let (health_fraction, recoverable_fraction) =
-                controller.entities_by_id().get(entity_id).and_then(|e| e.vehicle_ref()).map(|v| {
-                    let v = v.borrow();
-                    let max = v.props().max_health();
-                    if max > 0.0 {
-                        (
-                            (v.props().health() / max).clamp(0.0, 1.0),
-                            (v.props().regeneration_health() / max).clamp(0.0, 1.0),
-                        )
-                    } else {
-                        (0.0, 0.0)
-                    }
-                }).unwrap_or((0.0, 0.0));
+            // Get health fraction from entity
+            let health_fraction = controller.vehicle_props(*entity_id).and_then(|p| {
+                let max = p.max_health();
+                if max > 0.0 { Some((p.health() / max).clamp(0.0, 1.0)) } else { None }
+            });
 
             // Compute yaw: prefer minimap heading (more accurate for icon rotation)
-            let minimap_yaw = minimap.map(|mm| std::f32::consts::FRAC_PI_2 - mm.heading.to_radians());
-            let world_yaw = world.map(|sp| sp.yaw);
+            let minimap_yaw = minimap.map(|mm| std::f32::consts::FRAC_PI_2 - mm.heading.0.to_radians());
+            let world_yaw = world.map(|t| t.yaw.0);
 
-            // A ship is "spotted" when its visibility_flags are non-zero (game mechanic)
+            // A ship is "spotted" when its visibility_flags are non-zero
+            // (detected by radar, hydro, direct vision, etc.). On friendlies
+            // and self this outlines the icon to show when the enemy can see
+            // them. On enemies the outline is only meaningful in merged
+            // sessions, where enemy icons render continuously from alt-
+            // perspective data; without that, an enemy icon's mere presence
+            // already implies detection and the outline is redundant.
             let is_spotted = vis_flags != 0;
+            let show_outline_for_relation = !relation.is_enemy() || self.has_merged_perspectives;
+            let is_detected_teammate = is_spotted && show_outline_for_relation;
 
-            // Detected teammate = spotted ally (not self)
-            let is_detected_teammate = is_spotted && !relation.is_enemy();
+            let is_disconnected = is_player_disconnected_at(controller, *entity_id, clock);
 
             if detected {
                 let yaw = minimap_yaw.or(world_yaw).unwrap_or(0.0);
                 if let Some(mm) = minimap {
-                    // Use minimap position — it's authoritative for the minimap view
-                    // and avoids stale world positions from previous detections.
-                    let px = map_info.normalized_to_minimap(&mm.position, MINIMAP_SIZE);
-                    let speed_raw = controller
-                        .entities_by_id()
-                        .get(entity_id)
-                        .and_then(|e| e.vehicle_ref())
-                        .map(|v| v.borrow().props().server_speed_raw())
-                        .unwrap_or(0);
+                    let px = self
+                        .resolve_ship_px(*entity_id, &map_info, &ship_positions, &minimap_positions)
+                        .unwrap_or_else(|| map_info.normalized_to_minimap(&mm.pos, MINIMAP_SIZE));
+                    let speed_raw = controller.vehicle_props(*entity_id).map(|p| p.server_speed_raw()).unwrap_or(0);
                     self.record_position(*entity_id, px, clock, speed_raw);
                     commands.push(DrawCommand::Ship {
                         entity_id: *entity_id,
@@ -1190,15 +1545,17 @@ impl<'a> MinimapRenderer<'a> {
                         player_name: player_name.clone(),
                         ship_name: ship_name.clone(),
                         is_detected_teammate,
+                        is_disconnected,
                         name_color,
                     });
-                    if self.options.show_hp_bars && health_fraction > 0.0 {
-                        let fill_color = hp_bar_color(health_fraction);
+                    if self.options.show_hp_bars
+                        && let Some(frac) = health_fraction
+                    {
+                        let fill_color = hp_bar_color(frac);
                         commands.push(DrawCommand::HealthBar {
                             entity_id: *entity_id,
                             pos: px,
-                            fraction: health_fraction,
-                            recoverable_fraction,
+                            fraction: frac,
                             fill_color,
                             background_color: HP_BAR_BG_COLOR,
                             background_alpha: HP_BAR_BG_ALPHA,
@@ -1209,7 +1566,7 @@ impl<'a> MinimapRenderer<'a> {
                 // Undetected — use minimap position (last known)
                 let yaw = minimap_yaw.or(world_yaw).unwrap_or(0.0);
                 let px = if let Some(mm) = minimap {
-                    map_info.normalized_to_minimap(&mm.position, MINIMAP_SIZE)
+                    map_info.normalized_to_minimap(&mm.pos, MINIMAP_SIZE)
                 } else {
                     continue;
                 };
@@ -1225,15 +1582,16 @@ impl<'a> MinimapRenderer<'a> {
                     player_name: None,
                     ship_name: None,
                     is_detected_teammate: false,
+                    is_disconnected,
                     name_color: None,
                 });
             }
         }
 
-        // 6. Turret direction indicators (from targetLocalPos EntityProperty)
-        if self.options.show_turret_direction {
+        // 6. Camera/look direction indicators (from targetLocalPos EntityProperty)
+        if self.options.show_camera_direction {
             let target_yaws = controller.target_yaws();
-            for (entity_id, &world_yaw) in target_yaws {
+            for (entity_id, &world_yaw) in &target_yaws {
                 // Skip dead ships
                 if let Some(dead) = dead_ships.get(entity_id)
                     && clock >= dead.clock
@@ -1245,10 +1603,7 @@ impl<'a> MinimapRenderer<'a> {
                 if !detected {
                     continue;
                 }
-                // Need a position for this ship
-                let px = if let Some(mm) = minimap_positions.get(entity_id) {
-                    map_info.normalized_to_minimap(&mm.position, MINIMAP_SIZE)
-                } else {
+                let Some(px) = self.resolve_ship_px(*entity_id, &map_info, &ship_positions, &minimap_positions) else {
                     continue;
                 };
                 // targetLocalPos yaw is compass bearing (0=north, CW positive).
@@ -1256,7 +1611,7 @@ impl<'a> MinimapRenderer<'a> {
                 let screen_yaw = std::f32::consts::FRAC_PI_2 - world_yaw;
                 let relation = self.player_relations.get(entity_id).copied().unwrap_or(Relation::new(2));
                 let color = ship_color_rgb(relation, self.division_mates.contains(entity_id));
-                commands.push(DrawCommand::TurretDirection {
+                commands.push(DrawCommand::CameraDirection {
                     entity_id: *entity_id,
                     pos: px,
                     yaw: screen_yaw,
@@ -1280,8 +1635,8 @@ impl<'a> MinimapRenderer<'a> {
                 // Use last known heading from minimap positions
                 let yaw = minimap_positions
                     .get(entity_id)
-                    .map(|mm| std::f32::consts::FRAC_PI_2 - mm.heading.to_radians())
-                    .or_else(|| ship_positions.get(entity_id).map(|sp| sp.yaw))
+                    .map(|mm| std::f32::consts::FRAC_PI_2 - mm.heading.0.to_radians())
+                    .or_else(|| ship_positions.get(entity_id).map(|t| t.yaw.0))
                     .unwrap_or(0.0);
                 let relation = self.player_relations.get(entity_id).copied().unwrap_or(Relation::new(2));
                 let player_name =
@@ -1303,10 +1658,11 @@ impl<'a> MinimapRenderer<'a> {
 
         // 7. Planes
         if self.options.show_planes {
+            let active_wards = controller.active_wards();
             for (plane_id, plane) in controller.active_planes() {
                 let px = map_info.world_to_minimap(plane.position.to_world_pos(), MINIMAP_SIZE);
 
-                let info = self.squadron_info.get(plane_id);
+                let info = self.squadron_info.get(&plane_id);
                 // Use player_relations to determine if the plane is enemy.
                 // PlaneId::owner_id() extracts the ship entity_id from the packed plane ID.
                 let owner_entity = plane.plane_id.owner_id();
@@ -1321,13 +1677,13 @@ impl<'a> MinimapRenderer<'a> {
                 let icon_key = format!("{}/{}_{}", icon_dir, icon_base, suffix);
 
                 // Draw patrol circle from ward data (if this plane has an active ward)
-                if let Some(ward) = controller.active_wards().get(plane_id) {
+                if let Some(ward) = active_wards.get(&plane_id) {
                     let ward_px = map_info.world_to_minimap(ward.position, MINIMAP_SIZE);
                     let space_size = map_info.space_size as f32;
                     let px_radius = (ward.radius.value() / space_size * MINIMAP_SIZE as f32) as i32;
                     let color = if is_enemy { TEAM1_COLOR } else { TEAM0_COLOR };
                     commands.push(DrawCommand::PatrolRadius {
-                        plane_id: *plane_id,
+                        plane_id,
                         pos: ward_px,
                         radius_px: px_radius,
                         color,
@@ -1349,7 +1705,7 @@ impl<'a> MinimapRenderer<'a> {
                 };
 
                 commands.push(DrawCommand::Plane {
-                    plane_id: *plane_id,
+                    plane_id,
                     owner_entity_id: owner_entity,
                     pos: px,
                     icon_key,
@@ -1362,7 +1718,7 @@ impl<'a> MinimapRenderer<'a> {
         // 8. Active consumables
         if self.options.show_consumables {
             let all_consumables = controller.active_consumables();
-            for (entity_id, consumables) in all_consumables {
+            for (entity_id, consumables) in &all_consumables {
                 // Skip dead ships
                 if let Some(dead) = dead_ships.get(entity_id)
                     && clock >= dead.clock
@@ -1375,12 +1731,10 @@ impl<'a> MinimapRenderer<'a> {
                     continue;
                 }
                 // Get ship position (prefer world position, fall back to minimap)
-                let pos = if let Some(sp) = ship_positions.get(entity_id) {
-                    Some(map_info.world_to_minimap(sp.position, MINIMAP_SIZE))
+                let pos = if let Some(t) = ship_positions.get(entity_id) {
+                    Some(map_info.world_to_minimap(t.pos, MINIMAP_SIZE))
                 } else {
-                    minimap_positions
-                        .get(entity_id)
-                        .map(|mm| map_info.normalized_to_minimap(&mm.position, MINIMAP_SIZE))
+                    minimap_positions.get(entity_id).map(|mm| map_info.normalized_to_minimap(&mm.pos, MINIMAP_SIZE))
                 };
                 let Some(pos) = pos else { continue };
 
@@ -1389,15 +1743,7 @@ impl<'a> MinimapRenderer<'a> {
 
                 // Check if this entity has an HP bar rendered
                 let has_hp_bar = self.options.show_hp_bars
-                    && controller
-                        .entities_by_id()
-                        .get(entity_id)
-                        .and_then(|e| e.vehicle_ref())
-                        .map(|v| {
-                            let v = v.borrow();
-                            v.props().max_health() > 0.0
-                        })
-                        .unwrap_or(false);
+                    && controller.vehicle_props(*entity_id).map(|p| p.max_health() > 0.0).unwrap_or(false);
 
                 let mut icon_keys = Vec::new();
                 for active in consumables {
@@ -1416,7 +1762,11 @@ impl<'a> MinimapRenderer<'a> {
                             Some(Consumable::CallFighters | Consumable::CatapultFighter)
                         ) {
                             // no detection radius for fighters
-                        } else if let Some(radius) = self.get_consumable_radius(*entity_id, active.consumable.clone()) {
+                        } else if let Some(radius) =
+                            self.get_consumable_radius(*entity_id, active.consumable.clone()).or_else(|| {
+                                self.consumable_radius_from_ranges(controller, *entity_id, active.consumable.clone())
+                            })
+                        {
                             let space_size = map_info.space_size as f32;
                             let px_radius = (radius.value() / 30.0 / space_size * MINIMAP_SIZE as f32) as i32;
                             let color = consumable_radius_color(&active.consumable, is_friendly);
@@ -1454,10 +1804,10 @@ impl<'a> MinimapRenderer<'a> {
                 }
 
                 // Get ship position
-                let pos = if let Some(ship_pos) = ship_positions.get(entity_id) {
-                    map_info.world_to_minimap(ship_pos.position, MINIMAP_SIZE)
+                let pos = if let Some(t) = ship_positions.get(entity_id) {
+                    map_info.world_to_minimap(t.pos, MINIMAP_SIZE)
                 } else if let Some(mm) = minimap_positions.get(entity_id) {
-                    map_info.normalized_to_minimap(&mm.position, MINIMAP_SIZE)
+                    map_info.normalized_to_minimap(&mm.pos, MINIMAP_SIZE)
                 } else {
                     continue;
                 };
@@ -1479,76 +1829,42 @@ impl<'a> MinimapRenderer<'a> {
                 };
                 let species = ship_param.species().and_then(|s| s.known()).cloned();
 
-                // Get vehicle entity for ship config (modernizations, skills)
-                let vehicle_entity = controller.entities_by_id().get(entity_id).and_then(|e| e.vehicle_ref());
+                // Get vehicle props for ship config (modernizations, skills)
+                let vehicle_props = controller.vehicle_props(*entity_id);
 
                 // Look up the equipped hull upgrade name from replay data
-                let hull_name = vehicle_entity.as_ref().and_then(|v| {
-                    let v = v.borrow();
-                    let hull_id = v.props().ship_config().hull();
+                let hull_name = vehicle_props.as_ref().and_then(|props| {
+                    let hull_id = props.ship_config().hull()?;
                     GameParamProvider::game_param_by_id(self.game_params, hull_id).map(|p| p.name().to_string())
                 });
 
                 // Use Vehicle::resolve_ranges to get all range data
                 let mut ranges = vehicle.resolve_ranges(Some(self.game_params), hull_name.as_deref(), self.version);
 
-                // Apply build modifiers (modernizations + captain skills)
-                if let Some(ref species) = species {
-                    let mut vis_coeff: f32 = 1.0;
-                    let mut gm_max_dist: f32 = 1.0;
-                    let mut gs_max_dist: f32 = 1.0;
-
-                    if let Some(v_ref) = &vehicle_entity {
-                        let v = v_ref.borrow();
-
-                        // Modernization modifiers
-                        for mod_id in v.props().ship_config().modernization() {
-                            let Some(mod_param) = GameParamProvider::game_param_by_id(self.game_params, *mod_id) else {
-                                continue;
-                            };
-                            let Some(modernization) = mod_param.modernization() else {
-                                continue;
-                            };
-                            for modifier in modernization.modifiers() {
-                                match modifier.name() {
-                                    "visibilityDistCoeff" => vis_coeff *= modifier.get_for_species(species),
-                                    "GMMaxDist" => gm_max_dist *= modifier.get_for_species(species),
-                                    "GSMaxDist" => gs_max_dist *= modifier.get_for_species(species),
-                                    _ => {}
-                                }
-                            }
-                        }
-
-                        // Captain skill modifiers
-                        let crew_params = v.props().crew_modifiers_compact_params();
-                        if let Some(crew_param) =
-                            GameParamProvider::game_param_by_id(self.game_params, crew_params.params_id())
-                            && let Some(crew) = crew_param.crew()
-                        {
-                            for &skill_id in crew_params.learned_skills().for_species(species) {
-                                let Some(skill) = crew.skill_by_type(skill_id as u32) else {
-                                    continue;
-                                };
-                                let Some(modifiers) = skill.modifiers() else {
-                                    continue;
-                                };
-                                for modifier in modifiers {
-                                    match modifier.name() {
-                                        "visibilityDistCoeff" => vis_coeff *= modifier.get_for_species(species),
-                                        "GMMaxDist" => gm_max_dist *= modifier.get_for_species(species),
-                                        "GSMaxDist" => gs_max_dist *= modifier.get_for_species(species),
-                                        _ => {}
-                                    }
-                                }
-                            }
-                        }
+                if let (Some(species), Some(props)) = (species, &vehicle_props) {
+                    let cfg = props.ship_config();
+                    let crew = props.crew_modifiers_compact_params();
+                    let build = ResolvedBuild::from_ids(
+                        ship_param_id,
+                        cfg.units(),
+                        cfg.modernization(),
+                        Some(crew.params_id()),
+                        crew.learned_skills().for_species(&species),
+                        cfg.exteriors(),
+                        cfg.abilities(),
+                        species,
+                        self.version,
+                        self.game_params,
+                    );
+                    if let Some(build) = build {
+                        let vis = build.modifiers.coefficient("visibilityDistCoeff");
+                        let gm = build.modifiers.coefficient("GMMaxDist");
+                        let gs = build.modifiers.coefficient("GSMaxDist");
+                        ranges.detection_km = ranges.detection_km.map(|km| km * vis);
+                        ranges.air_detection_km = ranges.air_detection_km.map(|km| km * vis);
+                        ranges.main_battery_m = ranges.main_battery_m.map(|m| m * gm);
+                        ranges.secondary_battery_m = ranges.secondary_battery_m.map(|m| m * gs);
                     }
-
-                    // Apply coefficients
-                    ranges.detection_km = ranges.detection_km.map(|km| km * vis_coeff);
-                    ranges.air_detection_km = ranges.air_detection_km.map(|km| km * vis_coeff);
-                    ranges.main_battery_m = ranges.main_battery_m.map(|m| m * gm_max_dist);
-                    ranges.secondary_battery_m = ranges.secondary_battery_m.map(|m| m * gs_max_dist);
                 }
 
                 let space_size = map_info.space_size as f32;
@@ -1672,8 +1988,8 @@ impl<'a> MinimapRenderer<'a> {
             }
         }
 
-        // 9. Kill feed (disabled when stats panel is active — activity feed replaces it)
-        if self.options.show_kill_feed && !self.options.show_stats_panel {
+        // Kill feed (replaced by stats-panel activity feed when visible)
+        if self.options.show_kill_feed && !self.options.stats_panel_visible() {
             let kills = controller.kills();
             let mut recent_kills = Vec::new();
             for kill in kills.iter().rev() {
@@ -1712,8 +2028,8 @@ impl<'a> MinimapRenderer<'a> {
             }
         }
 
-        // 9b. Chat overlay (disabled when stats panel is active — activity feed replaces it)
-        if self.options.show_chat && !self.options.show_stats_panel {
+        // Chat overlay (replaced by stats-panel activity feed when visible)
+        if self.options.show_chat && !self.options.stats_panel_visible() {
             let chat = controller.game_chat();
             let fade_duration = 5.0f32; // seconds to fade out
             let visible_duration = 30.0f32; // seconds before fading starts
@@ -1826,28 +2142,62 @@ impl<'a> MinimapRenderer<'a> {
             commands.push(DrawCommand::BattleResultOverlay { result, finish_type, color, subtitle_above: false });
         }
 
-        // 12. Stats panel (right side panel with ship HP, damage, ribbons, activity)
-        if self.options.show_stats_panel {
-            let is_compact = self.options.compact_stats || self.options.aspect_ratio_16_9;
+        // 12. Stats panel (right side panel with ship HP, damage, ribbons, activity).
+        // When team rosters are enabled they replace the self-perspective stats;
+        // this branch is skipped entirely so the panel doesn't double up.
+        if self.options.show_stats_panel && !self.options.show_team_rosters {
             let panel_x = MINIMAP_SIZE as i32;
             let panel_w = STATS_PANEL_WIDTH as i32;
+            // The score bar spans only the minimap width, not this side strip, so
+            // the panel's top is free. Start the header near the top (a small pad
+            // matching the score-bar pill inset) instead of below the HUD, which
+            // moves the block up and frees vertical room for the ribbon grid.
+            let stats_top = 4i32;
 
             // Panel background
             commands.push(DrawCommand::StatsPanel { x: panel_x, width: panel_w });
 
             // Ship silhouette + HP
-            let (hp_fraction, hp_current, hp_max, ship_param_id) = self
+            let (
+                hp_fraction,
+                hp_current,
+                hp_max,
+                hp_healable,
+                hp_healable_per_charge,
+                ship_param_id,
+                self_heal_availability,
+            ) = self
                 .self_entity_id
                 .and_then(|eid| {
-                    let entity = controller.entities_by_id().get(&eid)?;
-                    let v = entity.vehicle_ref()?;
-                    let v = v.borrow();
-                    let max = v.props().max_health();
-                    let cur = v.props().health();
+                    let props = controller.vehicle_props(eid)?;
+                    let max = props.max_health();
+                    let cur = props.health();
+                    let healable = props.regeneration_health().max(0.0).min((max - cur).max(0.0));
+                    let inventories = controller.consumable_inventories();
+                    let active = controller.active_consumables();
+                    let clock = controller.clock();
+                    let healable_per_charge = heal_bright_amount(&active, &inventories, eid, clock, max)
+                        .map(|b| healable.min(b))
+                        .unwrap_or(healable);
                     let param_id = self.ship_param_ids.get(&eid).copied();
-                    if max > 0.0 { Some(((cur / max).clamp(0.0, 1.0), cur, max, param_id)) } else { None }
+                    let is_dead = max > 0.0 && cur <= 0.0;
+                    let heal_availability =
+                        consumable_availability(&active, &inventories, eid, clock, is_dead, is_heal_consumable);
+                    if max > 0.0 {
+                        Some((
+                            (cur / max).clamp(0.0, 1.0),
+                            cur,
+                            max,
+                            healable,
+                            healable_per_charge,
+                            param_id,
+                            heal_availability,
+                        ))
+                    } else {
+                        None
+                    }
                 })
-                .unwrap_or((1.0, 0.0, 0.0, None));
+                .unwrap_or((1.0, 0.0, 0.0, 0.0, 0.0, None, ConsumableAvailability::Unavailable));
 
             let (self_player_name, self_ship_name, self_clan_tag, self_clan_color) = self
                 .self_entity_id
@@ -1861,12 +2211,8 @@ impl<'a> MinimapRenderer<'a> {
                 })
                 .unwrap_or_default();
 
-            let (silhouette_y, silhouette_h) = if self.options.aspect_ratio_16_9 {
-                (15, 210)
-            } else {
-                (HUD_HEIGHT as i32, if is_compact { 198 } else { 110 })
-            };
-
+            let silhouette_y = if self.options.aspect_ratio_16_9 { 15 } else { stats_top };
+            let silhouette_h = if self.options.aspect_ratio_16_9 { 210 } else { 110 };
             commands.push(DrawCommand::StatsSilhouette {
                 x: panel_x,
                 y: silhouette_y,
@@ -1876,6 +2222,9 @@ impl<'a> MinimapRenderer<'a> {
                 hp_fraction,
                 hp_current,
                 hp_max,
+                hp_healable,
+                hp_healable_per_charge,
+                heal_availability: self_heal_availability,
                 player_name: self_player_name,
                 clan_tag: self_clan_tag,
                 clan_color: self_clan_color,
@@ -1916,35 +2265,12 @@ impl<'a> MinimapRenderer<'a> {
             let damage_spotting: f64 = spotting_breakdowns.iter().map(|e| e.damage).sum();
             let damage_potential: f64 = potential_breakdowns.iter().map(|e| e.damage).sum();
 
-            let header_row_h = if is_compact { 40 } else { 22 };
-            let breakdown_row_h = if is_compact { 32 } else { 18 };
-            let padding_y = if is_compact { 22 } else { 12 };
-
-            // Dynamic layout: header + breakdown rows + spot/pot headers+breakdowns + padding
+            // Dynamic layout: header (22px) + breakdown rows (18px each) + spot/pot headers+breakdowns + padding
             let spot_rows = 1 + spotting_breakdowns.len() as i32;
             let pot_rows = 1 + potential_breakdowns.len() as i32;
-            let damage_section_height = header_row_h + breakdowns.len() as i32 * breakdown_row_h + (spot_rows + pot_rows) * breakdown_row_h + padding_y;
+            let damage_section_height = 22 + breakdowns.len() as i32 * 18 + (spot_rows + pot_rows) * 18 + 12;
 
-
-            let damage_y = if self.options.aspect_ratio_16_9 {
-                250
-            } else if is_compact {
-                // In compact mode, position damage section right after the silhouette
-                // with a small gap. The silhouette ends at HUD_HEIGHT + 198.
-                HUD_HEIGHT as i32 + 198 + 10
-            } else {
-                HUD_HEIGHT as i32 + 80
-            };
-
-            // In compact mode, only count headers (no sub-breakdowns) for height
-            let compact_damage_height = if is_compact {
-                // 3 header rows (DMG, SPOT, POT) at 40px each + padding
-                let header_row_h = 40;
-                let padding_y = 22;
-                3 * header_row_h + padding_y
-            } else {
-                damage_section_height
-            };
+            let damage_y = if self.options.aspect_ratio_16_9 { 250 } else { stats_top + 80 };
 
             commands.push(DrawCommand::StatsDamage {
                 x: panel_x,
@@ -1955,12 +2281,47 @@ impl<'a> MinimapRenderer<'a> {
                 spotting_breakdowns,
                 damage_potential,
                 potential_breakdowns,
-                compact: is_compact,
             });
+
+            // Ribbons: stable icon-position order, resolve localized display names
+            let self_ribbons = controller.self_ribbons();
+            let mut ribbons: Vec<RibbonCount> = self_ribbons
+                .iter()
+                .map(|(ribbon, &count)| {
+                    let translation = ribbon.translation_key().and_then(|key| {
+                        wowsunpack::game_params::translations::translate_ribbon(
+                            key,
+                            self.game_params as &dyn ResourceLoader,
+                        )
+                    });
+                    let (display_name, icon_key, is_subribbon) = match translation {
+                        Some(t) => (t.display_name, t.icon_key, t.is_subribbon),
+                        None => (ribbon_fallback_name(ribbon).to_string(), String::new(), false),
+                    };
+                    RibbonCount { ribbon: *ribbon, count, display_name, icon_key, is_subribbon }
+                })
+                .collect();
+
+            {
+                use crate::panel_math::order_ribbon_keys;
+                let mut keys: Vec<String> =
+                    ribbons.iter().filter_map(|rc| rc.ribbon.translation_key().map(str::to_string)).collect();
+                order_ribbon_keys(&mut keys);
+                let rank = |rc: &RibbonCount| {
+                    rc.ribbon.translation_key().and_then(|k| keys.iter().position(|kk| kk == k)).unwrap_or(usize::MAX)
+                };
+                ribbons.sort_by_key(|rc| rank(rc));
+            }
+            let ribbon_y = if self.options.aspect_ratio_16_9 {
+                damage_y + damage_section_height
+            } else {
+                stats_top + 80 + damage_section_height
+            };
+            let ribbon_count = ribbons.len();
+            commands.push(DrawCommand::StatsRibbons { x: panel_x, y: ribbon_y, width: panel_w, ribbons });
 
             // Activity feed: merge kills + chat sorted by game clock,
             // respecting the user's individual toggle preferences.
-            // Always included (including compact mode) to show killfeed and chat.
             let mut activity_entries: Vec<ActivityFeedEntry> = Vec::new();
             if self.options.show_kill_feed {
                 for kill in controller.kills() {
@@ -2052,10 +2413,14 @@ impl<'a> MinimapRenderer<'a> {
             // Sort merged entries by game clock
             activity_entries.sort_by(|a, b| a.clock.cmp(&b.clock));
 
+            let inner_w = panel_w - 16;
+            let per_row = (inner_w / STATS_RIBBON_CELL_W).max(1);
+            let rows = ((ribbon_count as i32) + per_row - 1) / per_row;
+            let ribbon_section_height = rows * STATS_RIBBON_ROW_H + 8;
             let feed_y = if self.options.aspect_ratio_16_9 {
                 390
             } else {
-                damage_y + compact_damage_height
+                ribbon_y + ribbon_section_height
             };
             let feed_height = (MINIMAP_SIZE as i32 + HUD_HEIGHT as i32) - feed_y;
             commands.push(DrawCommand::StatsActivityFeed {
@@ -2067,40 +2432,264 @@ impl<'a> MinimapRenderer<'a> {
             });
         }
 
-        // 13. Ribbon Pop-ups
-        if self.options.show_ribbon_popups {
-            let history = controller.ribbon_history();
-            let pop_up_duration = 3.0; // seconds
-            for record in history {
-                let age = clock.seconds() - record.clock.seconds();
-                if age >= 0.0 && age < pop_up_duration {
-                    let age_fraction = age / pop_up_duration;
-                    let display_name = record
-                        .ribbon
-                        .translation_key()
-                        .and_then(|key| {
-                            wowsunpack::game_params::translations::translate_ribbon(
-                                key,
-                                self.game_params as &dyn ResourceLoader,
-                            )
-                        })
-                        .map(|t| t.display_name)
-                        .unwrap_or_else(|| ribbon_fallback_name(&record.ribbon).to_string());
-
-                    commands.push(DrawCommand::RibbonPopUp {
-                        ribbon: record.ribbon,
-                        display_name,
-                        age_fraction,
-                    });
-                }
-            }
+        if self.options.show_team_rosters {
+            self.emit_team_rosters(controller, &mut commands);
         }
 
         commands
     }
+
+    fn emit_team_rosters(&self, controller: &BattleView<'_>, commands: &mut Vec<DrawCommand>) {
+        use crate::draw_command::ChargeCount as CmdChargeCount;
+        use crate::draw_command::RosterConsumable;
+        use crate::draw_command::RosterRow;
+        use crate::draw_command::RosterSide;
+
+        let dead = controller.dead_ships();
+        let active = controller.active_consumables();
+        let inventories = controller.consumable_inventories();
+        let clock = controller.clock();
+
+        let mut friendly: Vec<RosterRow> = Vec::new();
+        let mut enemy: Vec<RosterRow> = Vec::new();
+
+        // Iterate player metadata directly (rather than self.player_relations) so
+        // every player surfaced by onArenaStateReceived appears in the roster
+        // immediately, even before the primary perspective has spotted them.
+        // Merged replays therefore display both teams' full lineup from the
+        // start. Live HP and consumable inventory fill in once we have a
+        // VehicleEntity for the player (either from the primary's view or from
+        // the alt-perspective stream forwarded by `MergedReplays`).
+        for player in controller.player_entities().values() {
+            let entity_id = player.initial_state().entity_id();
+            let relation = player.relation();
+            let is_self = relation.is_self();
+
+            let vehicle_props = controller.vehicle_props(entity_id);
+            let cached = self.vehicle_facts.get(&entity_id);
+            // Prefer live entity HP. Fall back to the scanned EntityCreate
+            // value when the live entity isn't tracked yet (merged sessions
+            // before primary spotting) or hasn't received its first maxHealth
+            // broadcast (some ships only get it on first damage).
+            let (hp_current, hp_max, hp_healable) = if let Some(props) = vehicle_props.as_ref() {
+                let live_max = props.max_health();
+                let live_cur = props.health();
+                let healable = props.regeneration_health().max(0.0).min((live_max - live_cur).max(0.0));
+                if live_max > 0.0 {
+                    (live_cur, live_max, healable)
+                } else if let Some(f) = cached {
+                    (f.max_health, f.max_health, 0.0)
+                } else {
+                    (0.0, 0.0, 0.0)
+                }
+            } else if let Some(f) = cached {
+                (f.max_health, f.max_health, 0.0)
+            } else {
+                (0.0, 0.0, 0.0)
+            };
+            let is_dead = dead.contains_key(&entity_id) || (hp_max > 0.0 && hp_current <= 0.0);
+            let heal_availability =
+                consumable_availability(&active, &inventories, entity_id, clock, is_dead, is_heal_consumable);
+            let hp_healable_per_charge = heal_bright_amount(&active, &inventories, entity_id, clock, hp_max)
+                .map(|b| hp_healable.min(b))
+                .unwrap_or(hp_healable);
+            // Same source as the yellow ship-icon outline: visibilityFlags on
+            // the live VehicleEntity. Non-zero means the game has confirmed
+            // the ship is detected (radar, hydro, direct vision, etc.).
+            let is_spotted = vehicle_props.as_ref().map(|props| props.visibility_flags() != 0).unwrap_or(false);
+            let is_disconnected = !is_dead && is_player_disconnected_at(controller, entity_id, clock);
+
+            // Kills at the current clock: filter the global kill list by
+            // killer and clock. Damage at the current clock: sum the merged
+            // damage events for this entity that have already happened.
+            let kills = controller.kills().iter().filter(|k| k.killer == entity_id && k.clock <= clock).count() as u32;
+            let (damage_dealt, last_damage_clock): (f32, Option<f32>) = self
+                .damage_events
+                .get(&entity_id)
+                .map(|events| {
+                    let mut sum = 0.0f32;
+                    let mut last = None;
+                    for e in events.iter().take_while(|e| e.clock <= clock) {
+                        sum += e.amount;
+                        last = Some(e.clock.0);
+                    }
+                    (sum, last)
+                })
+                .unwrap_or((0.0, None));
+            let seconds_since_damage = last_damage_clock.map(|c| (clock.0 - c).max(0.0));
+
+            let player_name = self.player_names.get(&entity_id).cloned().unwrap_or_else(|| {
+                let raw = player.initial_state().username();
+                if player.is_bot() && raw.starts_with("IDS_") {
+                    self.game_params
+                        .localized_name_from_id(&TranslationKey::new(raw))
+                        .unwrap_or_else(|| raw.to_string())
+                } else {
+                    raw.to_string()
+                }
+            });
+            let clan_tag = self.player_clan_tags.get(&entity_id).cloned().or_else(|| {
+                let c = player.initial_state().clan().to_string();
+                (!c.is_empty()).then_some(c)
+            });
+            let clan_color = self.player_clan_colors.get(&entity_id).copied().flatten().or_else(|| {
+                let raw = player.initial_state().clan_color();
+                (raw != 0).then_some([((raw & 0xFF0000) >> 16) as u8, ((raw & 0xFF00) >> 8) as u8, (raw & 0xFF) as u8])
+            });
+            let ship_name = self.ship_display_names.get(&entity_id).cloned().unwrap_or_else(|| {
+                self.game_params
+                    .localized_name_from_param(player.vehicle())
+                    .unwrap_or_else(|| player.vehicle().name().to_string())
+            });
+            let ship_param_id = Some(player.vehicle().id());
+            // Ship-class icon key: the species name (e.g. "Destroyer"). The
+            // egui side uses this to look up the same icon the minimap draws
+            // beside a ship.
+            let species = player.vehicle().species().and_then(|s| s.known()).copied();
+            let class_icon_key = species.map(|s| s.name().to_string());
+
+            let consumables: Vec<RosterConsumable> = inventories
+                .get(&entity_id)
+                .map(|slots| {
+                    slots
+                        .iter()
+                        .map(|slot| {
+                            // Dead ships can't have a consumable running; stop the
+                            // countdown the instant they go down rather than letting
+                            // it tick to zero.
+                            let active_remaining_secs = if is_dead {
+                                None
+                            } else {
+                                active.get(&entity_id).and_then(|list| {
+                                    list.iter()
+                                        .filter(|a| a.consumable.known() == slot.consumable.known())
+                                        .map(|a| a.activated_at.0 + a.duration - clock.0)
+                                        .find(|remaining| *remaining > 0.0)
+                                })
+                            };
+                            let display_name = wowsunpack::game_params::translations::translate_consumable(
+                                &slot.icon_key,
+                                self.game_params,
+                            )
+                            .unwrap_or_else(|| slot.consumable_type_raw.clone());
+                            let description = wowsunpack::game_params::translations::translate_consumable_description(
+                                &slot.icon_key,
+                                self.game_params,
+                            )
+                            .unwrap_or_default();
+                            let availability =
+                                consumable_availability(&active, &inventories, entity_id, clock, is_dead, |c| {
+                                    c.known() == slot.consumable.known()
+                                });
+                            RosterConsumable {
+                                icon_key: slot.icon_key.clone(),
+                                display_name,
+                                description,
+                                total_charges: CmdChargeCount::from(slot.total_charges),
+                                charges_used: slot.charges_used,
+                                work_time_secs: slot.work_time,
+                                reload_time_secs: slot.reload_time,
+                                active_remaining_secs,
+                                availability,
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let team_id = player.initial_state().team_id();
+            let row = RosterRow {
+                entity_id,
+                team_id,
+                player_name,
+                clan_tag,
+                clan_color,
+                ship_name,
+                ship_param_id,
+                class_icon_key,
+                species,
+                hp_current,
+                hp_max,
+                hp_healable,
+                hp_healable_per_charge,
+                heal_availability,
+                is_dead,
+                is_self,
+                is_spotted,
+                is_disconnected,
+                kills,
+                damage_dealt,
+                seconds_since_damage,
+                consumables,
+            };
+
+            if relation.is_enemy() {
+                enemy.push(row);
+            } else {
+                friendly.push(row);
+            }
+        }
+
+        // Mirrors the replay inspector's default ordering: ship species first
+        // (CV/BB/CA/DD/SS via the Species enum's variant order), then ship
+        // identity, then player name. Dead ships sink to the bottom of each
+        // team but keep the same intra-group ordering.
+        let sort_key = |row: &RosterRow| {
+            (row.is_dead, row.species, row.ship_param_id.map(|id| id.raw()).unwrap_or(0), row.player_name.clone())
+        };
+        friendly.sort_by_key(sort_key);
+        enemy.sort_by_key(sort_key);
+
+        // Roster panels live in dedicated gutters, flanking the minimap.
+        // Canvas layout (when both rosters and stats panel are off): just the
+        // minimap occupies 0..MINIMAP_SIZE. With rosters on, the consumer
+        // (replay renderer / video export) widens the canvas to include
+        // TEAM_ROSTER_WIDTH on each side; the friendly roster sits at x=0 and
+        // the enemy roster at x=MINIMAP_SIZE+TEAM_ROSTER_WIDTH.
+        let roster_w = crate::TEAM_ROSTER_WIDTH as i32;
+        let roster_h = MINIMAP_SIZE as i32;
+        let roster_y = HUD_HEIGHT as i32;
+        if !friendly.is_empty() {
+            commands.push(DrawCommand::TeamRoster {
+                side: RosterSide::Friendly,
+                x: 0,
+                y: roster_y,
+                width: roster_w,
+                height: roster_h,
+                rows: friendly,
+            });
+        }
+        if !enemy.is_empty() {
+            commands.push(DrawCommand::TeamRoster {
+                side: RosterSide::Enemy,
+                x: roster_w + MINIMAP_SIZE as i32,
+                y: roster_y,
+                width: roster_w,
+                height: roster_h,
+                rows: enemy,
+            });
+        }
+    }
 }
 
 /// English fallback name for a ribbon when translation is unavailable.
+/// True if the most recent connection-change event for this player at or
+/// before `clock` is `Disconnected`. Returns false when there are no events
+/// recorded (player has been connected since arena start).
+fn is_player_disconnected_at(controller: &BattleView<'_>, entity_id: EntityId, clock: GameClock) -> bool {
+    let Some(player) = controller.player_entities().get(&entity_id) else {
+        return false;
+    };
+    let threshold = clock.to_duration();
+    let events = player.connection_change_info();
+    events
+        .iter()
+        .rev()
+        .find(|info| info.at_game_duration() <= threshold)
+        .map(|info| info.event_kind() == ConnectionChangeKind::Disconnected)
+        .unwrap_or(false)
+}
+
 fn ribbon_fallback_name(ribbon: &wowsunpack::game_types::Ribbon) -> &'static str {
     use wowsunpack::game_types::Ribbon;
     match ribbon {
@@ -2131,6 +2720,42 @@ fn ribbon_fallback_name(ribbon: &wowsunpack::game_types::Ribbon) -> &'static str
         Ribbon::SonarOneHit => "Sonar 1",
         Ribbon::SonarTwoHits => "Sonar 2",
         Ribbon::SonarNeutralized => "Sonar Neut",
+        Ribbon::MainCaliber => "Main Bty",
+        Ribbon::Bomb => "Bomb",
+        Ribbon::Suppressed => "Suppressed",
+        Ribbon::BuildingKill => "Bldg Kill",
+        Ribbon::BombOverPenetration => "Bomb Overpen",
+        Ribbon::BombNonPenetration => "Bomb Shatter",
+        Ribbon::BombRicochet => "Bomb Ric",
+        Ribbon::Rocket => "Rocket",
+        Ribbon::BombTorpedoProtectionHit => "Bomb Belt",
+        Ribbon::Drop => "Drop",
+        Ribbon::RocketRicochet => "Rocket Ric",
+        Ribbon::RocketOverPenetration => "Rocket Overpen",
+        Ribbon::WaveKillTorpedo => "Wave Kill Torp",
+        Ribbon::WaveCutWave => "Wave Cut",
+        Ribbon::WaveHitVehicle => "Wave Hit",
+        Ribbon::AcousticHitVehicleNew => "Sonar New",
+        Ribbon::AcousticHitVehicleCurr => "Sonar Curr",
+        Ribbon::AcousticHitVehicleBlock => "Sonar Block",
+        Ribbon::Acid => "Acid",
+        Ribbon::DepthChargeFullDamage => "DC Full",
+        Ribbon::DepthChargePartialDamage => "DC Partial",
+        Ribbon::Mine => "Mine",
+        Ribbon::DeminingMine => "Demine",
+        Ribbon::DeminingMinefield => "Demine Field",
+        Ribbon::TorpedoPhotonHit => "Photon Torp",
+        Ribbon::TorpedoPhotonSplash => "Photon Splash",
+        Ribbon::AimPulseTorpedoPhoton => "Photon Pulse",
+        Ribbon::PhaserLaser => "Phaser",
+        Ribbon::ShieldHit => "Shield Hit",
+        Ribbon::ShieldRemoved => "Shield Down",
+        Ribbon::Assist => "Assist",
+        Ribbon::Missile => "Missile",
+        Ribbon::ShotDownMissile => "Missile Kill",
+        Ribbon::Wave => "Wave",
+        Ribbon::TorpedoPhoton => "Photon",
+        Ribbon::Shield => "Shield",
         Ribbon::Unknown(_) => "???",
     }
 }
@@ -2238,7 +2863,7 @@ fn species_key(species: &Recognized<Species>) -> Option<String> {
 fn torpedo_position(torp: &TorpedoData, elapsed: f32) -> WorldPos {
     let maneuver = match torp.maneuver_dump {
         Some(ref m) => m,
-        None => return torp.origin + torp.direction * elapsed,
+        None => return WorldPos(*torp.origin + *torp.direction * elapsed),
     };
 
     let speed = (torp.direction.x * torp.direction.x + torp.direction.z * torp.direction.z).sqrt();
@@ -2250,7 +2875,7 @@ fn torpedo_position(torp: &TorpedoData, elapsed: f32) -> WorldPos {
     let yaw_delta = maneuver.target_yaw - initial_yaw;
     if yaw_delta.abs() < 1e-6 || maneuver.yaw_speed.abs() < 1e-6 {
         // No actual turn needed
-        return torp.origin + torp.direction * elapsed;
+        return WorldPos(*torp.origin + *torp.direction * elapsed);
     }
 
     let sign: f32 = if yaw_delta > 0.0 { 1.0 } else { -1.0 };
@@ -2263,25 +2888,25 @@ fn torpedo_position(torp: &TorpedoData, elapsed: f32) -> WorldPos {
         // z(t) = oz + (speed/w) * ( sin(initial_yaw + w*t) - sin(initial_yaw))
         let ratio = speed / w;
         let yaw_t = initial_yaw + w * elapsed;
-        WorldPos {
-            x: torp.origin.x + ratio * (-yaw_t.cos() + initial_yaw.cos()),
-            y: torp.origin.y,
-            z: torp.origin.z + ratio * (yaw_t.sin() - initial_yaw.sin()),
-        }
+        WorldPos::new(
+            torp.origin.x + ratio * (-yaw_t.cos() + initial_yaw.cos()),
+            torp.origin.y,
+            torp.origin.z + ratio * (yaw_t.sin() - initial_yaw.sin()),
+        )
     } else {
         // After the turn: compute turn endpoint, then extrapolate straight
         let ratio = speed / w;
-        let turn_end = WorldPos {
-            x: torp.origin.x + ratio * (-maneuver.target_yaw.cos() + initial_yaw.cos()),
-            y: torp.origin.y,
-            z: torp.origin.z + ratio * (maneuver.target_yaw.sin() - initial_yaw.sin()),
-        };
+        let turn_end = WorldPos::new(
+            torp.origin.x + ratio * (-maneuver.target_yaw.cos() + initial_yaw.cos()),
+            torp.origin.y,
+            torp.origin.z + ratio * (maneuver.target_yaw.sin() - initial_yaw.sin()),
+        );
         let straight_t = elapsed - turn_dur;
-        WorldPos {
-            x: turn_end.x + speed * maneuver.target_yaw.sin() * straight_t,
-            y: turn_end.y,
-            z: turn_end.z + speed * maneuver.target_yaw.cos() * straight_t,
-        }
+        WorldPos::new(
+            turn_end.x + speed * maneuver.target_yaw.sin() * straight_t,
+            turn_end.y,
+            turn_end.z + speed * maneuver.target_yaw.cos() * straight_t,
+        )
     }
 }
 
@@ -2364,4 +2989,148 @@ fn consumable_to_base_icon_key(c: Consumable) -> Option<String> {
         _ => return None,
     };
     Some(key.to_string())
+}
+
+#[cfg(test)]
+mod test {
+    use super::SampledPos;
+    use super::interpolate_track;
+    use super::resolve_salvo_flight;
+    use super::tracer_flight_duration;
+    use wows_battle_world::EntityTrack;
+    use wows_replays::types::GameClock;
+    use wows_replays::types::NormalizedPos;
+    use wows_replays::types::WorldPos;
+
+    #[test]
+    fn salvo_flight_prefers_learned_impact_over_fallback() {
+        let list = vec![(GameClock(10.0), 5.0), (GameClock(20.0), 8.0)];
+        assert!((resolve_salvo_flight(Some(&list), GameClock(10.0), 99.0) - 5.0).abs() < 1e-4);
+        assert!((resolve_salvo_flight(Some(&list), GameClock(18.0), 99.0) - 8.0).abs() < 1e-4);
+        assert!((resolve_salvo_flight(None, GameClock(5.0), 99.0) - 99.0).abs() < 1e-4);
+        let empty: Vec<(GameClock, f32)> = Vec::new();
+        assert!((resolve_salvo_flight(Some(&empty), GameClock(5.0), 99.0) - 99.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn flight_duration_prefers_server_time() {
+        // Server time-to-impact wins over the muzzle-speed estimate.
+        assert_eq!(tracer_flight_duration(3000.0, 1000.0, 5.0), 5.0);
+        // No server time: fall back to distance / speed.
+        assert_eq!(tracer_flight_duration(3000.0, 1000.0, 0.0), 3.0);
+        // Neither available: fixed fallback so the tracer is still drawn.
+        assert_eq!(tracer_flight_duration(3000.0, 0.0, 0.0), 3.0);
+    }
+
+    fn world_only(samples: &[(f32, f32)]) -> EntityTrack {
+        EntityTrack {
+            world: samples.iter().map(|&(c, x)| (GameClock(c), WorldPos::new(x, 0.0, 0.0))).collect(),
+            minimap: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn interp_world_midpoint() {
+        let t = world_only(&[(0.0, 0.0), (1.0, 10.0)]);
+        match interpolate_track(&t, GameClock(0.5)) {
+            Some(SampledPos::World(p)) => assert!((p.x - 5.0).abs() < 1e-4),
+            other => panic!("expected world lerp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn interp_out_of_range_is_none() {
+        let t = world_only(&[(1.0, 0.0), (2.0, 10.0)]);
+        assert!(interpolate_track(&t, GameClock(0.5)).is_none());
+        assert!(interpolate_track(&t, GameClock(3.0)).is_none());
+    }
+
+    #[test]
+    fn interp_prefers_world_when_both_cover_clock() {
+        // Interleaved in-AOI case: world and minimap both cover the clock; the
+        // dense world track must win so motion stays smooth (not snapped).
+        let t = EntityTrack {
+            world: vec![
+                (GameClock(0.0), WorldPos::new(0.0, 0.0, 0.0)),
+                (GameClock(1.0), WorldPos::new(10.0, 0.0, 0.0)),
+            ],
+            minimap: vec![
+                (GameClock(0.0), NormalizedPos::new(0.0, 0.0)),
+                (GameClock(1.0), NormalizedPos::new(0.5, 0.5)),
+            ],
+        };
+        match interpolate_track(&t, GameClock(0.5)) {
+            Some(SampledPos::World(p)) => assert!((p.x - 5.0).abs() < 1e-4),
+            other => panic!("expected world lerp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn interp_falls_back_to_minimap_across_world_gap() {
+        // World samples straddle a spotting break (>MAX_SAMPLE_GAP apart); the
+        // minimap track covers the gap (radar) and must be used.
+        let t = EntityTrack {
+            world: vec![
+                (GameClock(0.0), WorldPos::new(0.0, 0.0, 0.0)),
+                (GameClock(10.0), WorldPos::new(100.0, 0.0, 0.0)),
+            ],
+            minimap: vec![
+                (GameClock(4.0), NormalizedPos::new(0.4, 0.4)),
+                (GameClock(6.0), NormalizedPos::new(0.6, 0.6)),
+            ],
+        };
+        match interpolate_track(&t, GameClock(5.0)) {
+            Some(SampledPos::Minimap(n)) => assert!((n.x - 0.5).abs() < 1e-4),
+            other => panic!("expected minimap fallback, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod ammo_color_tests {
+    use super::ammo_type_color;
+    use wowsunpack::game_params::types::AmmoType;
+
+    #[test]
+    fn ammo_colors_match_known_values() {
+        assert_eq!(ammo_type_color(&AmmoType::AP), [140, 200, 255]);
+        assert_eq!(ammo_type_color(&AmmoType::HE), [255, 180, 80]);
+        assert_eq!(ammo_type_color(&AmmoType::SAP), [255, 100, 100]);
+        assert_eq!(ammo_type_color(&AmmoType::Unknown("x".into())), [140, 200, 255]);
+    }
+}
+
+#[cfg(test)]
+mod availability_tests {
+    use super::availability_from;
+    use crate::draw_command::ConsumableAvailability;
+
+    #[test]
+    fn active_takes_precedence_over_ready() {
+        assert_eq!(availability_from(false, true, false, true), ConsumableAvailability::Active);
+    }
+    #[test]
+    fn dead_ship_is_never_active() {
+        assert_eq!(availability_from(true, true, false, true), ConsumableAvailability::Ready);
+    }
+    #[test]
+    fn reloading_with_charges_is_unavailable() {
+        assert_eq!(availability_from(false, false, true, true), ConsumableAvailability::Unavailable);
+    }
+    #[test]
+    fn reloading_last_charge_is_unavailable() {
+        assert_eq!(availability_from(false, false, true, false), ConsumableAvailability::Unavailable);
+    }
+    #[test]
+    fn ready_when_charge_remains_and_not_active_or_reloading() {
+        assert_eq!(availability_from(false, false, false, true), ConsumableAvailability::Ready);
+    }
+    #[test]
+    fn unavailable_when_empty() {
+        assert_eq!(availability_from(false, false, false, false), ConsumableAvailability::Unavailable);
+    }
+    #[test]
+    fn active_wins_even_if_reloading_flag_set() {
+        assert_eq!(availability_from(false, true, true, true), ConsumableAvailability::Active);
+    }
 }

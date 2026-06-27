@@ -4,6 +4,7 @@ use thiserror::Error;
 pub enum GameDataError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    #[cfg(feature = "vfs")]
     #[error(transparent)]
     Vfs(#[from] vfs::VfsError),
     #[error("Unexpected GameParams data type")]
@@ -14,6 +15,8 @@ pub enum GameDataError {
     FileTree(#[from] crate::data::idx::IdxError),
     #[error("Build {build} not found in game directory")]
     BuildNotFound { build: u32 },
+    #[error("replay version carries no build number")]
+    BuildUnknown,
     #[error("res_packages directory not found")]
     ResPackagesNotFound,
     #[cfg(feature = "json")]
@@ -21,5 +24,5 @@ pub enum GameDataError {
     SerdeJson(#[from] serde_json::Error),
     #[cfg(feature = "cbor")]
     #[error(transparent)]
-    SerdeCbor(#[from] serde_cbor::Error),
+    Cbor(#[from] ciborium::ser::Error<std::io::Error>),
 }

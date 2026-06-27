@@ -22,8 +22,11 @@ use tiny_skia::Transform;
 
 use std::sync::Arc;
 
-use crate::STATS_PANEL_WIDTH;
+use crate::{STATS_PANEL_WIDTH, STATS_PANEL_WIDTH_16_9};
 use crate::assets::GameFonts;
+
+use crate::SHIP_ICON_OUTLINE_THICKNESS;
+
 use crate::draw_command::ActivityFeedKind;
 use crate::draw_command::ChatEntry;
 use crate::draw_command::DrawCommand;
@@ -276,41 +279,6 @@ fn draw_rounded_rect(pm: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, radius: f3
     pm.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
 }
 
-fn draw_rounded_rect_outline(
-    pm: &mut Pixmap,
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-    radius: f32,
-    color: [u8; 3],
-    alpha: f32,
-    thickness: f32,
-) {
-    if w <= 0.0 || h <= 0.0 {
-        return;
-    }
-    let r = radius.min(w / 2.0).min(h / 2.0);
-    let mut pb = PathBuilder::new();
-    pb.move_to(x + r, y);
-    pb.line_to(x + w - r, y);
-    pb.quad_to(x + w, y, x + w, y + r);
-    pb.line_to(x + w, y + h - r);
-    pb.quad_to(x + w, y + h, x + w - r, y + h);
-    pb.line_to(x + r, y + h);
-    pb.quad_to(x, y + h, x, y + h - r);
-    pb.line_to(x, y + r);
-    pb.quad_to(x, y, x + r, y);
-    pb.close();
-    let Some(path) = pb.finish() else {
-        return;
-    };
-    let paint = color_paint(color, alpha);
-    let mut stroke = Stroke::default();
-    stroke.width = thickness;
-    pm.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
-}
-
 // ── Composite drawing functions ────────────────────────────────────────────
 
 /// Draw a capture point zone: filled circle + progress pie + outline + label.
@@ -375,7 +343,7 @@ fn draw_capture_point(
 
     // Centered label: icon for base-type, text for domination
     if let Some(icon) = flag_icon {
-        draw_icon(pm, icon, x as i32, y as i32);
+        draw_icon(pm, icon, x, y);
     } else {
         let scale = fonts.scale(16.0);
         let (tw, th) = text_size(scale, &fonts.primary, label);
@@ -385,33 +353,44 @@ fn draw_capture_point(
     }
 }
 
-/// Draw player name and/or ship name labels centered below a ship icon.
+/// Draw player name and/or ship name labels centered above a ship icon.
 fn draw_ship_labels(
     pm: &mut Pixmap,
-    x: i32,
-    y: i32,
-    _player_name: Option<&str>,
+    x: f32,
+    y: f32,
+    player_name: Option<&str>,
     ship_name: Option<&str>,
     name_color: Option<[u8; 3]>,
     fonts: &GameFonts,
     scale_factor: f32,
 ) {
-    let base_font_size = 12.0 * scale_factor;
-    let line_count = ship_name.is_some() as i32;
+    let line_height = (12.0 * scale_factor).round() as i32;
+    let line_count = player_name.is_some() as i32 + ship_name.is_some() as i32;
     if line_count == 0 {
         return;
     }
 
     // Apply armament color to ship_name if shown, otherwise player_name
-    let _color_on_ship = ship_name.is_some();
+    let color_on_ship = ship_name.is_some();
 
-    // Position lines below the icon and health bar (icon radius ~12px * scale_factor + health bar space)
+    let x = x.round() as i32;
+    let y = y.round() as i32;
+
+    // Position lines below the icon and health bar
     let icon_offset = (28.0 * scale_factor).round() as i32;
     let base_y = y + icon_offset;
-    let cur_y = base_y;
+    let mut cur_y = base_y;
 
+    if let Some(name) = player_name {
+        let (font, scale) = fonts.font_and_scale(name, 10.0 * scale_factor);
+        let color = if !color_on_ship { name_color.unwrap_or([255, 255, 255]) } else { [255, 255, 255] };
+        let (w, _) = text_size(scale, font, name);
+        let tx = x - w as i32 / 2;
+        draw_text_shadow(pm, color, tx, cur_y, scale, font, name);
+        cur_y += line_height;
+    }
     if let Some(name) = ship_name {
-        let (font, scale) = fonts.font_and_scale(name, base_font_size);
+        let (font, scale) = fonts.font_and_scale(name, 12.0 * scale_factor);
         let color = name_color.unwrap_or([255, 255, 255]);
         let (w, _) = text_size(scale, font, name);
         let tx = x - w as i32 / 2;
@@ -422,10 +401,9 @@ fn draw_ship_labels(
 /// Draw a health bar below a ship icon.
 fn draw_health_bar(
     pm: &mut Pixmap,
-    x: i32,
-    y: i32,
+    x: f32,
+    y: f32,
     fraction: f32,
-    recoverable_fraction: f32,
     fill_color: [u8; 3],
     bg_color: [u8; 3],
     bg_alpha: f32,
@@ -433,24 +411,16 @@ fn draw_health_bar(
 ) {
     let bar_w = 20.0f32 * scale_factor;
     let bar_h = 3.0f32 * scale_factor;
-    let bar_x = x as f32 - bar_w / 2.0;
-    let bar_y = y as f32 + 16.0 * scale_factor;
+    let bar_x = x - bar_w / 2.0;
+    let bar_y = y + 16.0 * scale_factor;
 
     let fill_w = (fraction.clamp(0.0, 1.0) * bar_w).round();
-    let recoverable_w = (recoverable_fraction.clamp(0.0, 1.0) * bar_w).round();
 
-    // Background portion (lost HP)
-    let lost_w = (bar_w - fill_w - recoverable_w).max(0.0);
-    if lost_w > 0.0 {
-        draw_filled_rect(pm, bar_x + fill_w + recoverable_w, bar_y, lost_w, bar_h, bg_color, bg_alpha);
+    // Background portion
+    if fill_w < bar_w {
+        draw_filled_rect(pm, bar_x + fill_w, bar_y, bar_w - fill_w, bar_h, bg_color, bg_alpha);
     }
-
-    // Recoverable portion (gray bar)
-    if recoverable_w > 0.0 {
-        draw_filled_rect(pm, bar_x + fill_w, bar_y, recoverable_w, bar_h, [120, 120, 120], 1.0);
-    }
-
-    // Filled portion (current HP)
+    // Filled portion
     if fill_w > 0.0 {
         draw_filled_rect(pm, bar_x, bar_y, fill_w, bar_h, fill_color, 1.0);
     }
@@ -458,12 +428,22 @@ fn draw_health_bar(
 
 /// Draw a ship icon rotated by yaw, with optional team-color tinting.
 ///
-/// Uses tiny-skia's bilinear-filtered transform compositing for smooth rotation.
-fn draw_ship_icon(pm: &mut Pixmap, icon: &RgbaImage, x: i32, y: i32, yaw: f32, color: Option<[u8; 3]>, opacity: f32, scale_factor: f32) {
+/// Uses tiny-skia's bilinear-filtered transform compositing for smooth rotation
+/// and sub-pixel placement.
+fn draw_ship_icon(
+    pm: &mut Pixmap,
+    icon: &RgbaImage,
+    x: f32,
+    y: f32,
+    yaw: f32,
+    color: Option<[u8; 3]>,
+    opacity: f32,
+    scale_factor: f32,
+) {
     let iw = icon.width();
     let ih = icon.height();
-    let cx = iw as f32 / 2.0;
-    let cy = ih as f32 / 2.0;
+    let cx = (iw as f32 * scale_factor) / 2.0;
+    let cy = (ih as f32 * scale_factor) / 2.0;
 
     // Create a tinted copy of the icon as a Pixmap
     let mut icon_pm = Pixmap::new(iw, ih).expect("failed to create icon pixmap");
@@ -496,56 +476,76 @@ fn draw_ship_icon(pm: &mut Pixmap, icon: &RgbaImage, x: i32, y: i32, yaw: f32, c
     // Screen rotation: R = PI/2 - yaw, converted to degrees for tiny-skia.
     let angle_deg = (std::f32::consts::FRAC_PI_2 - yaw).to_degrees();
 
-    // Build transform: scale and translate icon center to destination, then rotate
-    let transform = Transform::from_translate(-cx, -cy)
-        .post_scale(scale_factor, scale_factor)
-        .post_translate(x as f32, y as f32)
-        .post_rotate_at(angle_deg, x as f32, y as f32);
+    // Build transform: translate icon center to destination, then rotate, then scale
+    let tx = x - cx;
+    let ty = y - cy;
+    let transform = Transform::from_scale(scale_factor, scale_factor)
+        .post_translate(tx, ty)
+        .post_rotate_at(angle_deg, x, y);
 
     let paint = PixmapPaint { opacity, blend_mode: BlendMode::SourceOver, quality: FilterQuality::Bilinear };
 
     pm.draw_pixmap(0, 0, icon_pm.as_ref(), &paint, transform, None);
 }
 
-/// Draw an outline around a ship icon's shape.
-///
-/// Draws the icon at slightly larger scale with outline color, then the normal icon on top.
-fn draw_ship_icon_outline(
-    pm: &mut Pixmap,
-    icon: &RgbaImage,
-    x: i32,
-    y: i32,
-    yaw: f32,
-    outline_color: [u8; 3],
-    outline_opacity: f32,
-    thickness: i32,
-    scale_factor: f32,
-) {
-    // Draw outline by rendering the icon shifted in 8 directions
-    let offsets: &[(i32, i32)] = &[
-        (-thickness, 0),
-        (thickness, 0),
-        (0, -thickness),
-        (0, thickness),
-        (-thickness, -thickness),
-        (thickness, -thickness),
-        (-thickness, thickness),
-        (thickness, thickness),
-    ];
-    for (dx, dy) in offsets {
-        draw_ship_icon(pm, icon, x + dx, y + dy, yaw, Some(outline_color), outline_opacity, scale_factor);
+/// Build a padded outline image for a ship icon: the icon's silhouette dilated
+/// by `thickness` pixels, colored gold, on a canvas large enough to hold the
+/// extension beyond the original icon bounds. The original icon area itself is
+/// left transparent so it composites cleanly under the real icon.
+fn make_ship_icon_outline(icon: &RgbaImage, thickness: u32, color: [u8; 3], alpha: u8) -> RgbaImage {
+    let t = thickness;
+    let iw = icon.width();
+    let ih = icon.height();
+    let ow = iw + 2 * t;
+    let oh = ih + 2 * t;
+    let mut out = RgbaImage::from_pixel(ow, oh, image::Rgba([0, 0, 0, 0]));
+
+    let alpha_at = |x: i32, y: i32| -> u8 {
+        let ix = x - t as i32;
+        let iy = y - t as i32;
+        if ix < 0 || iy < 0 || ix >= iw as i32 || iy >= ih as i32 {
+            0
+        } else {
+            icon.get_pixel(ix as u32, iy as u32).0[3]
+        }
+    };
+
+    let t_i = t as i32;
+    let t_sq = t_i * t_i;
+    for y in 0..oh as i32 {
+        for x in 0..ow as i32 {
+            if alpha_at(x, y) > 128 {
+                continue;
+            }
+            let mut hit = false;
+            'scan: for dy in -t_i..=t_i {
+                for dx in -t_i..=t_i {
+                    if dx * dx + dy * dy > t_sq {
+                        continue;
+                    }
+                    if alpha_at(x + dx, y + dy) > 128 {
+                        hit = true;
+                        break 'scan;
+                    }
+                }
+            }
+            if hit {
+                out.put_pixel(x as u32, y as u32, image::Rgba([color[0], color[1], color[2], alpha]));
+            }
+        }
     }
+    out
 }
 
 /// Draw a plane/consumable icon (pre-colored RGBA, no rotation).
-fn draw_icon(pm: &mut Pixmap, icon: &RgbaImage, x: i32, y: i32) {
+fn draw_icon(pm: &mut Pixmap, icon: &RgbaImage, x: f32, y: f32) {
     let iw = icon.width();
     let ih = icon.height();
     let icon_pm = rgba_to_pixmap(icon);
-    let tx = x - iw as i32 / 2;
-    let ty = y - ih as i32 / 2;
+    let tx = x - iw as f32 / 2.0;
+    let ty = y - ih as f32 / 2.0;
     let paint = PixmapPaint { opacity: 1.0, blend_mode: BlendMode::SourceOver, quality: FilterQuality::Bilinear };
-    pm.draw_pixmap(tx, ty, icon_pm.as_ref(), &paint, Transform::identity(), None);
+    pm.draw_pixmap(0, 0, icon_pm.as_ref(), &paint, Transform::from_translate(tx, ty), None);
 }
 
 /// Draw the team score bar at the top of the frame.
@@ -568,26 +568,26 @@ fn draw_score_bar(
     map_width: u32,
 ) {
     let width = map_width as f32;
-    let bar_height = 48.0;
+    let bar_height = crate::HUD_HEIGHT as f32;
     let max_score = max_score as f32;
     let half = width / 2.0;
     let center_gap = 2.0f32; // small gap between the two bars
 
     // Dark background for the entire bar area
-    draw_filled_rect(pm, 0.0, 0.0, width, bar_height, [30, 30, 30], 0.2);
+    draw_filled_rect(pm, 0.0, 0.0, width, bar_height, [30, 30, 30], 0.8);
 
     // Team 0 progress: grows from left edge toward center
     let t0_frac = (team0_score as f32 / max_score).clamp(0.0, 1.0);
     let t0_width = t0_frac * (half - center_gap);
     if t0_width > 0.0 {
-        draw_filled_rect(pm, 0.0, 0.0, t0_width, bar_height, team0_color, 0.45);
+        draw_filled_rect(pm, 0.0, 0.0, t0_width, bar_height, team0_color, 1.0);
     }
 
     // Team 1 progress: grows from right edge toward center
     let t1_frac = (team1_score as f32 / max_score).clamp(0.0, 1.0);
     let t1_width = t1_frac * (half - center_gap);
     if t1_width > 0.0 {
-        draw_filled_rect(pm, width - t1_width, 0.0, t1_width, bar_height, team1_color, 0.45);
+        draw_filled_rect(pm, width - t1_width, 0.0, t1_width, bar_height, team1_color, 1.0);
     }
 
     let font = &fonts.primary;
@@ -599,9 +599,9 @@ fn draw_score_bar(
     let pill_color: [u8; 3] = [0, 0, 0];
     let pill_alpha = 0.55f32;
 
-    let score_scale = fonts.scale(21.0);
-    let timer_scale = fonts.scale(18.0);
-    let advantage_scale = fonts.scale(16.0);
+    let score_scale = fonts.scale(14.0);
+    let timer_scale = fonts.scale(12.0);
+    let advantage_scale = fonts.scale(11.0);
 
     let t0 = format!("{}", team0_score);
     let t1 = format!("{}", team1_score);
@@ -701,8 +701,8 @@ fn draw_score_bar(
 fn draw_timer(pm: &mut Pixmap, time_remaining: Option<i64>, elapsed: ElapsedClock, fonts: &GameFonts, map_width: u32) {
     let font = &fonts.primary;
     let center_x = map_width as i32 / 2;
-    let main_scale = fonts.scale(24.0);
-    let small_scale = fonts.scale(16.0);
+    let main_scale = fonts.scale(16.0);
+    let small_scale = fonts.scale(11.0);
 
     if let Some(remaining) = time_remaining {
         // Show time remaining as main timer (centered)
@@ -711,7 +711,7 @@ fn draw_timer(pm: &mut Pixmap, time_remaining: Option<i64>, elapsed: ElapsedCloc
         let remaining_text = format!("{:02}:{:02}", r_mins, r_secs);
         let (rw, _) = text_size(main_scale, font, &remaining_text);
         let rx = center_x - rw as i32 / 2;
-        draw_text_shadow(pm, [255, 255, 255], rx, 4, main_scale, font, &remaining_text);
+        draw_text_shadow(pm, [255, 255, 255], rx, 2, main_scale, font, &remaining_text);
 
         // Show elapsed as smaller text below
         let e_mins = (elapsed.seconds() as i32) / 60;
@@ -719,7 +719,7 @@ fn draw_timer(pm: &mut Pixmap, time_remaining: Option<i64>, elapsed: ElapsedCloc
         let elapsed_text = format!("+{:02}:{:02}", e_mins, e_secs);
         let (ew, _) = text_size(small_scale, font, &elapsed_text);
         let ex = center_x - ew as i32 / 2;
-        draw_text_shadow(pm, [180, 180, 180], ex, 28, small_scale, font, &elapsed_text);
+        draw_text_shadow(pm, [180, 180, 180], ex, 18, small_scale, font, &elapsed_text);
     } else {
         // Fallback: just show elapsed time centered (no timeLeft data yet)
         let mins = (elapsed.seconds() as i32) / 60;
@@ -727,7 +727,7 @@ fn draw_timer(pm: &mut Pixmap, time_remaining: Option<i64>, elapsed: ElapsedCloc
         let text = format!("{:02}:{:02}", mins, secs);
         let (w, _) = text_size(main_scale, font, &text);
         let x = center_x - w as i32 / 2;
-        draw_text_shadow(pm, [255, 255, 255], x, 12, main_scale, font, &text);
+        draw_text_shadow(pm, [255, 255, 255], x, 2, main_scale, font, &text);
     }
 }
 
@@ -779,7 +779,7 @@ fn draw_kill_feed(
     fonts: &GameFonts,
     ship_icons: &HashMap<String, ShipIcon>,
     death_cause_icons: &HashMap<String, RgbaImage>,
-    map_width: u32,
+    right_edge: u32,
 ) {
     let default_font = &fonts.primary;
     let default_name_scale = fonts.scale(12.0);
@@ -788,13 +788,16 @@ fn draw_kill_feed(
     let icon_size = crate::assets::ICON_SIZE as i32;
     let cause_icon_size = icon_size;
     let gap = 2i32; // gap between elements
-    let width = map_width as i32;
+    // `right_edge` is the canvas x at which entries align flush right.
+    // Callers pass the minimap's right edge so the feed stays inside the map
+    // area when team rosters reserve a right-side gutter.
+    let width = right_edge as i32;
 
     let (_, text_h) = text_size(default_name_scale, default_font, "Ag");
     let text_h = text_h as i32;
 
     for (i, entry) in entries.iter().take(5).enumerate() {
-        let y = 48 + i as i32 * line_height;
+        let y = crate::HUD_HEIGHT as i32 + i as i32 * line_height;
         let icon_y = y + (text_h - icon_size) / 2;
 
         // Get death cause icon key
@@ -877,7 +880,7 @@ fn draw_kill_feed(
         x += gap * 2;
         if let Some(cause_icon) = death_cause_icons.get(cause_key) {
             let cause_center_y = icon_y + cause_icon_size / 2;
-            draw_icon(pm, cause_icon, x + cause_icon_size / 2, cause_center_y);
+            draw_icon(pm, cause_icon, (x + cause_icon_size / 2) as f32, cause_center_y as f32);
         }
         x += cause_w as i32 + gap * 2;
 
@@ -1133,7 +1136,8 @@ fn draw_chat_overlay(
     total_height -= entry_gap; // remove trailing gap
     total_height += margin; // bottom padding
 
-    // Position: middle-left of the minimap area
+    // Position: middle-left of the minimap area, shifted right by the
+    // left-side roster gutter (if any) so chat stays inside the map.
     let box_x = x_offset as i32;
     let map_mid_y = y_offset as i32 + (minimap_w as i32) / 2;
     let box_y = map_mid_y - total_height / 2;
@@ -1225,33 +1229,52 @@ fn draw_chat_overlay(
 }
 
 /// Draw the 10x10 grid overlay with labels.
-fn draw_grid(pm: &mut Pixmap, minimap_size: u32, y_off: u32, fonts: &GameFonts, x_offset: u32) {
+fn draw_grid_at(pm: &mut Pixmap, minimap_size: u32, x_off: u32, y_off: u32, fonts: &GameFonts) {
     let font = &fonts.primary;
     let cell = minimap_size as f32 / 10.0;
     let grid_color = [180, 180, 180];
     let alpha = 0.25f32;
     let label_scale = fonts.scale(11.0);
+    let x_off_f = x_off as f32;
 
     // Draw 9 interior lines in each direction
     for i in 1..10 {
         let pos = (i as f32 * cell).round();
         // Vertical line
-        draw_line(pm, pos + x_offset as f32, y_off as f32, pos + x_offset as f32, (y_off + minimap_size) as f32, grid_color, alpha, 1.0);
+        draw_line(
+            pm,
+            x_off_f + pos,
+            y_off as f32,
+            x_off_f + pos,
+            (y_off + minimap_size) as f32,
+            grid_color,
+            alpha,
+            1.0,
+        );
         // Horizontal line
-        draw_line(pm, x_offset as f32, pos + y_off as f32, (x_offset + minimap_size) as f32, pos + y_off as f32, grid_color, alpha, 1.0);
+        draw_line(
+            pm,
+            x_off_f,
+            pos + y_off as f32,
+            x_off_f + minimap_size as f32,
+            pos + y_off as f32,
+            grid_color,
+            alpha,
+            1.0,
+        );
     }
 
-    // Labels: numbers 1-10 across the bottom, letters A-J down the left
+    // Labels: numbers 1-10 across the top, letters A-J down the left
     for i in 0..10 {
         let label = format!("{}", i + 1);
-        let x = (i as f32 * cell + cell / 2.0 - 3.0) as i32 + x_offset as i32;
-        let y = (y_off + minimap_size) as i32 - 15;
+        let x = (x_off_f + i as f32 * cell + cell / 2.0 - 3.0) as i32;
+        let y = y_off as i32 + 2;
         draw_text_shadow(pm, [255, 255, 255], x, y, label_scale, font, &label);
     }
     let labels_row = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
     for (i, &ch) in labels_row.iter().enumerate() {
         let label = ch.to_string();
-        let x = 3i32 + x_offset as i32;
+        let x = x_off as i32 + 3i32;
         let y = y_off as i32 + (i as f32 * cell + cell / 2.0 - 5.0) as i32;
         draw_text_shadow(pm, [255, 255, 255], x, y, label_scale, font, &label);
     }
@@ -1342,17 +1365,20 @@ fn tint_silhouette(img: &RgbaImage, color: [u8; 3]) -> RgbaImage {
     out
 }
 
-/// HP bar color lerp: green (>66%) → yellow (33-66%) → red (<33%).
+/// HP bar color lerp: soft green at full HP, lerped through amber to a muted
+/// red. The previous gradient ran between pure primaries (`[0,255,0]` →
+/// `[255,255,0]` → `[255,0,0]`) which read as eye-searing lime / sodium yellow
+/// against the roster background; these stops desaturate the endpoints while
+/// keeping the same semantic gradient.
 fn hp_bar_color_lerp(fraction: f32) -> [u8; 3] {
-    if fraction > 0.66 {
-        [0, 255, 0] // green
-    } else if fraction > 0.33 {
-        let t = (fraction - 0.33) / 0.33;
-        [(255.0 * (1.0 - t)) as u8, 255, 0]
-    } else {
-        let t = fraction / 0.33;
-        [255, (255.0 * t) as u8, 0]
-    }
+    const GREEN: [f32; 3] = [85.0, 175.0, 110.0];
+    const AMBER: [f32; 3] = [220.0, 195.0, 90.0];
+    const RED: [f32; 3] = [215.0, 95.0, 85.0];
+    let lerp = |a: [f32; 3], b: [f32; 3], t: f32| -> [u8; 3] {
+        let t = t.clamp(0.0, 1.0);
+        [(a[0] + (b[0] - a[0]) * t) as u8, (a[1] + (b[1] - a[1]) * t) as u8, (a[2] + (b[2] - a[2]) * t) as u8]
+    };
+    if fraction > 0.5 { lerp(AMBER, GREEN, (fraction - 0.5) / 0.5) } else { lerp(RED, AMBER, fraction / 0.5) }
 }
 
 /// Draw an RGBA image at a non-centered position (top-left corner).
@@ -1397,11 +1423,349 @@ fn damage_label_color_rgb(label: &str) -> [u8; 3] {
     }
 }
 
+// ── Team roster rendering ──────────────────────────────────────────────────
+
+#[allow(clippy::too_many_arguments)]
+fn draw_team_roster(
+    pm: &mut Pixmap,
+    side: crate::draw_command::RosterSide,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    rows: &[crate::draw_command::RosterRow],
+    fonts: &GameFonts,
+    ship_icons: &HashMap<String, ShipIcon>,
+    consumable_icons: &HashMap<String, RgbaImage>,
+    death_cause_icons: &HashMap<String, RgbaImage>,
+) {
+    use crate::draw_command::ChargeCount as RosterCharge;
+    use crate::draw_command::RosterSide;
+
+    let panel_x = x as f32;
+    let panel_y = y as f32;
+    let panel_w = width as f32;
+    let panel_h = height as f32;
+
+    use crate::panel_math::darken;
+    use crate::panel_math::team_hp_fraction;
+
+    // Panel background.
+    draw_filled_rect(pm, panel_x, panel_y, panel_w, panel_h, [20, 24, 32], 0.78);
+    let accent: [u8; 3] = match side {
+        RosterSide::Friendly => [80, 200, 120],
+        RosterSide::Enemy => [220, 90, 90],
+    };
+
+    // Team HP bar replaces the old 1px accent line.
+    let bar_h: f32 = 14.0;
+    draw_filled_rect(pm, panel_x, panel_y, panel_w, bar_h, darken(accent, 0.4), 0.95);
+    if let Some(frac) = team_hp_fraction(rows.iter().map(|r| (r.hp_current, r.hp_max))) {
+        draw_filled_rect(pm, panel_x, panel_y, panel_w * frac, bar_h, accent, 1.0);
+    }
+    let total_cur: f32 = rows.iter().map(|r| r.hp_current.max(0.0)).sum();
+    let total_max: f32 = rows.iter().map(|r| r.hp_max).sum();
+    let hp_bar_text = format!("{} / {}", format_number(total_cur as i64), format_number(total_max as i64));
+    let bar_text_scale = fonts.scale(10.0);
+    let (btw_u, bth_u) = text_size(bar_text_scale, &fonts.primary, &hp_bar_text);
+    let btw = btw_u as f32;
+    let bth = bth_u as f32;
+    let bt_margin: f32 = 4.0;
+    let bt_x = panel_x + panel_w - btw - bt_margin;
+    let bt_y = panel_y + (bar_h - bth) * 0.5;
+    draw_text(pm, [0, 0, 0], (bt_x + 1.0) as i32, (bt_y + 1.0) as i32, bar_text_scale, &fonts.primary, &hp_bar_text);
+    draw_text(pm, [255, 255, 255], bt_x as i32, bt_y as i32, bar_text_scale, &fonts.primary, &hp_bar_text);
+
+    let row_height: f32 = 64.0;
+    let row_padding: f32 = 4.0;
+    let inner_x = panel_x + row_padding;
+    let inner_w = panel_w - row_padding * 2.0;
+    let name_scale = fonts.scale(15.0);
+    let ship_scale = fonts.scale(13.0);
+    let hp_scale = fonts.scale(11.0);
+
+    // Friendly icons point right (toward the map), enemy icons point left —
+    // mirrors the egui layout's "facing the action" convention.
+    let icon_yaw: f32 = match side {
+        RosterSide::Friendly => 0.0,
+        RosterSide::Enemy => std::f32::consts::PI,
+    };
+
+    const MAX_CONSUMABLE_SLOTS: usize = 6;
+    let icon_size: f32 = 20.0;
+    let icon_gap: f32 = 2.0;
+    let consumables_strip_w = MAX_CONSUMABLE_SLOTS as f32 * icon_size + (MAX_CONSUMABLE_SLOTS as f32 - 1.0) * icon_gap;
+    let strip_gap: f32 = 6.0;
+    let hp_bar_w = (inner_w - consumables_strip_w - strip_gap).max(40.0);
+
+    for (idx, row) in rows.iter().enumerate() {
+        let row_top = panel_y + bar_h + idx as f32 * row_height + row_padding;
+        if row_top + row_height > panel_y + panel_h {
+            break;
+        }
+        let row_rect_w = inner_w;
+        let row_rect_h = row_height - row_padding;
+
+        // Zebra stripe + dead overlay.
+        if idx % 2 == 1 {
+            draw_filled_rect(pm, inner_x, row_top, row_rect_w, row_rect_h, [255, 255, 255], 0.03);
+        }
+        if row.is_dead {
+            draw_filled_rect(pm, inner_x, row_top, row_rect_w, row_rect_h, [0, 0, 0], 0.32);
+        }
+
+        // ── Header line: clan/player name on the left, damage + frag count
+        // ── on the right ────────────────────────────────────────────────
+        let header_text = match &row.clan_tag {
+            Some(tag) => format!("[{tag}] {}", row.player_name),
+            None => row.player_name.clone(),
+        };
+        let header_color = if row.is_dead {
+            [180, 180, 180]
+        } else if row.is_spotted {
+            [255, 220, 80]
+        } else {
+            accent
+        };
+        let (name_font, name_text_scale) = fonts.font_and_scale(&header_text, 15.0);
+        draw_text(pm, header_color, inner_x as i32, row_top as i32, name_text_scale, name_font, &header_text);
+
+        let stats_color = if row.is_dead { [180, 180, 180] } else { [230, 230, 230] };
+        let damage_text = format_number(row.damage_dealt.round() as i64);
+        let (damage_w_u, _) = text_size(name_scale, &fonts.primary, &damage_text);
+        let damage_w = damage_w_u as f32;
+
+        let frag_icon = death_cause_icons.get("frags");
+        let frag_icon_size = name_scale.y;
+        let frag_gap: f32 = 4.0;
+        let inter_gap: f32 = 8.0;
+        let kills_text = (row.kills > 0).then(|| row.kills.to_string());
+        let kills_w = kills_text.as_ref().map(|t| text_size(name_scale, &fonts.primary, t).0 as f32).unwrap_or(0.0);
+        let kills_block_w = if kills_text.is_some() {
+            if frag_icon.is_some() { frag_icon_size + frag_gap + kills_w } else { kills_w }
+        } else {
+            0.0
+        };
+        let total_w = damage_w + if kills_block_w > 0.0 { inter_gap + kills_block_w } else { 0.0 };
+        let block_x = inner_x + inner_w - total_w;
+        draw_text(pm, stats_color, block_x as i32, row_top as i32, name_scale, &fonts.primary, &damage_text);
+
+        if let Some(kt) = kills_text {
+            let mut cx = block_x + damage_w + inter_gap;
+            if let Some(icon) = frag_icon {
+                let icon_y_top = row_top + (name_scale.y - frag_icon_size) * 0.5;
+                let resized = image::imageops::resize(
+                    icon,
+                    frag_icon_size.round() as u32,
+                    frag_icon_size.round() as u32,
+                    image::imageops::FilterType::Lanczos3,
+                );
+                let tinted = if row.is_dead {
+                    let mut img = resized.clone();
+                    for px in img.pixels_mut() {
+                        px.0[3] = (px.0[3] as f32 * 0.7) as u8;
+                    }
+                    img
+                } else {
+                    resized
+                };
+                let cx_center = cx + frag_icon_size * 0.5;
+                let cy_center = icon_y_top + frag_icon_size * 0.5;
+                draw_icon(pm, &tinted, cx_center, cy_center);
+                cx += frag_icon_size + frag_gap;
+            }
+            draw_text(pm, stats_color, cx as i32, row_top as i32, name_scale, &fonts.primary, &kt);
+        }
+
+        // ── Ship row: rotated class icon + ship name ───────────────────
+        let class_icon_size: f32 = 18.0;
+        let class_icon_padding: f32 = 4.0;
+        let ship_row_y = row_top + name_scale.y + 4.0;
+        let ship_text_x = if let Some(ref class_key) = row.class_icon_key {
+            if let Some(class_icon) = ship_icons.get(class_key) {
+                // Pre-resize then route through the icon helper so the rotation
+                // path matches the in-map ship glyphs.
+                let resized = image::imageops::resize(
+                    class_icon,
+                    class_icon_size.round() as u32,
+                    class_icon_size.round() as u32,
+                    image::imageops::FilterType::Lanczos3,
+                );
+                let tint = if row.is_dead { Some([180u8, 180, 180]) } else { Some(accent) };
+                let opacity = if row.is_dead { 0.55 } else { 1.0 };
+                let cx = inner_x + class_icon_size * 0.5;
+                let cy = ship_row_y + ship_scale.y * 0.5;
+                draw_ship_icon(pm, &resized, cx, cy, icon_yaw, tint, opacity, 1.0);
+                inner_x + class_icon_size + class_icon_padding
+            } else {
+                inner_x
+            }
+        } else {
+            inner_x
+        };
+        let (ship_name_font, ship_text_scale) = fonts.font_and_scale(&row.ship_name, 13.0);
+        draw_text(
+            pm,
+            [210, 210, 210],
+            ship_text_x as i32,
+            ship_row_y as i32,
+            ship_text_scale,
+            ship_name_font,
+            &row.ship_name,
+        );
+
+        // ── HP bar + consumables row ───────────────────────────────────
+        let hp_bar_y = row_top + name_scale.y + ship_scale.y + 6.0;
+        let hp_bar_h: f32 = 18.0;
+        draw_filled_rect(pm, inner_x, hp_bar_y, hp_bar_w, hp_bar_h, [40, 40, 40], 0.86);
+        if row.hp_max > 0.0 && !row.is_dead {
+            let fill_ratio = (row.hp_current / row.hp_max).clamp(0.0, 1.0);
+            let fill_w = hp_bar_w * fill_ratio;
+            let fill_color = hp_bar_color_lerp(fill_ratio);
+            draw_filled_rect(pm, inner_x, hp_bar_y, fill_w, hp_bar_h, fill_color, 1.0);
+            if let Some(color) = row.heal_availability.healable_rgb()
+                && row.hp_healable > 0.0
+            {
+                // Bright = HP the next heal charge restores; dim = the regenerable
+                // pool beyond that charge.
+                let bright_w = (hp_bar_w * (row.hp_healable_per_charge.min(row.hp_healable) / row.hp_max))
+                    .clamp(0.0, hp_bar_w - fill_w);
+                if bright_w > 0.0 {
+                    draw_filled_rect(pm, inner_x + fill_w, hp_bar_y, bright_w, hp_bar_h, color, 0.85);
+                }
+                let dim_total = (hp_bar_w * (row.hp_healable / row.hp_max)).min(hp_bar_w - fill_w);
+                let dim_w = (dim_total - bright_w).max(0.0);
+                if dim_w > 0.0 {
+                    draw_filled_rect(
+                        pm,
+                        inner_x + fill_w + bright_w,
+                        hp_bar_y,
+                        dim_w,
+                        hp_bar_h,
+                        darken(color, 0.5),
+                        0.85,
+                    );
+                }
+            }
+        }
+
+        let hp_text =
+            format!("{} / {}", format_number(row.hp_current.max(0.0) as i64), format_number(row.hp_max as i64),);
+        let hp_text_color = if row.is_dead { [220, 220, 220] } else { [255, 255, 255] };
+        let (hp_text_w_u, hp_text_h_u) = text_size(hp_scale, &fonts.primary, &hp_text);
+        let hp_text_w = hp_text_w_u as f32;
+        let hp_text_h = hp_text_h_u as f32;
+        let hp_text_y = hp_bar_y + (hp_bar_h - hp_text_h) * 0.5;
+        let hp_text_x = inner_x + hp_bar_w - hp_text_w - 4.0;
+        // Strong drop shadow rather than a backing pill. A pill at this size
+        // covered most of the HP fill (the bar is only ~18px tall and the
+        // text is ~12 of those), so the colored portion got drowned out.
+        // Doubling up the shadow keeps the white legible against any fill.
+        draw_text(
+            pm,
+            [0, 0, 0],
+            (hp_text_x + 1.0) as i32,
+            (hp_text_y + 1.0) as i32,
+            hp_scale,
+            &fonts.primary,
+            &hp_text,
+        );
+        draw_text(pm, [0, 0, 0], (hp_text_x + 1.0) as i32, hp_text_y as i32, hp_scale, &fonts.primary, &hp_text);
+        draw_text(pm, hp_text_color, hp_text_x as i32, hp_text_y as i32, hp_scale, &fonts.primary, &hp_text);
+
+        // Consumable strip: 6 fixed slots aligned to the right of the row.
+        let strip_y = hp_bar_y + (hp_bar_h - icon_size) * 0.5;
+        let strip_x = inner_x + inner_w - consumables_strip_w;
+        if row.consumables.is_empty() {
+            // Faint asterisk marker so missing inventory data is visible
+            // without shouting.
+            draw_text(
+                pm,
+                [180, 180, 180],
+                strip_x as i32,
+                (strip_y + 4.0) as i32,
+                fonts.scale(11.0),
+                &fonts.primary,
+                "*",
+            );
+        } else {
+            for (i, cons) in row.consumables.iter().enumerate() {
+                let icon_x = strip_x + i as f32 * (icon_size + icon_gap);
+                let charges_remaining = cons.total_charges.remaining(cons.charges_used);
+                let is_exhausted = matches!(charges_remaining, RosterCharge::Finite(0));
+
+                if let Some(icon) = consumable_icons.get(&cons.icon_key) {
+                    let resized = image::imageops::resize(
+                        icon,
+                        icon_size as u32,
+                        icon_size as u32,
+                        image::imageops::FilterType::Lanczos3,
+                    );
+                    let mut img = resized;
+                    let dim = if row.is_dead || is_exhausted { 0.4 } else { 0.86 };
+                    for px in img.pixels_mut() {
+                        px.0[3] = (px.0[3] as f32 * dim) as u8;
+                    }
+                    draw_icon(pm, &img, icon_x + icon_size * 0.5, strip_y + icon_size * 0.5);
+                } else {
+                    draw_filled_rect(pm, icon_x, strip_y, icon_size, icon_size, [60, 60, 60], 0.7);
+                }
+
+                // Charge/timer overlay. Unlimited consumables stay blank; the
+                // absence of a number signals "no cap."
+                let label = match (cons.active_remaining_secs, &charges_remaining, &cons.total_charges) {
+                    (Some(sec), _, _) if !row.is_dead => format!("{:.0}s", sec.max(0.0)),
+                    (_, RosterCharge::Unlimited, _) | (_, _, RosterCharge::Unlimited) => String::new(),
+                    (_, RosterCharge::Finite(n), RosterCharge::Finite(t)) => format!("{n}/{t}"),
+                };
+                if label.is_empty() {
+                    continue;
+                }
+                let label_color = cons.availability.charge_count_rgb();
+                let charges_scale = fonts.scale(9.0);
+                let (lw_u, lh_u) = text_size(charges_scale, &fonts.primary, &label);
+                let lx = icon_x + icon_size - lw_u as f32 - 1.0;
+                let ly = strip_y + icon_size - lh_u as f32;
+                draw_text(pm, [0, 0, 0], (lx + 1.0) as i32, (ly + 1.0) as i32, charges_scale, &fonts.primary, &label);
+                draw_text(pm, label_color, lx as i32, ly as i32, charges_scale, &fonts.primary, &label);
+            }
+        }
+    }
+}
+
 // ── ImageTarget (RenderTarget implementation) ──────────────────────────────
 
 use crate::CANVAS_HEIGHT;
 use crate::HUD_HEIGHT;
 use crate::MINIMAP_SIZE;
+use crate::TEAM_ROSTER_WIDTH;
+
+use crate::config::RenderOptions;
+
+/// Which side panel the CLI canvas should reserve space for. Mirrors the
+/// runtime decision the desktop renderer makes from
+/// `RenderOptions.{show_stats_panel,show_team_rosters}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidePanelLayout {
+    /// Just the minimap.
+    None,
+    /// Self-perspective stats panel on the right.
+    StatsPanel,
+    /// Team rosters in gutters on both sides of the minimap.
+    TeamRosters,
+}
+
+impl SidePanelLayout {
+    pub fn from_options(opts: &RenderOptions) -> Self {
+        if opts.show_team_rosters {
+            Self::TeamRosters
+        } else if opts.show_stats_panel {
+            Self::StatsPanel
+        } else {
+            Self::None
+        }
+    }
+}
 
 /// Pre-rasterized ship icon (RGBA, white/alpha mask to be tinted at draw time).
 pub type ShipIcon = RgbaImage;
@@ -1414,24 +1778,36 @@ pub struct ImageTarget {
     canvas: Pixmap,
     /// Pre-built background: map image + grid overlay. Cloned at start of each frame.
     base_canvas: Pixmap,
-    /// Width of the minimap area (excludes the stats panel).
-    /// HUD elements (score bar, timer, kill feed) are confined to this width.
+    /// Width of the minimap area (excludes side panels). Always `MINIMAP_SIZE`.
     map_width: u32,
-    pub map_x_offset: u32,
+    /// Horizontal offset (in canvas pixels) from the canvas's left edge to the
+    /// minimap's left edge. Non-zero when team rosters reserve a left gutter.
+    /// Map-coordinate draw commands add this offset; HUD elements that span
+    /// the full canvas keep using `canvas.width()` directly.
+    map_x_offset: u32,
+    /// Width of the HUD strip. With team rosters, this spans the rosters plus
+    /// the minimap so the score bar can stretch across both gutters; with the
+    /// stats panel (or no side panel) it's just the minimap width.
+    hud_width: u32,
     fonts: GameFonts,
     ship_icons: HashMap<String, ShipIcon>,
+    /// Pre-computed gold outline halos for ship icons. Same keys as `ship_icons`;
+    /// each image is `ship_icons[key]` padded by [`SHIP_ICON_OUTLINE_THICKNESS`]
+    /// pixels with a dilated silhouette painted gold.
+    ship_icon_outlines: HashMap<String, RgbaImage>,
     plane_icons: HashMap<String, RgbaImage>,
     building_icons: HashMap<String, RgbaImage>,
     consumable_icons: HashMap<String, RgbaImage>,
+    ribbon_icons: HashMap<String, RgbaImage>,
+    subribbon_icons: HashMap<String, RgbaImage>,
     death_cause_icons: HashMap<String, RgbaImage>,
     powerup_icons: HashMap<String, RgbaImage>,
-    ribbon_icons: HashMap<String, RgbaImage>,
     /// Bounding rects [x, y, w, h] of previously placed config-circle labels in the current frame.
     placed_labels: Vec<[i32; 4]>,
     /// Resolves translatable game text (battle results, advantage labels, etc.)
     text_resolver: Arc<dyn TextResolver>,
     pub large_elements: bool,
-    pub compact_stats: bool,
+    pub aspect_ratio_16_9: bool,
 }
 
 impl ImageTarget {
@@ -1442,9 +1818,10 @@ impl ImageTarget {
         plane_icons: HashMap<String, RgbaImage>,
         building_icons: HashMap<String, RgbaImage>,
         consumable_icons: HashMap<String, RgbaImage>,
+        ribbon_icons: HashMap<String, RgbaImage>,
+        subribbon_icons: HashMap<String, RgbaImage>,
         death_cause_icons: HashMap<String, RgbaImage>,
         powerup_icons: HashMap<String, RgbaImage>,
-        ribbon_icons: HashMap<String, RgbaImage>,
     ) -> Self {
         Self::with_stats_panel(
             map_image,
@@ -1453,9 +1830,12 @@ impl ImageTarget {
             plane_icons,
             building_icons,
             consumable_icons,
+            ribbon_icons,
+            subribbon_icons,
             death_cause_icons,
             powerup_icons,
-            ribbon_icons,
+            false,
+            false,
             false,
         )
     }
@@ -1467,71 +1847,58 @@ impl ImageTarget {
         plane_icons: HashMap<String, RgbaImage>,
         building_icons: HashMap<String, RgbaImage>,
         consumable_icons: HashMap<String, RgbaImage>,
+        ribbon_icons: HashMap<String, RgbaImage>,
+        subribbon_icons: HashMap<String, RgbaImage>,
         death_cause_icons: HashMap<String, RgbaImage>,
         powerup_icons: HashMap<String, RgbaImage>,
-        ribbon_icons: HashMap<String, RgbaImage>,
         stats_panel: bool,
+        large_elements: bool,
+        aspect_ratio_16_9: bool,
     ) -> Self {
-        let map = map_image.unwrap_or_else(|| RgbImage::from_pixel(MINIMAP_SIZE, MINIMAP_SIZE, Rgb([30, 40, 60])));
-
-        let canvas_width = if stats_panel { MINIMAP_SIZE + STATS_PANEL_WIDTH } else { MINIMAP_SIZE };
-
-        // Pre-build the base canvas: dark background + map + grid
-        let mut base_rgb = RgbImage::from_pixel(canvas_width, CANVAS_HEIGHT, Rgb([20, 25, 35]));
-        for y in 0..map.height().min(MINIMAP_SIZE) {
-            for x in 0..map.width().min(MINIMAP_SIZE) {
-                base_rgb.put_pixel(x, y + HUD_HEIGHT, *map.get_pixel(x, y));
-            }
-        }
-        let mut base = rgb_to_pixmap(&base_rgb);
-        draw_grid(&mut base, MINIMAP_SIZE, HUD_HEIGHT, &fonts, 0);
-
-        Self {
-            canvas: Pixmap::new(canvas_width, CANVAS_HEIGHT).unwrap(),
-            base_canvas: base,
-            map_width: MINIMAP_SIZE,
-            map_x_offset: 0,
+        let layout = if stats_panel { SidePanelLayout::StatsPanel } else { SidePanelLayout::None };
+        Self::with_side_panel(
+            map_image,
             fonts,
             ship_icons,
             plane_icons,
             building_icons,
             consumable_icons,
+            ribbon_icons,
+            subribbon_icons,
             death_cause_icons,
             powerup_icons,
-            ribbon_icons,
-            placed_labels: Vec::new(),
-            text_resolver: Arc::new(DefaultTextResolver),
-            large_elements: false,
-            compact_stats: false,
-        }
+            layout,
+            large_elements,
+            aspect_ratio_16_9,
+        )
     }
 
-    /// Create with stats panel, optionally using 16:9 aspect ratio (wider panel).
-    pub fn with_stats_panel_16_9(
+    pub fn with_side_panel(
         map_image: Option<RgbImage>,
         fonts: GameFonts,
         ship_icons: HashMap<String, ShipIcon>,
         plane_icons: HashMap<String, RgbaImage>,
         building_icons: HashMap<String, RgbaImage>,
         consumable_icons: HashMap<String, RgbaImage>,
+        ribbon_icons: HashMap<String, RgbaImage>,
+        subribbon_icons: HashMap<String, RgbaImage>,
         death_cause_icons: HashMap<String, RgbaImage>,
         powerup_icons: HashMap<String, RgbaImage>,
-        ribbon_icons: HashMap<String, RgbaImage>,
-        stats_panel: bool,
+        layout: SidePanelLayout,
+        large_elements: bool,
         aspect_ratio_16_9: bool,
     ) -> Self {
         let map = map_image.unwrap_or_else(|| RgbImage::from_pixel(MINIMAP_SIZE, MINIMAP_SIZE, Rgb([30, 40, 60])));
 
-        let map_x_offset = 0;
-
-        let panel_width = if stats_panel && aspect_ratio_16_9 {
-            crate::STATS_PANEL_WIDTH_16_9
-        } else if stats_panel {
-            STATS_PANEL_WIDTH
-        } else {
-            0
+        let panel_width = if aspect_ratio_16_9 { STATS_PANEL_WIDTH_16_9 } else { STATS_PANEL_WIDTH };
+        let (canvas_width, map_x_offset, hud_width) = match layout {
+            SidePanelLayout::None => (MINIMAP_SIZE, 0, MINIMAP_SIZE),
+            SidePanelLayout::StatsPanel => (MINIMAP_SIZE + panel_width, 0, MINIMAP_SIZE),
+            SidePanelLayout::TeamRosters => {
+                let cw = MINIMAP_SIZE + TEAM_ROSTER_WIDTH * 2;
+                (cw, TEAM_ROSTER_WIDTH, cw)
+            }
         };
-        let canvas_width = MINIMAP_SIZE + panel_width;
 
         // Pre-build the base canvas: dark background + map + grid
         let mut base_rgb = RgbImage::from_pixel(canvas_width, CANVAS_HEIGHT, Rgb([20, 25, 35]));
@@ -1541,25 +1908,33 @@ impl ImageTarget {
             }
         }
         let mut base = rgb_to_pixmap(&base_rgb);
-        draw_grid(&mut base, MINIMAP_SIZE, HUD_HEIGHT, &fonts, map_x_offset);
+        draw_grid_at(&mut base, MINIMAP_SIZE, map_x_offset, HUD_HEIGHT, &fonts);
+
+        let ship_icon_outlines = ship_icons
+            .iter()
+            .map(|(k, icon)| (k.clone(), make_ship_icon_outline(icon, SHIP_ICON_OUTLINE_THICKNESS, [255, 215, 0], 230)))
+            .collect();
 
         Self {
             canvas: Pixmap::new(canvas_width, CANVAS_HEIGHT).unwrap(),
             base_canvas: base,
             map_width: MINIMAP_SIZE,
             map_x_offset,
+            hud_width,
             fonts,
             ship_icons,
+            ship_icon_outlines,
             plane_icons,
             building_icons,
             consumable_icons,
+            ribbon_icons,
+            subribbon_icons,
             death_cause_icons,
             powerup_icons,
-            ribbon_icons,
             placed_labels: Vec::new(),
             text_resolver: Arc::new(DefaultTextResolver),
-            large_elements: false,
-            compact_stats: false,
+            large_elements,
+            aspect_ratio_16_9,
         }
     }
 
@@ -1587,42 +1962,62 @@ impl RenderTarget for ImageTarget {
 
     fn draw(&mut self, cmd: &DrawCommand) {
         let y_off = HUD_HEIGHT as f32;
+        let x_off = self.map_x_offset as f32;
         match cmd {
             DrawCommand::ShotTracer { from, to, color } => {
                 draw_line(
                     &mut self.canvas,
-                    from.x as f32 + self.map_x_offset as f32,
-                    from.y as f32 + y_off,
-                    to.x as f32 + self.map_x_offset as f32,
-                    to.y as f32 + y_off,
+                    from.x + x_off,
+                    from.y + y_off,
+                    to.x + x_off,
+                    to.y + y_off,
                     *color,
                     1.0,
                     1.5,
                 );
             }
-            DrawCommand::Torpedo { pos, color } => {
+            DrawCommand::ShotTracerTip { at, color } => {
+                // A bit wider than the 1.5px tracer line so the ammo color is noticeable.
                 draw_filled_circle(
                     &mut self.canvas,
-                    pos.x as f32 + self.map_x_offset as f32,
-                    pos.y as f32 + y_off,
-                    2.5,
+                    at.x + x_off,
+                    at.y + y_off,
+                    1.9,
                     *color,
-                    1.0,
+                    crate::draw_command::SHOT_TIP_ALPHA,
                 );
+            }
+            DrawCommand::SecondaryShotTracer { from, to, color } => {
+                draw_line(
+                    &mut self.canvas,
+                    from.x + x_off,
+                    from.y + y_off,
+                    to.x + x_off,
+                    to.y + y_off,
+                    *color,
+                    crate::draw_command::SECONDARY_SHOT_ALPHA,
+                    1.5,
+                );
+            }
+            DrawCommand::SecondaryShotTracerTip { at, color } => {
+                draw_filled_circle(
+                    &mut self.canvas,
+                    at.x + x_off,
+                    at.y + y_off,
+                    1.9,
+                    *color,
+                    crate::draw_command::SECONDARY_SHOT_ALPHA,
+                );
+            }
+            DrawCommand::Torpedo { pos, color } => {
+                draw_filled_circle(&mut self.canvas, pos.x + x_off, pos.y + y_off, 2.5, *color, 1.0);
             }
             DrawCommand::Smoke { pos, radius, color, alpha } => {
-                draw_filled_circle(
-                    &mut self.canvas,
-                    pos.x as f32 + self.map_x_offset as f32,
-                    pos.y as f32 + y_off,
-                    *radius as f32,
-                    *color,
-                    *alpha,
-                );
+                draw_filled_circle(&mut self.canvas, pos.x + x_off, pos.y + y_off, *radius as f32, *color, *alpha);
             }
             DrawCommand::BuffZone { pos, radius, color, alpha, marker_name } => {
-                let cx = pos.x as f32 + self.map_x_offset as f32;
-                let cy = pos.y as f32 + y_off;
+                let cx = pos.x + x_off;
+                let cy = pos.y + y_off;
                 let r = *radius as f32;
                 // Filled circle
                 draw_filled_circle(&mut self.canvas, cx, cy, r, *color, *alpha);
@@ -1632,14 +2027,14 @@ impl RenderTarget for ImageTarget {
                 if let Some(name) = marker_name
                     && let Some(icon) = self.powerup_icons.get(name.as_str())
                 {
-                    draw_icon(&mut self.canvas, icon, cx as i32, cy as i32);
+                    draw_icon(&mut self.canvas, icon, cx, cy);
                 }
             }
             DrawCommand::CapturePoint { pos, radius, color, alpha, label, progress, invader_color, flag_icon } => {
                 draw_capture_point(
                     &mut self.canvas,
-                    pos.x as f32 + self.map_x_offset as f32,
-                    pos.y as f32 + y_off,
+                    pos.x + x_off,
+                    pos.y + y_off,
                     *radius as f32,
                     *color,
                     *alpha,
@@ -1650,9 +2045,9 @@ impl RenderTarget for ImageTarget {
                     &self.fonts,
                 );
             }
-            DrawCommand::TurretDirection { pos, yaw, color, length, .. } => {
-                let x = pos.x as f32 + self.map_x_offset as f32;
-                let y = pos.y as f32 + y_off;
+            DrawCommand::CameraDirection { pos, yaw, color, length, .. } => {
+                let x = pos.x + x_off;
+                let y = pos.y + y_off;
                 let dx = *length as f32 * yaw.cos();
                 let dy = -*length as f32 * yaw.sin();
                 draw_line(&mut self.canvas, x, y, x + dx, y + dy, *color, 0.7, 1.0);
@@ -1661,19 +2056,18 @@ impl RenderTarget for ImageTarget {
                 // Try to render an icon; fall back to a dot if no icon is available
                 let icon_key = icon_type.map(|t| format!("{}_{}", t.icon_name(), relation.icon_suffix()));
                 let icon = icon_key.as_ref().and_then(|k| self.building_icons.get(k));
-                let x = pos.x + self.map_x_offset as i32;
                 if let Some(icon) = icon {
-                    draw_icon(&mut self.canvas, icon, x, pos.y + y_off as i32);
+                    draw_icon(&mut self.canvas, icon, pos.x + x_off, pos.y + y_off);
                 } else {
-                    draw_filled_circle(&mut self.canvas, x as f32, pos.y as f32 + y_off, 2.5, *color, 1.0);
+                    draw_filled_circle(&mut self.canvas, pos.x + x_off, pos.y + y_off, 2.5, *color, 1.0);
                 }
             }
             DrawCommand::WeatherZone { pos, radius } => {
                 // Semi-transparent light gray circle for weather zones (squalls/storms)
                 draw_filled_circle(
                     &mut self.canvas,
-                    pos.x as f32 + self.map_x_offset as f32,
-                    pos.y as f32 + y_off,
+                    pos.x + x_off,
+                    pos.y + y_off,
                     *radius as f32,
                     [255, 255, 255],
                     0.25,
@@ -1690,52 +2084,46 @@ impl RenderTarget for ImageTarget {
                 player_name,
                 ship_name,
                 is_detected_teammate,
+                is_disconnected,
                 name_color,
                 ..
             } => {
-                let x = pos.x + self.map_x_offset as i32;
-                let y = pos.y + y_off as i32;
+                let x = pos.x + x_off;
+                let y = pos.y + y_off;
 
-                let fallback_key = match *visibility {
-                    ShipVisibility::Visible => "Auxiliary",
-                    ShipVisibility::MinimapOnly | ShipVisibility::Undetected => "Auxiliary_invisible",
+                let fallback_key = match (*visibility, *is_self) {
+                    (ShipVisibility::Visible, true) => "Auxiliary_self",
+                    (ShipVisibility::Visible, false) => "Auxiliary",
+                    (ShipVisibility::MinimapOnly | ShipVisibility::Undetected, _) => "Auxiliary_invisible",
                 };
-                let icon = if let Some(sp) = species.as_ref() {
-                    let variant_key = match *visibility {
-                        ShipVisibility::Visible => sp.clone(),
-                        ShipVisibility::MinimapOnly => format!("{}_invisible", sp),
-                        ShipVisibility::Undetected => format!("{}_invisible", sp),
+                let lookup_keys: Vec<String> = if let Some(sp) = species.as_ref() {
+                    let variant_key = match (*visibility, *is_self) {
+                        (ShipVisibility::Visible, true) => format!("{}_self", sp),
+                        (ShipVisibility::Visible, false) => sp.clone(),
+                        (ShipVisibility::MinimapOnly, _) => format!("{}_invisible", sp),
+                        (ShipVisibility::Undetected, _) => format!("{}_invisible", sp),
                     };
-                    self.ship_icons
-                        .get(&variant_key)
-                        .or_else(|| self.ship_icons.get(sp))
-                        .or_else(|| self.ship_icons.get(fallback_key))
+                    vec![variant_key, sp.clone(), fallback_key.to_string()]
                 } else {
-                    self.ship_icons.get(fallback_key)
+                    vec![fallback_key.to_string()]
                 };
 
-                let Some(icon) = icon else {
+                let Some((icon_key, icon)) =
+                    lookup_keys.iter().find_map(|k| self.ship_icons.get(k).map(|i| (k.as_str(), i)))
+                else {
                     return;
                 };
 
-                let scale_factor = if self.large_elements { 1.1 } else { 1.0 };
+                let scale_factor = if self.large_elements { 1.1f32 } else { 1.0f32 };
 
-                // Draw outline for detected teammates
-                if *is_detected_teammate {
-                    draw_ship_icon_outline(&mut self.canvas, icon, x, y, *yaw, [255, 215, 0], 0.9, 2, scale_factor);
+                if *is_detected_teammate && let Some(outline) = self.ship_icon_outlines.get(icon_key) {
+                    draw_ship_icon(&mut self.canvas, outline, x, y, *yaw, None, 1.0, scale_factor);
+                }
+                if *is_disconnected && let Some(outline) = self.ship_icon_outlines.get(icon_key) {
+                    draw_ship_icon(&mut self.canvas, outline, x, y, *yaw, Some([255, 60, 60]), 1.0, scale_factor);
                 }
 
-                // Subtle own-ship highlighting (tinting + ring) rather than using a separate _self icon
-                let draw_color = if *is_self {
-                    let ring_radius = (14.0 * scale_factor) as f32;
-                    draw_circle_outline(&mut self.canvas, x as f32, y as f32, ring_radius, [255, 255, 255], 0.5, 1.5);
-                    // Tint own ship with a beautiful green
-                    Some([50, 220, 120])
-                } else {
-                    color.map(|c| c)
-                };
-
-                draw_ship_icon(&mut self.canvas, icon, x, y, *yaw, draw_color, *opacity, scale_factor);
+                draw_ship_icon(&mut self.canvas, icon, x, y, *yaw, color.map(|c| c), *opacity, scale_factor);
                 draw_ship_labels(
                     &mut self.canvas,
                     x,
@@ -1747,14 +2135,13 @@ impl RenderTarget for ImageTarget {
                     scale_factor,
                 );
             }
-            DrawCommand::HealthBar { pos, fraction, recoverable_fraction, fill_color, background_color, background_alpha, .. } => {
-                let scale_factor = if self.large_elements { 1.1 } else { 1.0 };
+            DrawCommand::HealthBar { pos, fraction, fill_color, background_color, background_alpha, .. } => {
+                let scale_factor = if self.large_elements { 1.1f32 } else { 1.0f32 };
                 draw_health_bar(
                     &mut self.canvas,
-                    pos.x + self.map_x_offset as i32,
-                    pos.y + y_off as i32,
+                    pos.x + x_off,
+                    pos.y + y_off,
                     *fraction,
-                    *recoverable_fraction,
                     *fill_color,
                     *background_color,
                     *background_alpha,
@@ -1762,12 +2149,12 @@ impl RenderTarget for ImageTarget {
                 );
             }
             DrawCommand::DeadShip { pos, yaw, species, color, is_self, .. } => {
-                let x = pos.x + self.map_x_offset as i32;
-                let y = pos.y + y_off as i32;
+                let x = pos.x + x_off;
+                let y = pos.y + y_off;
 
-                let fallback_key = "Auxiliary_dead";
+                let fallback_key = if *is_self { "Auxiliary_dead_self" } else { "Auxiliary_dead" };
                 let icon = if let Some(sp) = species.as_ref() {
-                    let variant_key = format!("{}_dead", sp);
+                    let variant_key = if *is_self { format!("{}_dead_self", sp) } else { format!("{}_dead", sp) };
                     self.ship_icons
                         .get(&variant_key)
                         .or_else(|| self.ship_icons.get(sp))
@@ -1780,36 +2167,17 @@ impl RenderTarget for ImageTarget {
                     return;
                 };
 
-                let scale_factor = if self.large_elements { 1.1 } else { 1.0 };
-
-                if *is_self {
-                    let ring_radius = (14.0 * scale_factor) as f32;
-                    draw_circle_outline(&mut self.canvas, x as f32, y as f32, ring_radius, [255, 255, 255], 0.3, 1.5);
-                }
-
+                let scale_factor = if self.large_elements { 1.1f32 } else { 1.0f32 };
                 draw_ship_icon(&mut self.canvas, icon, x, y, *yaw, color.map(|c| c), 1.0, scale_factor);
             }
             DrawCommand::Plane { pos, icon_key, player_name, ship_name, .. } => {
-                let x = pos.x + self.map_x_offset as i32;
-                let y = pos.y + y_off as i32;
+                let x = pos.x + x_off;
+                let y = pos.y + y_off;
                 let Some(icon) = self.plane_icons.get(icon_key) else {
                     tracing::warn!(icon_key, "Missing plane icon, skipping");
                     return;
                 };
-                let scale_factor = if self.large_elements { 1.1 } else { 1.0 };
-                if self.large_elements {
-                    let scaled_w = (icon.width() as f32 * scale_factor).round() as u32;
-                    let scaled_h = (icon.height() as f32 * scale_factor).round() as u32;
-                    let resized = image::imageops::resize(
-                        icon,
-                        scaled_w,
-                        scaled_h,
-                        image::imageops::FilterType::Triangle,
-                    );
-                    draw_icon(&mut self.canvas, &resized, x, y);
-                } else {
-                    draw_icon(&mut self.canvas, icon, x, y);
-                }
+                draw_icon(&mut self.canvas, icon, x, y);
                 draw_ship_labels(
                     &mut self.canvas,
                     x,
@@ -1818,33 +2186,28 @@ impl RenderTarget for ImageTarget {
                     ship_name.as_deref(),
                     None,
                     &self.fonts,
-                    scale_factor,
+                    1.0,
                 );
             }
             DrawCommand::ConsumableRadius { pos, radius_px, color, alpha, .. } => {
-                let x = pos.x as f32 + self.map_x_offset as f32;
-                let y = pos.y as f32 + y_off;
+                let x = pos.x + x_off;
+                let y = pos.y + y_off;
                 // Semi-transparent filled circle
                 draw_filled_circle(&mut self.canvas, x, y, *radius_px as f32, *color, *alpha);
                 // Outline for visibility
                 draw_circle_outline(&mut self.canvas, x, y, *radius_px as f32, *color, 0.5, 2.0);
             }
             DrawCommand::PatrolRadius { pos, radius_px, color, alpha, .. } => {
-                let x = pos.x as f32 + self.map_x_offset as f32;
-                let y = pos.y as f32 + y_off;
+                let x = pos.x + x_off;
+                let y = pos.y + y_off;
                 // Filled circle only, no outline
                 draw_filled_circle(&mut self.canvas, x, y, *radius_px as f32, *color, *alpha);
             }
             DrawCommand::ConsumableIcons { pos, icon_keys, has_hp_bar, .. } => {
-                let x = pos.x + self.map_x_offset as i32;
-                let y = pos.y + y_off as i32;
-                let scale_factor = if self.large_elements { 1.1f32 } else { 1.0f32 };
-                let base_y = if *has_hp_bar {
-                    y + (28.0f32 * scale_factor).round() as i32
-                } else {
-                    y + (26.0f32 * scale_factor).round() as i32
-                };
-                let icon_size = (28.0f32 * scale_factor).round() as i32;
+                let x = (pos.x + x_off).round() as i32;
+                let y = (pos.y + y_off).round() as i32;
+                let base_y = if *has_hp_bar { y + 28 } else { y + 26 };
+                let icon_size = 28i32;
                 let gap = 1i32;
                 let count = icon_keys.len() as i32;
                 let total_w = count * icon_size + (count - 1) * gap;
@@ -1852,13 +2215,7 @@ impl RenderTarget for ImageTarget {
                 for (i, icon_key) in icon_keys.iter().enumerate() {
                     if let Some(icon) = self.consumable_icons.get(icon_key) {
                         let ix = start_x + i as i32 * (icon_size + gap);
-                        let resized = image::imageops::resize(
-                            icon,
-                            icon_size as u32,
-                            icon_size as u32,
-                            image::imageops::FilterType::Triangle,
-                        );
-                        draw_icon(&mut self.canvas, &resized, ix, base_y);
+                        draw_icon(&mut self.canvas, icon, ix as f32, base_y as f32);
                     }
                 }
             }
@@ -1888,7 +2245,7 @@ impl RenderTarget for ImageTarget {
                     &advantage_label,
                     advantage_team,
                     &self.fonts,
-                    self.map_x_offset * 2 + self.map_width,
+                    self.hud_width,
                 );
             }
             DrawCommand::TeamAdvantage { .. } => {
@@ -1896,7 +2253,7 @@ impl RenderTarget for ImageTarget {
                 // this command is retained for consumers that want the breakdown data.
             }
             DrawCommand::Timer { time_remaining, elapsed } => {
-                draw_timer(&mut self.canvas, *time_remaining, *elapsed, &self.fonts, self.map_x_offset * 2 + self.map_width);
+                draw_timer(&mut self.canvas, *time_remaining, *elapsed, &self.fonts, self.hud_width);
             }
             DrawCommand::PreBattleCountdown { seconds } => {
                 draw_pre_battle_countdown(
@@ -1904,17 +2261,18 @@ impl RenderTarget for ImageTarget {
                     *seconds,
                     &self.fonts,
                     &*self.text_resolver,
-                    self.map_x_offset * 2 + self.map_width,
+                    self.hud_width,
                 );
             }
             DrawCommand::TeamBuffs { friendly_buffs, enemy_buffs } => {
                 let icon_size = 16i32;
                 let gap = 2i32;
-                let buff_y = 48;
+                let buff_y = HUD_HEIGHT as i32;
                 let count_scale = self.fonts.scale(10.0);
 
-                // Friendly buffs: left side, starting from x=4 + map_x_offset
-                let mut x = self.map_x_offset as i32 + 4;
+                // Friendly buffs: left side of the minimap (shifted right by
+                // the roster gutter when team rosters are on).
+                let mut x = self.map_x_offset as i32 + 4i32;
                 for (marker, count) in friendly_buffs {
                     if let Some(icon) = self.powerup_icons.get(marker.as_str()) {
                         let resized = image::imageops::resize(
@@ -1923,7 +2281,12 @@ impl RenderTarget for ImageTarget {
                             icon_size as u32,
                             image::imageops::FilterType::Nearest,
                         );
-                        draw_icon(&mut self.canvas, &resized, x + icon_size / 2, buff_y + icon_size / 2);
+                        draw_icon(
+                            &mut self.canvas,
+                            &resized,
+                            (x + icon_size / 2) as f32,
+                            (buff_y + icon_size / 2) as f32,
+                        );
                         if *count > 1 {
                             let label = format!("{}", count);
                             draw_text_shadow(
@@ -1943,7 +2306,8 @@ impl RenderTarget for ImageTarget {
                     }
                 }
 
-                // Enemy buffs: right side, starting from right edge of map area
+                // Enemy buffs: right side, starting from the minimap's right
+                // edge (map_x_offset + map_width) rather than the canvas edge.
                 let width = (self.map_x_offset + self.map_width) as i32;
                 let mut x = width - 4;
                 for (marker, count) in enemy_buffs {
@@ -1971,20 +2335,24 @@ impl RenderTarget for ImageTarget {
                         } else {
                             x -= icon_size;
                         }
-                        draw_icon(&mut self.canvas, &resized, x + icon_size / 2, buff_y + icon_size / 2);
+                        draw_icon(
+                            &mut self.canvas,
+                            &resized,
+                            (x + icon_size / 2) as f32,
+                            (buff_y + icon_size / 2) as f32,
+                        );
                         x -= gap;
                     }
                 }
             }
             DrawCommand::PositionTrail { points, .. } => {
-                let y_off_i = y_off as i32;
                 for (pos, color) in points {
-                    draw_filled_circle(&mut self.canvas, pos.x as f32 + self.map_x_offset as f32, (pos.y + y_off_i) as f32, 1.0, *color, 1.0);
+                    draw_filled_circle(&mut self.canvas, pos.x + x_off, pos.y + y_off, 1.0, *color, 1.0);
                 }
             }
             DrawCommand::ShipConfigCircle { pos, radius_px, color, alpha, dashed, label, .. } => {
-                let x = pos.x as f32 + self.map_x_offset as f32;
-                let y = pos.y as f32 + y_off;
+                let x = pos.x + x_off;
+                let y = pos.y + y_off;
                 let r = *radius_px;
                 if *dashed {
                     draw_dashed_circle(&mut self.canvas, x, y, r, *color, *alpha, 1.0);
@@ -2063,7 +2431,14 @@ impl RenderTarget for ImageTarget {
                 );
             }
             DrawCommand::ChatOverlay { entries } => {
-                draw_chat_overlay(&mut self.canvas, entries, &self.fonts, &self.ship_icons, 48, self.map_x_offset);
+                draw_chat_overlay(
+                    &mut self.canvas,
+                    entries,
+                    &self.fonts,
+                    &self.ship_icons,
+                    HUD_HEIGHT,
+                    self.map_x_offset,
+                );
             }
             DrawCommand::BattleResultOverlay { result, finish_type, color, subtitle_above } => {
                 let text = self.text_resolver.resolve(&TranslatableText::BattleResult(*result));
@@ -2077,7 +2452,7 @@ impl RenderTarget for ImageTarget {
                     *color,
                     *subtitle_above,
                     &self.fonts,
-                    self.map_x_offset * 2 + self.map_width,
+                    self.hud_width,
                 );
             }
             DrawCommand::StatsPanel { x, width } => {
@@ -2103,6 +2478,9 @@ impl RenderTarget for ImageTarget {
                 hp_fraction,
                 hp_current,
                 hp_max,
+                hp_healable,
+                hp_healable_per_charge,
+                heal_availability,
                 player_name,
                 clan_tag,
                 clan_color,
@@ -2110,18 +2488,20 @@ impl RenderTarget for ImageTarget {
                 silhouette,
             } => {
                 let scale_factor = if self.large_elements { 1.8f32 } else { 1.0f32 };
-                let padding = (8.0f32 * scale_factor).round() as i32;
+                let padding = (8.0 * scale_factor).round() as i32;
                 let inner_x = *x + padding;
                 let inner_w = *width - padding * 2;
 
-                let mut label_y = *y + (2.0f32 * scale_factor).round() as i32;
+                // Draw clan tag + player name, and ship name above the silhouette
+                let mut label_y = *y + (2.0 * scale_factor).round() as i32;
 
                 if player_name.is_some() || clan_tag.as_ref().is_some_and(|t| !t.is_empty()) {
                     let clan_prefix = clan_tag.as_ref().filter(|t| !t.is_empty()).map(|t| format!("[{t}] "));
                     let name_part = player_name.as_deref().unwrap_or("");
 
-                    let (name_font, name_font_scale) = self.fonts.font_and_scale(name_part, 12.0f32 * scale_factor);
+                    let (name_font, name_font_scale) = self.fonts.font_and_scale(name_part, 12.0 * scale_factor);
 
+                    // Measure total width for centering
                     let clan_w =
                         clan_prefix.as_ref().map(|cp| text_size(name_font_scale, name_font, cp).0).unwrap_or(0);
                     let name_w =
@@ -2145,20 +2525,21 @@ impl RenderTarget for ImageTarget {
                             name_part,
                         );
                     }
-                    label_y += (14.0f32 * scale_factor).round() as i32;
+                    label_y += (13.0 * scale_factor).round() as i32;
                 }
                 if let Some(name) = ship_name {
-                    let (ship_font, ship_font_scale) = self.fonts.font_and_scale(name, 10.0f32 * scale_factor);
+                    let (ship_font, ship_font_scale) = self.fonts.font_and_scale(name, 10.0 * scale_factor);
                     let (tw, _) = text_size(ship_font_scale, ship_font, name);
                     let tx = inner_x + (inner_w - tw as i32) / 2;
                     draw_text_shadow(&mut self.canvas, [180, 180, 180], tx, label_y, ship_font_scale, ship_font, name);
-                    label_y += (14.0f32 * scale_factor).round() as i32;
+                    label_y += (13.0 * scale_factor).round() as i32;
                 }
 
-                // Draw silhouette
-                let sil_y = label_y + (2.0f32 * scale_factor).round() as i32;
-                let sil_h = (*y + *height - (18.0f32 * scale_factor).round() as i32 - sil_y).max((20.0f32 * scale_factor).round() as i32);
+                // Draw silhouette: gray base + colored HP + white healable overlay
+                let sil_y = label_y + 1;
+                let sil_h = (*y + *height - 18 - sil_y).max(20);
                 if let Some(sil_img) = silhouette {
+                    // Scale silhouette to fit the available area
                     let aspect = sil_img.width() as f32 / sil_img.height() as f32;
                     let fit_w = inner_w as u32;
                     let fit_h = sil_h as u32;
@@ -2170,34 +2551,71 @@ impl RenderTarget for ImageTarget {
                     let draw_w = draw_w.max(1);
                     let draw_h = draw_h.max(1);
 
-                    let gray_sil = tint_silhouette(sil_img, [200, 200, 200]);
-                    let resized_gray =
-                        image::imageops::resize(&gray_sil, draw_w, draw_h, image::imageops::FilterType::Triangle);
+                    // Charcoal silhouette base (remainder = unhealable lost HP shows through)
+                    let base_sil = tint_silhouette(sil_img, crate::draw_command::SILHOUETTE_BASE_RGB);
+                    let resized_base =
+                        image::imageops::resize(&base_sil, draw_w, draw_h, image::imageops::FilterType::Triangle);
                     let sil_x = inner_x + (inner_w - draw_w as i32) / 2;
                     let sil_cy = sil_y + (sil_h - draw_h as i32) / 2;
-                    draw_icon_at(&mut self.canvas, &resized_gray, sil_x, sil_cy);
+                    draw_icon_at(&mut self.canvas, &resized_base, sil_x, sil_cy);
 
+                    let regions = crate::panel_math::silhouette_regions(
+                        *hp_current,
+                        *hp_healable,
+                        *hp_healable_per_charge,
+                        *hp_max,
+                    );
+
+                    // Colored region: current HP portion
                     let hp_color = hp_bar_color_lerp(*hp_fraction);
                     let hp_sil = tint_silhouette(sil_img, hp_color);
                     let resized_hp =
                         image::imageops::resize(&hp_sil, draw_w, draw_h, image::imageops::FilterType::Triangle);
-                    let hp_px = (draw_w as f32 * hp_fraction) as u32;
-                    if hp_px > 0 {
-                        let cropped = image::imageops::crop_imm(&resized_hp, 0, 0, hp_px, draw_h).to_image();
+                    let colored_px = (draw_w as f32 * regions.colored) as u32;
+                    if colored_px > 0 {
+                        let cropped = image::imageops::crop_imm(&resized_hp, 0, 0, colored_px, draw_h).to_image();
                         draw_icon_at(&mut self.canvas, &cropped, sil_x, sil_cy);
+                    }
+
+                    // Healable region: bright = HP the next heal charge restores,
+                    // dim = the regenerable pool beyond that charge. Gray when a
+                    // heal is ready, white while healing, hidden when unavailable.
+                    if let Some(color) = heal_availability.healable_rgb() {
+                        let mut draw_region = |fraction_start: f32, fraction_w: f32, tint: [u8; 3]| {
+                            let region_x = (draw_w as f32 * fraction_start) as u32;
+                            let region_w = (draw_w as f32 * fraction_w) as u32;
+                            if region_w > 0 {
+                                let region_sil = tint_silhouette(sil_img, tint);
+                                let resized_region = image::imageops::resize(
+                                    &region_sil,
+                                    draw_w,
+                                    draw_h,
+                                    image::imageops::FilterType::Triangle,
+                                );
+                                let cropped = image::imageops::crop_imm(&resized_region, region_x, 0, region_w, draw_h)
+                                    .to_image();
+                                draw_icon_at(&mut self.canvas, &cropped, sil_x + region_x as i32, sil_cy);
+                            }
+                        };
+                        draw_region(regions.colored, regions.healable_bright, color);
+                        draw_region(
+                            regions.colored + regions.healable_bright,
+                            regions.healable_dim,
+                            crate::panel_math::darken(color, 0.5),
+                        );
                     }
                 }
 
-                // HP text
+                // HP text: "12,345 / 42,750"
                 let hp_text = format!("{} / {}", format_number(*hp_current as i64), format_number(*hp_max as i64));
-                let hp_scale = self.fonts.scale(14.0f32 * scale_factor);
+                let hp_scale = self.fonts.scale(14.0 * scale_factor);
                 let (tw, _) = text_size(hp_scale, &self.fonts.primary, &hp_text);
                 let hp_text_x = inner_x + (inner_w - tw as i32) / 2;
                 draw_text_shadow(
                     &mut self.canvas,
                     [220, 220, 220],
                     hp_text_x,
-                    *y + *height - (14.0f32 * scale_factor).round() as i32,
+                    *y + *height - (14.0 * scale_factor).round() as i32,
                     hp_scale,
                     &self.fonts.primary,
                     &hp_text,
@@ -2212,117 +2630,101 @@ impl RenderTarget for ImageTarget {
                 spotting_breakdowns,
                 damage_potential,
                 potential_breakdowns,
-                compact,
             } => {
                 let scale_factor = if self.large_elements { 1.8f32 } else { 1.0f32 };
-                let padding = (8.0f32 * scale_factor).round() as i32;
+                let padding = (8.0 * scale_factor).round() as i32;
                 let inner_x = *x + padding;
-                let indent_x = inner_x + (12.0f32 * scale_factor).round() as i32;
-                let header_scale = self.fonts.scale(16.0f32 * scale_factor);
-                let breakdown_scale = self.fonts.scale(13.0f32 * scale_factor);
-                let header_row_h = (22.0f32 * scale_factor).round() as i32;
-                let breakdown_row_h = (18.0f32 * scale_factor).round() as i32;
+                let indent_x = inner_x + (12.0 * scale_factor).round() as i32;
+                let header_scale = self.fonts.scale(16.0 * scale_factor);
+                let breakdown_scale = self.fonts.scale(13.0 * scale_factor);
+                let header_row_h = (22.0 * scale_factor).round() as i32;
+                let breakdown_row_h = (18.0 * scale_factor).round() as i32;
                 let right_x = *x + *width - padding;
 
-                let mut cur_y = *y + (4.0f32 * scale_factor).round() as i32;
+                let mut cur_y = *y + (4.0 * scale_factor).round() as i32;
 
-                if *compact {
-                    // Draw DMG
-                    let total_damage: f64 = breakdowns.iter().map(|e| e.damage).sum();
+                // Total enemy damage header
+                let total_damage: f64 = breakdowns.iter().map(|e| e.damage).sum();
+                draw_text_shadow(
+                    &mut self.canvas,
+                    [200, 200, 200],
+                    inner_x,
+                    cur_y,
+                    header_scale,
+                    &self.fonts.primary,
+                    "DMG",
+                );
+                let total_str = format_number(total_damage as i64);
+                let (tw, _) = text_size(header_scale, &self.fonts.primary, &total_str);
+                draw_text_shadow(
+                    &mut self.canvas,
+                    [255, 220, 100],
+                    right_x - tw as i32,
+                    cur_y,
+                    header_scale,
+                    &self.fonts.primary,
+                    &total_str,
+                );
+                cur_y += header_row_h;
+
+                // Indented breakdown rows
+                for entry in breakdowns.iter() {
+                    let color = damage_label_color_rgb(&entry.label);
                     draw_text_shadow(
                         &mut self.canvas,
-                        [200, 200, 200],
-                        inner_x,
+                        [140, 140, 140],
+                        indent_x,
                         cur_y,
-                        header_scale,
+                        breakdown_scale,
                         &self.fonts.primary,
-                        "DMG",
+                        &entry.label,
                     );
-                    let total_str = format_number(total_damage as i64);
-                    let (tw, _) = text_size(header_scale, &self.fonts.primary, &total_str);
+                    let val_str = format_number(entry.damage as i64);
+                    let (tw, _) = text_size(breakdown_scale, &self.fonts.primary, &val_str);
                     draw_text_shadow(
                         &mut self.canvas,
-                        [255, 220, 100],
+                        color,
                         right_x - tw as i32,
                         cur_y,
-                        header_scale,
+                        breakdown_scale,
                         &self.fonts.primary,
-                        &total_str,
+                        &val_str,
                     );
-                    cur_y += header_row_h;
+                    cur_y += breakdown_row_h;
+                }
 
-                    // Draw SPOT
+                // Spotting + Potential with sub-breakdowns
+                let summary_sections: [(&str, f64, &[_], [u8; 3]); 2] = [
+                    ("SPOT", *damage_spotting, spotting_breakdowns, [120u8, 200, 255]),
+                    ("POT", *damage_potential, potential_breakdowns, [180, 180, 180]),
+                ];
+                for (label, total, sub_breakdowns, color) in &summary_sections {
+                    // Header row
                     draw_text_shadow(
                         &mut self.canvas,
-                        [200, 200, 200],
+                        [140, 140, 140],
                         inner_x,
                         cur_y,
-                        header_scale,
+                        breakdown_scale,
                         &self.fonts.primary,
-                        "SPOT",
+                        label,
                     );
-                    let spot_str = format_number(*damage_spotting as i64);
-                    let (tw, _) = text_size(header_scale, &self.fonts.primary, &spot_str);
+                    let val_str = format_number(*total as i64);
+                    let (tw, _) = text_size(breakdown_scale, &self.fonts.primary, &val_str);
                     draw_text_shadow(
                         &mut self.canvas,
-                        [120, 200, 255],
+                        *color,
                         right_x - tw as i32,
                         cur_y,
-                        header_scale,
+                        breakdown_scale,
                         &self.fonts.primary,
-                        &spot_str,
+                        &val_str,
                     );
-                    cur_y += header_row_h;
+                    cur_y += breakdown_row_h;
 
-                    // Draw POT
-                    draw_text_shadow(
-                        &mut self.canvas,
-                        [200, 200, 200],
-                        inner_x,
-                        cur_y,
-                        header_scale,
-                        &self.fonts.primary,
-                        "POT",
-                    );
-                    let pot_str = format_number(*damage_potential as i64);
-                    let (tw, _) = text_size(header_scale, &self.fonts.primary, &pot_str);
-                    draw_text_shadow(
-                        &mut self.canvas,
-                        [180, 180, 180],
-                        right_x - tw as i32,
-                        cur_y,
-                        header_scale,
-                        &self.fonts.primary,
-                        &pot_str,
-                    );
-                } else {
-                    // Total enemy damage header
-                    let total_damage: f64 = breakdowns.iter().map(|e| e.damage).sum();
-                    draw_text_shadow(
-                        &mut self.canvas,
-                        [200, 200, 200],
-                        inner_x,
-                        cur_y,
-                        header_scale,
-                        &self.fonts.primary,
-                        "DMG",
-                    );
-                    let total_str = format_number(total_damage as i64);
-                    let (tw, _) = text_size(header_scale, &self.fonts.primary, &total_str);
-                    draw_text_shadow(
-                        &mut self.canvas,
-                        [255, 220, 100],
-                        right_x - tw as i32,
-                        cur_y,
-                        header_scale,
-                        &self.fonts.primary,
-                        &total_str,
-                    );
-                    cur_y += header_row_h;
-
-                    // Indented breakdown rows
-                    for entry in breakdowns.iter() {
-                        let color = damage_label_color_rgb(&entry.label);
+                    // Sub-breakdown rows
+                    for entry in sub_breakdowns.iter() {
+                        let sub_color = damage_label_color_rgb(&entry.label);
                         draw_text_shadow(
                             &mut self.canvas,
                             [140, 140, 140],
@@ -2332,75 +2734,93 @@ impl RenderTarget for ImageTarget {
                             &self.fonts.primary,
                             &entry.label,
                         );
-                        let val_str = format_number(entry.damage as i64);
-                        let (tw, _) = text_size(breakdown_scale, &self.fonts.primary, &val_str);
+                        let sub_val_str = format_number(entry.damage as i64);
+                        let (tw, _) = text_size(breakdown_scale, &self.fonts.primary, &sub_val_str);
                         draw_text_shadow(
                             &mut self.canvas,
-                            color,
+                            sub_color,
                             right_x - tw as i32,
                             cur_y,
                             breakdown_scale,
                             &self.fonts.primary,
-                            &val_str,
+                            &sub_val_str,
                         );
                         cur_y += breakdown_row_h;
                     }
+                }
+            }
+            DrawCommand::StatsRibbons { x, y, width, ribbons } => {
+                use crate::draw_command::STATS_RIBBON_CELL_W;
+                use crate::draw_command::STATS_RIBBON_ICON;
+                use crate::draw_command::STATS_RIBBON_ROW_H;
+                let padding = 8;
+                let inner_x = *x + padding;
+                let inner_w = *width - padding * 2;
+                let scale = self.fonts.scale(14.0);
+                let icon_h = STATS_RIBBON_ICON;
+                let cell_w = STATS_RIBBON_CELL_W;
+                let gap = 2;
 
-                    // Spotting + Potential with sub-breakdowns
-                    let summary_sections: [(&str, f64, &[_], [u8; 3]); 2] = [
-                        ("SPOT", *damage_spotting, spotting_breakdowns, [120u8, 200, 255]),
-                        ("POT", *damage_potential, potential_breakdowns, [180, 180, 180]),
-                    ];
-                    for (label, total, sub_breakdowns, color) in &summary_sections {
-                        // Header row
-                        draw_text_shadow(
-                            &mut self.canvas,
-                            [140, 140, 140],
-                            inner_x,
-                            cur_y,
-                            breakdown_scale,
-                            &self.fonts.primary,
-                            label,
-                        );
-                        let val_str = format_number(*total as i64);
-                        let (tw, _) = text_size(breakdown_scale, &self.fonts.primary, &val_str);
-                        draw_text_shadow(
-                            &mut self.canvas,
-                            *color,
-                            right_x - tw as i32,
-                            cur_y,
-                            breakdown_scale,
-                            &self.fonts.primary,
-                            &val_str,
-                        );
-                        cur_y += breakdown_row_h;
-
-                        // Sub-breakdown rows
-                        for entry in sub_breakdowns.iter() {
-                            let sub_color = damage_label_color_rgb(&entry.label);
-                            draw_text_shadow(
-                                &mut self.canvas,
-                                [140, 140, 140],
-                                indent_x,
-                                cur_y,
-                                breakdown_scale,
-                                &self.fonts.primary,
-                                &entry.label,
-                            );
-                            let sub_val_str = format_number(entry.damage as i64);
-                            let (tw, _) = text_size(breakdown_scale, &self.fonts.primary, &sub_val_str);
-                            draw_text_shadow(
-                                &mut self.canvas,
-                                sub_color,
-                                right_x - tw as i32,
-                                cur_y,
-                                breakdown_scale,
-                                &self.fonts.primary,
-                                &sub_val_str,
-                            );
-                            cur_y += breakdown_row_h;
-                        }
+                let mut cur_x = inner_x;
+                let mut cur_y = *y;
+                for rc in ribbons.iter() {
+                    // Fixed-width cell, wrapping by whole cells, matching the
+                    // emitter's `inner_w / cell_w` row math so the activity feed
+                    // below never overlaps a wrapped row.
+                    if cur_x > inner_x && cur_x + cell_w > inner_x + inner_w {
+                        cur_x = inner_x;
+                        cur_y += STATS_RIBBON_ROW_H;
                     }
+                    let sub_key = format!("sub{}", rc.icon_key);
+                    let icon = if rc.is_subribbon {
+                        self.subribbon_icons.get(&sub_key).or_else(|| self.ribbon_icons.get(&rc.icon_key))
+                    } else {
+                        self.ribbon_icons.get(&rc.icon_key).or_else(|| self.subribbon_icons.get(&sub_key))
+                    };
+                    let count_str = format!("x{}", rc.count);
+                    let (_, th) = text_size(scale, &self.fonts.primary, &count_str);
+
+                    // Icon at fixed height, aspect-preserved width (ribbon icons
+                    // are wide); fall back to a truncated name when missing.
+                    let lead_w = if let Some(img) = icon {
+                        let w = if img.height() > 0 {
+                            ((icon_h as f32 * img.width() as f32 / img.height() as f32).round() as i32).max(1)
+                        } else {
+                            icon_h
+                        };
+                        let resized = image::imageops::resize(
+                            img,
+                            w as u32,
+                            icon_h as u32,
+                            image::imageops::FilterType::Lanczos3,
+                        );
+                        draw_icon_at(&mut self.canvas, &resized, cur_x, cur_y);
+                        w
+                    } else {
+                        let label: String = rc.display_name.chars().take(8).collect();
+                        let (lw, _) = text_size(scale, &self.fonts.primary, &label);
+                        draw_text_shadow(
+                            &mut self.canvas,
+                            [180, 180, 180],
+                            cur_x,
+                            cur_y,
+                            scale,
+                            &self.fonts.primary,
+                            &label,
+                        );
+                        lw as i32
+                    };
+                    let count_y = cur_y + (icon_h - th as i32) / 2;
+                    draw_text_shadow(
+                        &mut self.canvas,
+                        [255, 255, 255],
+                        cur_x + lead_w + gap,
+                        count_y,
+                        scale,
+                        &self.fonts.primary,
+                        &count_str,
+                    );
+                    cur_x += cell_w;
                 }
             }
             DrawCommand::StatsActivityFeed { x, y, width, height, entries } => {
@@ -2487,7 +2907,7 @@ impl RenderTarget for ImageTarget {
                             cx += pw as i32;
 
                             // Killer name
-                            let (kf, ks) = self.fonts.font_and_scale(&kill.killer_name, 14.0 * sf);
+                            let (kf, ks) = self.fonts.font_and_scale(&kill.killer_name, 14.0);
                             draw_text_shadow(&mut self.canvas, kill.killer_color, cx, ey, ks, kf, &kill.killer_name);
                             let (kw, _) = text_size(ks, kf, &kill.killer_name);
                             cx += kw as i32 + gap;
@@ -2512,12 +2932,17 @@ impl RenderTarget for ImageTarget {
                             let cause_key = death_cause_icon_key(&kill.cause);
                             if let Some(cause_icon) = self.death_cause_icons.get(cause_key) {
                                 let cause_center_y = icon_y + icon_size / 2;
-                                draw_icon(&mut self.canvas, cause_icon, cx + icon_size / 2, cause_center_y);
+                                draw_icon(
+                                    &mut self.canvas,
+                                    cause_icon,
+                                    (cx + icon_size / 2) as f32,
+                                    cause_center_y as f32,
+                                );
                                 cx += icon_size + gap;
                             }
 
                             // Victim name
-                            let (vf, vs) = self.fonts.font_and_scale(&kill.victim_name, 14.0 * sf);
+                            let (vf, vs) = self.fonts.font_and_scale(&kill.victim_name, 14.0);
                             draw_text_shadow(&mut self.canvas, kill.victim_color, cx, ey, vs, vf, &kill.victim_name);
                             let (vw, _) = text_size(vs, vf, &kill.victim_name);
                             cx += vw as i32 + gap;
@@ -2543,7 +2968,7 @@ impl RenderTarget for ImageTarget {
                             let mut cx = inner_x;
 
                             // Clan tag + Player name (use same font for both)
-                            let (chat_name_font, chat_name_scale) = self.fonts.font_and_scale(&chat.player_name, 14.0 * sf);
+                            let (chat_name_font, chat_name_scale) = self.fonts.font_and_scale(&chat.player_name, 14.0);
                             if !chat.clan_tag.is_empty() {
                                 let clan_color = chat.clan_color.unwrap_or(chat.team_color);
                                 let clan_text = format!("[{}] ", chat.clan_tag);
@@ -2631,19 +3056,19 @@ impl RenderTarget for ImageTarget {
                     }
                 }
             }
-            DrawCommand::RibbonPopUp { ribbon, display_name, age_fraction } => {
-                let icon_key = ribbon
-                    .translation_key()
-                    .map(|k| k.replace("IDS_RIBBON_", "ribbon_").to_lowercase())
-                    .unwrap_or_else(|| "unknown".to_string());
-                let icon = self.ribbon_icons.get(&icon_key);
-                draw_ribbon_popup(
+            DrawCommand::TeamRoster { side, x, y, width, height, rows } => {
+                draw_team_roster(
                     &mut self.canvas,
-                    icon,
-                    display_name,
-                    *age_fraction,
+                    *side,
+                    *x,
+                    *y,
+                    *width,
+                    *height,
+                    rows,
                     &self.fonts,
-                    self.map_x_offset * 2 + self.map_width,
+                    &self.ship_icons,
+                    &self.consumable_icons,
+                    &self.death_cause_icons,
                 );
             }
         }
@@ -2652,81 +3077,4 @@ impl RenderTarget for ImageTarget {
     fn end_frame(&mut self) {
         // No-op — frame is ready to read via frame()
     }
-}
-
-fn draw_ribbon_popup(
-    pm: &mut Pixmap,
-    icon: Option<&RgbaImage>,
-    display_name: &str,
-    age_fraction: f32,
-    fonts: &GameFonts,
-    map_width: u32,
-) {
-    let fade_in_frac = 0.15; // first 15%
-    let fade_out_frac = 0.85; // last 15%
-
-    let alpha = if age_fraction < fade_in_frac {
-        age_fraction / fade_in_frac
-    } else if age_fraction > fade_out_frac {
-        1.0 - (age_fraction - fade_out_frac) / (1.0 - fade_out_frac)
-    } else {
-        1.0
-    };
-
-    if alpha <= 0.0 {
-        return;
-    }
-
-    // Slide up animation: start 20px lower and rise to base position
-    let y_offset = (1.0 - alpha.powf(0.5)) * 15.0;
-    let base_y = 100.0; // below the score bar
-    let x = map_width as f32 / 2.0;
-    let y = base_y - y_offset;
-
-    let scale = fonts.scale(18.0);
-    let (tw, th) = text_size(scale, &fonts.primary, display_name);
-    let icon_w = icon.map(|i| i.width() as f32 + 8.0).unwrap_or(0.0);
-
-    let padding_x = 16.0;
-    let padding_y = 8.0;
-    let bg_w = tw as f32 + icon_w + padding_x * 2.0;
-    let bg_h = th as f32 + padding_y * 2.0;
-
-    // Premium dark pill background with subtle border
-    let rect_x = x - bg_w / 2.0;
-    let rect_y = y - bg_h / 2.0;
-    draw_rounded_rect(pm, rect_x, rect_y, bg_w, bg_h, 6.0, [24, 28, 36], alpha * 0.95);
-    draw_rounded_rect_outline(pm, rect_x, rect_y, bg_w, bg_h, 6.0, [255, 225, 100], alpha * 0.4, 1.0);
-
-    let mut content_x = rect_x + padding_x;
-
-    // Draw icon if available
-    if let Some(icon_img) = icon {
-        let icon_pm = rgba_to_pixmap(icon_img);
-        let icon_y = y - icon_img.height() as f32 / 2.0;
-
-        let mut paint = PixmapPaint::default();
-        paint.opacity = alpha;
-
-        pm.draw_pixmap(
-            content_x as i32,
-            icon_y as i32,
-            icon_pm.as_ref(),
-            &paint,
-            Transform::identity(),
-            None,
-        );
-        content_x += icon_img.width() as f32 + 8.0;
-    }
-
-    // Draw text with shadow
-    draw_text_shadow(
-        pm,
-        [255, 255, 255],
-        content_x as i32,
-        (y - th as f32 / 2.0) as i32,
-        scale,
-        &fonts.primary,
-        display_name,
-    );
 }

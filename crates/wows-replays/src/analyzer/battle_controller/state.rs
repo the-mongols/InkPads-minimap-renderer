@@ -50,7 +50,7 @@ pub struct MinimapPosition {
 }
 
 /// Current state of a capture point.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct CapturePointState {
     pub index: usize,
     /// World position of the zone center (from InteractiveZone entity)
@@ -74,7 +74,7 @@ pub struct CapturePointState {
 /// InteractiveZone entities with `controlPoint: null` in `componentsState`.
 /// These appear in waves during arms race, can be captured by either team,
 /// and disappear (EntityLeave) once consumed.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct BuffZoneState {
     pub entity_id: EntityId,
     /// World position of the zone center
@@ -89,7 +89,7 @@ pub struct BuffZoneState {
 }
 
 /// A buff that has been captured by a team.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CapturedBuff {
     /// GameParam ID of the Drop
     pub params_id: GameParamId,
@@ -100,14 +100,14 @@ pub struct CapturedBuff {
 }
 
 /// Current score for a team.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct TeamScore {
     pub team_index: usize,
     pub score: i64,
 }
 
 /// Scoring rules extracted from BattleLogic state.missions.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ScoringRules {
     /// Score required to win (typically 1000)
     pub team_win_score: i64,
@@ -120,13 +120,59 @@ pub struct ScoringRules {
 }
 
 /// An active consumable on a ship.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ActiveConsumable {
     pub consumable: Recognized<Consumable>,
     pub activated_at: GameClock,
     pub duration: f32,
     /// How the consumable was activated (15.2+). `None` for pre-15.2 replays.
     pub usage_params: Option<ConsumableUsageParams>,
+}
+
+/// Tracked state for one consumable slot on a ship.
+///
+/// Seeded externally (e.g. via `wows_replay_insights::build::seed_consumable_inventories`)
+/// after the controller is set up. The controller updates `charges_used` on
+/// each observed activation and stamps `active_until` for active timing.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ConsumableInventory {
+    pub slot_index: u8,
+    /// Raw GameParams `consumableType` string. Used to match activation events
+    /// to the right slot.
+    pub consumable_type_raw: String,
+    pub consumable: Recognized<Consumable>,
+    /// Param index of the chosen Ability variant (e.g. `"PCY009_CrashCrewPremium"`).
+    /// Doubles as the icon-map key.
+    pub icon_key: String,
+    /// Maximum number of charges this slot can hold.
+    pub total_charges: wowsunpack::game_types::ChargeCount,
+    /// Activations the controller has observed since seeding.
+    pub charges_used: u32,
+    /// One activation's work duration, in seconds.
+    pub work_time: f32,
+    /// Cooldown between activations, in seconds.
+    pub reload_time: f32,
+    /// Repair Party heal rate, fraction of max HP per second, build modifiers
+    /// applied. `None` for non-heal consumables. The renderer derives per-charge
+    /// heal capacity as `work_time * (regen_hp_speed_units + regen_hp_speed * maxHealth)`.
+    pub regen_hp_speed: Option<f32>,
+    /// Repair Party flat heal rate, HP per second, build modifiers applied.
+    /// `None` for non-heal consumables.
+    pub regen_hp_speed_units: Option<f32>,
+    /// `Some(clock)` while a consumable is active. Cleared by renderers when
+    /// the current clock passes the activation expiry.
+    pub active_until: Option<GameClock>,
+    // No stored reload-remaining: the server broadcasts discrete activation
+    // events, not a live cooldown countdown. Renderers that want a readiness
+    // indicator estimate the reload window from `reload_time` and the last
+    // activation. That estimate runs long for ships that refund consumables
+    // early (Valparaiso, San Martin); the next activation packet corrects it.
+}
+
+impl ConsumableInventory {
+    pub fn charges_remaining(&self) -> wowsunpack::game_types::ChargeCount {
+        self.total_charges.saturating_sub(self.charges_used)
+    }
 }
 
 /// A building/structure entity in the game.
@@ -153,7 +199,7 @@ pub struct SmokeScreenEntity {
 }
 
 /// An active artillery salvo in flight.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ActiveShot {
     pub avatar_id: AvatarId,
     pub salvo: ArtillerySalvo,
@@ -161,7 +207,7 @@ pub struct ActiveShot {
 }
 
 /// An active torpedo in the water.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ActiveTorpedo {
     pub avatar_id: AvatarId,
     pub torpedo: TorpedoData,
@@ -172,7 +218,7 @@ pub struct ActiveTorpedo {
 }
 
 /// An active plane squadron on the minimap.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ActivePlane {
     pub plane_id: PlaneId,
     pub owner_id: EntityId,
@@ -185,7 +231,7 @@ pub struct ActivePlane {
 
 /// A fighter patrol ward — a stationary circle where fighters patrol.
 /// Created by `receive_wardAdded`, removed by `receive_wardRemoved`.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ActiveWard {
     pub plane_id: PlaneId,
     /// Patrol center position (world coordinates)
@@ -205,13 +251,6 @@ pub struct KillRecord {
     pub cause: Recognized<DeathCause>,
 }
 
-/// A ribbon earned by the recording player.
-#[derive(Debug, Clone, Serialize)]
-pub struct RibbonRecord {
-    pub clock: GameClock,
-    pub ribbon: crate::analyzer::decoder::Ribbon,
-}
-
 /// A dead ship's last known position.
 #[derive(Debug, Clone, Serialize)]
 pub struct DeadShip {
@@ -229,7 +268,7 @@ pub struct DeadShip {
 /// Weather zones are InteractiveZone entities with `type == 5`. Their initial
 /// data comes from BattleLogic `state.weather.localWeather` PropertyUpdates,
 /// but position changes arrive via 0x2a packets on the InteractiveZone entity.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct LocalWeatherZone {
     /// Human-readable weather type name (e.g. "Filth")
     pub name: String,
@@ -250,7 +289,7 @@ pub struct LocalWeatherZone {
 /// Contains both the server-authoritative impact data and the salvo metadata
 /// needed for armor visualization. The matched ActiveShot is removed from
 /// active_shots when this is created.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ResolvedShotHit {
     /// Game clock when the hit was recorded.
     pub clock: GameClock,

@@ -6,6 +6,9 @@
 //!
 //! Tests are ignored when the required game data build is not available.
 //! When no game data is discovered at all, every test in this file is skipped.
+//!
+//! Requires the `vfs` feature (loads game data from a WoWS install).
+#![cfg(feature = "vfs")]
 
 use serde_json::Value;
 use std::path::PathBuf;
@@ -52,12 +55,13 @@ fn snapshot_first_n_packets(replay_filename: &str, n: usize) {
     let replay = ReplayFile::from_file(&path).expect("should parse replay");
     let version = Version::from_client_exe(&replay.meta.clientVersionFromExe);
 
-    let game_dir = wows_data_mgr::game_dir_for_build(version.build)
-        .unwrap_or_else(|| panic!("game data for build {} not available", version.build));
+    let build = version.build_number().expect("replay version carries a build");
+    let game_dir =
+        wows_data_mgr::game_dir_for_build(build).unwrap_or_else(|| panic!("game data for build {build} not available"));
 
     let resources = game_data::load_game_resources(&game_dir, &version).expect("should load game resources");
 
-    let mut parser = Parser::new(&resources.specs);
+    let mut parser = Parser::with_version(&resources.specs, version);
     let decoder = PacketDecoder::builder().version(version).build();
 
     let replay_stem = replay_filename.trim_end_matches(".wowsreplay");

@@ -4,7 +4,6 @@ use indicatif::ProgressStyle;
 use rootcause::prelude::*;
 use std::cell::Cell;
 use std::fs::File;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use tracing::info;
 use tracing::warn;
@@ -15,13 +14,12 @@ use wowsunpack::game_params::types::GameParamProvider;
 use wowsunpack::game_params::types::Param;
 use wowsunpack::vfs::VfsPath;
 
+use wows_battle_world::merged::MergedReplays;
 use wows_replays::ReplayFile;
-use wows_replays::analyzer::Analyzer;
-use wows_replays::analyzer::battle_controller::BattleController;
-use wows_replays::analyzer::battle_controller::listener::BattleControllerState;
 use wows_replays::game_constants::GameConstants;
-use wows_replays::analyzer::decoder::Consumable;
 
+use wows_minimap_renderer::EncoderKind;
+use wows_minimap_renderer::VideoCodec;
 use wows_minimap_renderer::assets::load_building_icons;
 use wows_minimap_renderer::assets::load_consumable_icons;
 use wows_minimap_renderer::assets::load_death_cause_icons;
@@ -36,11 +34,29 @@ use wows_minimap_renderer::assets::load_ribbon_icons;
 use wows_minimap_renderer::assets::load_ship_icons;
 use wows_minimap_renderer::config::RendererConfig;
 use wows_minimap_renderer::drawing::ImageTarget;
+use wows_minimap_renderer::encoder::Mode as EncoderMode;
 use wows_minimap_renderer::renderer::MinimapRenderer;
+use wows_minimap_renderer::video::CodecChoice;
 use wows_minimap_renderer::video::DumpMode;
 use wows_minimap_renderer::video::RenderStage;
 use wows_minimap_renderer::video::VideoEncoder;
-use wows_minimap_renderer::sync::{DualController, StateMerger};
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum CodecArg {
+    H264,
+    H265,
+    Av1,
+}
+
+impl From<CodecArg> for VideoCodec {
+    fn from(c: CodecArg) -> Self {
+        match c {
+            CodecArg::H264 => VideoCodec::H264,
+            CodecArg::H265 => VideoCodec::H265,
+            CodecArg::Av1 => VideoCodec::Av1,
+        }
+    }
+}
 
 /// Generates a minimap timelapse video from a WoWS replay
 #[derive(Parser)]
@@ -66,6 +82,10 @@ struct Args {
     #[arg(long, conflicts_with = "dump_frame")]
     dump_frames: bool,
 
+    /// Show player names above ship icons (off by default; matches the desktop default)
+    #[arg(long, conflicts_with = "no_player_names")]
+    show_player_names: bool,
+
     /// Hide player names above ship icons
     #[arg(long)]
     no_player_names: bool,
@@ -82,9 +102,9 @@ struct Args {
     #[arg(long)]
     no_buildings: bool,
 
-    /// Hide turret direction indicators
-    #[arg(long)]
-    no_turret_direction: bool,
+    /// Hide camera/look direction indicators
+    #[arg(long, alias = "no-turret-direction")]
+    no_camera_direction: bool,
 
     /// Hide selected armament/ammo type below ship icons
     #[arg(long)]
@@ -114,6 +134,28 @@ struct Args {
     #[arg(long)]
     show_ship_config: bool,
 
+    /// Force the team-roster side panels on (mutually exclusive with the stats panel).
+    /// Auto-enabled when one or more --merge replays are passed.
+    #[arg(long, conflicts_with = "no_team_rosters")]
+    team_rosters: bool,
+
+    /// Force the team-roster side panels off.
+    #[arg(long)]
+    no_team_rosters: bool,
+
+    /// Force the self-perspective stats panel on (mutually exclusive with team rosters).
+    #[arg(long, conflicts_with = "no_stats_panel")]
+    stats_panel: bool,
+
+    /// Force the self-perspective stats panel off.
+    #[arg(long)]
+    no_stats_panel: bool,
+
+    /// Include the pre-battle phase (spawn and countdown) at the start of the
+    /// video. By default rendering begins at battle start.
+    #[arg(long)]
+    include_pre_battle: bool,
+
     /// Path to TOML config file
     #[arg(long)]
     config: Option<PathBuf>,
@@ -126,9 +168,26 @@ struct Args {
     #[arg(long)]
     check_encoder: bool,
 
-    /// Use CPU encoder (openh264) instead of GPU
+    /// Force CPU encoder (no GPU). Combine with --codec to pick the CPU encoder.
     #[arg(long)]
     cpu: bool,
+
+    /// Video codec for output. Defaults to the best codec supported by the
+    /// active backend (GPU H.265 if available, otherwise CPU AV1).
+    #[arg(long, value_enum)]
+    codec: Option<CodecArg>,
+
+    /// Target average bitrate in kilobits per second. Applies to H.264/H.265
+    /// (VBR target); for AV1 the encoder picks a quantizer to meet the rate.
+    /// Mutually exclusive with --max-size-mib.
+    #[arg(long, conflicts_with = "max_size_mib")]
+    bitrate_kbps: Option<u32>,
+
+    /// Target a maximum encoded file size in MiB. The bitrate is derived from
+    /// the match duration with a small safety margin. Mutually exclusive with
+    /// --bitrate-kbps.
+    #[arg(long, conflicts_with = "bitrate_kbps")]
+    max_size_mib: Option<u32>,
 
     /// Disable progress bar and use log output instead
     #[arg(long)]
@@ -144,33 +203,35 @@ struct Args {
     #[arg(long)]
     recreate_game_params: bool,
 
-    /// Hide the side statistics panel
-    #[arg(long)]
-    no_stats_panel: bool,
+    /// The replay file to process (primary perspective)
+    #[arg(required_unless_present_any = ["generate_config", "check_encoder"])]
+    replay: Option<PathBuf>,
 
-    /// Optimize layout elements and statistics for Discord embeds
-    #[arg(long)]
-    discord_layout: bool,
-
-    /// Use 16:9 aspect ratio canvas (wider stats panel)
+    /// Rotate stats panel layout and scale coordinates for 16:9 aspect ratio
     #[arg(long = "aspect-ratio-16-9")]
     aspect_ratio_16_9: bool,
 
-    /// Target output video duration in seconds (default: 60)
-    #[arg(long)]
-    duration: Option<f64>,
+    /// Scale up ship icons, text, and other elements for readability
+    #[arg(long = "large-elements")]
+    large_elements: bool,
 
-    /// Path to a second replay file from the opposing team for synchronized dual-render
-    #[arg(long)]
+    /// Use compact spacing for statistics cards
+    #[arg(long = "compact-stats")]
+    compact_stats: bool,
+
+    /// Adjust fonts, margins, and layouts specifically for Discord uploads/embeds
+    #[arg(long = "discord-layout")]
+    discord_layout: bool,
+
+    /// Backward compatibility alias for --merge (Red/opponent replay)
+    #[arg(long = "red-replay")]
     red_replay: Option<PathBuf>,
 
-    /// Dump forensic events (kills, caps, radar) to a JSON file
-    #[arg(long)]
-    dump_events: Option<PathBuf>,
-
-    /// The replay file to process
-    #[arg(required_unless_present_any = ["generate_config", "check_encoder"])]
-    replay: Option<PathBuf>,
+    /// Additional replay files from other players in the same match. Their
+    /// state is merged into the primary perspective to remove fog of war.
+    /// Arena IDs must match across all replays.
+    #[arg(long = "merge")]
+    merge: Vec<PathBuf>,
 }
 
 fn main() -> Result<(), Report> {
@@ -214,15 +275,28 @@ fn main() -> Result<(), Report> {
     let replay_file = ReplayFile::from_file(replay_path)?;
     let replay_version = Version::from_client_exe(&replay_file.meta.clientVersionFromExe);
 
-    let mut red_replay_file = None;
-    if let Some(ref red_path) = args.red_replay {
-        info!("Parsing second replay (red team)");
-        let red_file = ReplayFile::from_file(red_path)?;
-        // Basic sanity check: must be same map and roughly same time
-        if red_file.meta.mapName != replay_file.meta.mapName {
-            bail!("Replays are from different maps: {} vs {}", replay_file.meta.mapName, red_file.meta.mapName);
+    // Optional merge replays from other players in the same match. Loaded eagerly
+    // so a bad file fails before we touch game data. Arena IDs are validated in
+    // the packet loop below, after enough packets have been processed to populate
+    // each controller's arena_id from the OnArenaStateReceived RPC.
+    let mut merge_files = args.merge.clone();
+    if let Some(ref p) = args.red_replay {
+        merge_files.push(p.clone());
+    }
+    let merge_replays: Vec<ReplayFile> = merge_files
+        .iter()
+        .map(|p| ReplayFile::from_file(p).attach_with(|| format!("loading merge replay: {}", p.display())))
+        .collect::<Result<_, _>>()?;
+    for r in &merge_replays {
+        if r.meta.clientVersionFromExe != replay_file.meta.clientVersionFromExe {
+            bail!(
+                "Merge replay version mismatch (primary={}, merge={}, player={})",
+                replay_file.meta.clientVersionFromExe,
+                r.meta.clientVersionFromExe,
+                r.meta.playerName
+            );
         }
-        red_replay_file = Some(red_file);
+        info!(player = %r.meta.playerName, "Loaded merge replay");
     }
 
     // Load game data from either a full game install or pre-extracted directory
@@ -239,14 +313,16 @@ fn main() -> Result<(), Report> {
 
     info!("Loading fonts and icons");
     let game_fonts = load_game_fonts(vfs);
-    let ship_icons = load_ship_icons(vfs);
-    let plane_icons = load_plane_icons(vfs);
-    let building_icons = load_building_icons(vfs);
-    let consumable_icons = load_consumable_icons(vfs);
-    let death_cause_icons = load_death_cause_icons(vfs, wows_minimap_renderer::assets::ICON_SIZE);
-    let powerup_icons = load_powerup_icons(vfs, wows_minimap_renderer::assets::ICON_SIZE);
-    let flag_icons = load_flag_icons(vfs);
-    let ribbon_icons = load_ribbon_icons(vfs);
+    let version = Some(&replay_version);
+    let ship_icons = load_ship_icons(vfs, version);
+    let plane_icons = load_plane_icons(vfs, version);
+    let building_icons = load_building_icons(vfs, version);
+    let consumable_icons = load_consumable_icons(vfs, version);
+    let ribbon_icons = load_ribbon_icons(vfs, wowsunpack::game_assets::GuiAssetDir::Ribbons, version);
+    let subribbon_icons = load_ribbon_icons(vfs, wowsunpack::game_assets::GuiAssetDir::SubRibbons, version);
+    let death_cause_icons = load_death_cause_icons(vfs, wows_minimap_renderer::assets::ICON_SIZE, version);
+    let powerup_icons = load_powerup_icons(vfs, wows_minimap_renderer::assets::ICON_SIZE, version);
+    let flag_icons = load_flag_icons(vfs, version);
 
     // Load game constants from game data (falls back to hardcoded defaults per-field)
     let mut game_constants = GameConstants::from_vfs(vfs);
@@ -260,7 +336,7 @@ fn main() -> Result<(), Report> {
             && let Ok(data) = std::fs::read_to_string(&auto_constants)
             && let Ok(json) = serde_json::from_str::<serde_json::Value>(&data)
         {
-            game_constants.merge_replay_constants(&json, replay_version.build);
+            game_constants.merge_replay_constants(&json, replay_version);
             info!("Merged constants from dump: {}", auto_constants.display());
         }
     }
@@ -271,7 +347,7 @@ fn main() -> Result<(), Report> {
             .unwrap_or_else(|e| panic!("Failed to read constants file {}: {e}", constants_path.display()));
         let json: serde_json::Value =
             serde_json::from_str(&data).unwrap_or_else(|e| panic!("Failed to parse constants JSON: {e}"));
-        game_constants.merge_replay_constants(&json, replay_version.build);
+        game_constants.merge_replay_constants(&json, replay_version);
         info!("Merged replay constants from {}", constants_path.display());
     }
 
@@ -300,43 +376,53 @@ fn main() -> Result<(), Report> {
             _ => RendererConfig::default(),
         }
     };
+    // Merged replays automatically swap to the team-roster layout for this
+    // run (mirrors the desktop renderer). The user can still override either
+    // way with the explicit CLI flags below.
+    let merge_mode = !args.merge.is_empty() || args.red_replay.is_some();
     config.apply_cli_overrides(&wows_minimap_renderer::config::CliOverrides {
+        show_player_names: args.show_player_names,
         no_player_names: args.no_player_names,
         no_ship_names: args.no_ship_names,
         no_capture_points: args.no_capture_points,
         no_buildings: args.no_buildings,
-        no_turret_direction: args.no_turret_direction,
+        no_camera_direction: args.no_camera_direction,
         no_armament: args.no_armament,
         no_kill_feed: args.no_kill_feed,
         no_chat: args.no_chat,
-        no_stats_panel: args.no_stats_panel,
         show_trails: args.show_trails,
         no_dead_trails: args.no_dead_trails,
         show_speed_trails: args.show_speed_trails,
         show_ship_config: args.show_ship_config,
-        discord_layout: args.discord_layout,
+        team_rosters: args.team_rosters || (merge_mode && !args.no_team_rosters),
+        no_team_rosters: args.no_team_rosters,
+        stats_panel: args.stats_panel,
+        no_stats_panel: args.no_stats_panel,
+        include_pre_battle: args.include_pre_battle,
+        large_elements: args.large_elements,
+        compact_stats: args.compact_stats,
         aspect_ratio_16_9: args.aspect_ratio_16_9,
-        video_duration: args.duration,
+        discord_layout: args.discord_layout,
     });
+    let include_pre_battle = config.include_pre_battle;
     let mut options = config.into_render_options();
     options.ship_config_visibility = wows_minimap_renderer::ShipConfigVisibility::SelfOnly;
 
-    let mut target = ImageTarget::with_stats_panel_16_9(
+    let mut target = ImageTarget::with_side_panel(
         map_image,
         game_fonts.clone(),
         ship_icons,
         plane_icons,
         building_icons,
         consumable_icons,
+        ribbon_icons,
+        subribbon_icons,
         death_cause_icons,
         powerup_icons,
-        ribbon_icons,
-        options.show_stats_panel,
+        wows_minimap_renderer::drawing::SidePanelLayout::from_options(&options),
+        options.large_elements,
         options.aspect_ratio_16_9,
     );
-    target.large_elements = options.large_elements;
-    target.compact_stats = options.compact_stats;
-    let video_duration = options.video_duration;
 
     // Load self player's ship silhouette for the stats panel
     let self_silhouette = replay_file.meta.vehicles.iter().find(|v| v.relation == 0).and_then(|v| {
@@ -346,23 +432,81 @@ fn main() -> Result<(), Report> {
         Some(img.into_rgba8())
     });
 
+    // Pre-scan vehicle facts + damage events so roster HP, consumable
+    // inventories, and damage columns render from frame zero (the desktop
+    // renderer does the same in playback.rs). Without this, team-roster mode
+    // ships up with empty inventories and damage stuck at 0 until the live
+    // controller catches up.
+    let mut primary_with_alts: Vec<&ReplayFile> = vec![&replay_file];
+    primary_with_alts.extend(merge_replays.iter());
+    let vehicle_facts = wows_replays::analyzer::battle_controller::merged::gather_replay_facts(
+        &game_constants,
+        replay_version,
+        &specs,
+        &primary_with_alts,
+    );
+    let damage_events = wows_battle_world::merged::gather_damage_events(
+        &controller_game_params,
+        &game_constants,
+        replay_version,
+        &specs,
+        &primary_with_alts,
+    );
+
     let mut renderer = MinimapRenderer::new(map_info.clone(), &game_params, replay_version, options);
     renderer.set_fonts(game_fonts);
     renderer.set_flag_icons(flag_icons);
+    renderer.set_merged_perspectives(!merge_replays.is_empty());
+    renderer.set_vehicle_facts(vehicle_facts.clone());
+    renderer.set_damage_events(damage_events);
+    let salvo_flight_times = wows_battle_world::scan::scan_salvo_flight_times(
+        &replay_file.meta,
+        &controller_game_params,
+        &game_constants,
+        replay_version,
+        &replay_file,
+    );
+    renderer.set_salvo_flight_times(std::sync::Arc::new(salvo_flight_times));
     if let Some(sil) = self_silhouette {
         renderer.set_self_silhouette(sil);
     }
 
     let (cw, ch) = target.canvas_size();
     let mut encoder = VideoEncoder::new(output, dump_mode, args.dump_frames, game_duration, cw, ch);
-    if video_duration > 0.0 {
-        encoder.set_output_duration(video_duration);
+    let mode = if args.cpu { EncoderMode::ForceCpu } else { EncoderMode::Auto };
+    encoder.set_mode(mode);
+    let codec_choice = match args.codec {
+        None => CodecChoice::Auto,
+        Some(c) => {
+            let codec: VideoCodec = c.into();
+            let kind = if args.cpu { EncoderKind::Cpu } else { EncoderKind::Gpu };
+            let status = wows_minimap_renderer::check_encoder();
+            if args.cpu && !status.supports(EncoderKind::Cpu, codec) {
+                bail!(
+                    "codec {codec} is not supported by the CPU backend on this build; available CPU codecs: {}",
+                    available_codecs_for(EncoderKind::Cpu, &status)
+                );
+            }
+            if !args.cpu && !status.supports(kind, codec) {
+                bail!(
+                    "codec {codec} is not supported by the GPU backend on this system; pass --cpu to use software encoding, or pick a supported codec: {}",
+                    available_codecs_for(kind, &status)
+                );
+            }
+            CodecChoice::Explicit(codec)
+        }
+    };
+    encoder.set_codec(codec_choice);
+    if let Some(kbps) = args.bitrate_kbps {
+        let bps = kbps.saturating_mul(1000);
+        encoder.set_encoder_config(wows_minimap_renderer::EncoderConfig {
+            target_bitrate_bps: Some(bps),
+            max_bitrate_bps: Some(bps.saturating_mul(2)),
+            av1_quantizer: None,
+        });
+    } else if let Some(mib) = args.max_size_mib {
+        encoder.target_max_file_size((mib as u64) * 1024 * 1024);
     }
-    if args.cpu {
-        encoder.set_prefer_cpu(true);
-    }
-    // Initialize the encoder eagerly so startup logs appear before the
-    // progress bar. Skip for dump modes which don't encode video.
     if args.dump_frame.is_none() {
         encoder.init()?;
     }
@@ -406,244 +550,79 @@ fn main() -> Result<(), Report> {
         None
     };
 
-    // Pre-scan packets to find the last clock for accurate progress reporting.
-    {
-        let mut scan_parser = wows_replays::packet2::Parser::new(&specs);
-        let mut scan_remaining = &replay_file.packet_data[..];
-        let mut last_clock = wows_replays::types::GameClock(0.0);
-        while !scan_remaining.is_empty() {
-            match scan_parser.parse_packet(&mut scan_remaining) {
-                Ok(packet) => {
-                    last_clock = wows_replays::types::GameClock(packet.clock.0.max(last_clock.0));
+    let mut session = MergedReplays::new(
+        &specs,
+        &controller_game_params,
+        &game_constants,
+        replay_version,
+        &replay_file,
+        &merge_replays,
+    )
+    .map_err(|e| report!("{e}"))?;
+    wows_replay_insights::build::seed_consumable_inventories_from_facts(
+        session.world_mut(),
+        &vehicle_facts,
+        &controller_game_params,
+        replay_version,
+    );
+
+    if session.replays().len() > 1 {
+        for (i, r) in session.replays().iter().enumerate() {
+            match session.self_teams()[i] {
+                Some(team) => info!(replay = i, player = %r.meta.playerName, team = %team, "Self team"),
+                None => {
+                    warn!(replay = i, player = %r.meta.playerName, "Failed to detect self team; merge filtering disabled for this perspective")
                 }
-                Err(_) => break,
-            }
-        }
-        if last_clock.seconds() > 0.0 {
-            encoder.set_battle_duration(last_clock);
-        }
-    }
-
-    let (ts_green, ts_red) = {
-        let mut h_parser_green = wows_replays::packet2::Parser::new(&specs);
-        let mut h_remaining_green = &replay_file.packet_data[..];
-        let mut h_controller_green = BattleController::new(&replay_file.meta, &controller_game_params, Some(&game_constants));
-        
-        while !h_remaining_green.is_empty() {
-            let packet = h_parser_green.parse_packet(&mut h_remaining_green).map_err(|e| report!("Handshake Green error: {e:?}"))?;
-            h_controller_green.process(&packet);
-            if h_controller_green.battle_start_clock().is_some() || packet.clock.0 > 300.0 {
-                break;
-            }
-        }
-        
-        let ts_g = h_controller_green.server_timestamp().unwrap_or(0.0);
-        let ts_r_adj = if let Some(ref red_file) = red_replay_file {
-            let mut h_parser_red = wows_replays::packet2::Parser::new(&specs);
-            let mut h_remaining_red = &red_file.packet_data[..];
-            let mut h_controller_red = BattleController::new(&red_file.meta, &controller_game_params, Some(&game_constants));
-            
-            while !h_remaining_red.is_empty() {
-                let packet = h_parser_red.parse_packet(&mut h_remaining_red).map_err(|e| report!("Handshake Red error: {e:?}"))?;
-                h_controller_red.process(&packet);
-                if h_controller_red.battle_start_clock().is_some() || packet.clock.0 > 300.0 {
-                    break;
-                }
-            }
-            
-            let ts_r = h_controller_red.server_timestamp().unwrap_or(0.0);
-            let mut ts_r_val = ts_r;
-            
-            if (ts_g - ts_r).abs() > 60.0 {
-                if let (Some(start_green), Some(start_red)) = (h_controller_green.battle_start_clock(), h_controller_red.battle_start_clock()) {
-                    let offset = start_green.0 - start_red.0;
-                    info!("Synced via Battle Start: Green@{}, Red@{}. Applied Offset={}", start_green.0, start_red.0, offset);
-                    ts_r_val = ts_g + (start_green.0 as f64 - start_red.0 as f64);
-                }
-            }
-            ts_r_val
-        } else {
-            0.0
-        };
-        (ts_g, ts_r_adj)
-    };
-    
-    info!("Final Sync: Green TS={}, Red TS={}, Offset={}", ts_green, ts_red, ts_green - ts_red);
-
-    // --- Main Rendering Phase ---
-    let mut controller = BattleController::new(&replay_file.meta, &controller_game_params, Some(&game_constants));
-    let mut red_controller = None;
-    if let Some(ref red_file) = red_replay_file {
-        red_controller = Some(BattleController::new(&red_file.meta, &controller_game_params, Some(&game_constants)));
-    }
-
-    let mut parser_green = wows_replays::packet2::Parser::new(&specs);
-    let mut remaining_green = &replay_file.packet_data[..];
-    let mut prev_clock_green = wows_replays::types::GameClock(0.0);
-
-    let mut parser_red = wows_replays::packet2::Parser::new(&specs);
-    let mut remaining_red = red_replay_file.as_ref().map(|f| &f.packet_data[..]).unwrap_or(&[]);
-
-    let mut state_merger = StateMerger::new();
-
-    let mut next_packet_green = None;
-    let mut next_packet_red = None;
-
-    // Forensic Event Collection
-    let mut forensic_events = Vec::new();
-    let mut last_captured_kills = 0;
-    let mut active_radars = HashMap::new(); // entity_id -> start_time
-    let mut last_zone_teams: HashMap<usize, i64> = HashMap::new(); // zone_index -> team_id
-
-    // The main loop needs to drive both controllers
-    loop {
-        // Get next packets if needed
-        if next_packet_green.is_none() && !remaining_green.is_empty() {
-            next_packet_green = Some(parser_green.parse_packet(&mut remaining_green).map_err(|e| report!("Packet parse error: {e:?}"))?);
-        }
-        if next_packet_red.is_none() && !remaining_red.is_empty() && red_controller.is_some() {
-            next_packet_red = Some(parser_red.parse_packet(&mut remaining_red).map_err(|e| report!("Packet parse error: {e:?}"))?);
-        }
-
-        if next_packet_green.is_none() && (next_packet_red.is_none() || red_controller.is_none()) {
-            break;
-        }
-
-        // Determine which packet is next in "Real Time"
-        let time_green = next_packet_green.as_ref().map(|p| p.clock.0 as f64 + ts_green).unwrap_or(f64::INFINITY);
-        let time_red = next_packet_red.as_ref().map(|p| p.clock.0 as f64 + ts_red).unwrap_or(f64::INFINITY);
-
-        if time_green <= time_red {
-            let packet = next_packet_green.take().unwrap();
-            if packet.clock != prev_clock_green {
-                // Render tick
-                if let Some(ref red_ctrl) = red_controller {
-                    state_merger.merge(&controller, red_ctrl);
-                    let dual = DualController::new(&controller, red_ctrl, &state_merger);
-                    renderer.populate_players(&dual);
-                    renderer.update_squadron_info(&dual);
-                    renderer.update_ship_abilities(&dual);
-                    encoder.advance_clock(prev_clock_green, &dual, &mut renderer, &mut target);
-                } else {
-                    renderer.populate_players(&controller);
-                    renderer.update_squadron_info(&controller);
-                    renderer.update_ship_abilities(&controller);
-                    encoder.advance_clock(prev_clock_green, &controller, &mut renderer, &mut target);
-                }
-                prev_clock_green = packet.clock;
-            }
-            controller.process(&packet);
-        } else {
-            let packet = next_packet_red.take().unwrap();
-            if let Some(ref mut red_ctrl) = red_controller {
-                red_ctrl.process(&packet);
-            }
-        }
-
-        // --- Forensic Event Monitoring ---
-        if args.dump_events.is_some() {
-            let clock = controller.current_clock();
-            let elapsed = controller.battle_start_clock().map(|start| clock.0 - start.0).unwrap_or(0.0);
-            
-            // 1. Detect Kills
-            let current_kills = controller.kills().len();
-            if current_kills > last_captured_kills {
-                for i in last_captured_kills..current_kills {
-                    let kill = &controller.kills()[i];
-                    let victim_player = controller.player_entities().get(&kill.victim);
-                    let killer_player = controller.player_entities().get(&kill.killer);
-                    
-                    let victim_name = victim_player.map(|p| p.initial_state().username()).unwrap_or("Unknown");
-                    let killer_name = killer_player.map(|p| p.initial_state().username()).unwrap_or("Unknown");
-                    let victim_is_friendly = victim_player.map(|p| p.relation().is_ally() || p.relation().is_self()).unwrap_or(false);
-
-                    forensic_events.push(serde_json::json!({
-                        "time": elapsed,
-                        "timestamp": elapsed,
-                        "type": "KILL",
-                        "desc": format!("{} sunk by {}", victim_name, killer_name),
-                        "team": if victim_is_friendly { 0 } else { 1 }
-                    }));
-                }
-                last_captured_kills = current_kills;
-            }
-
-            // 2. Detect Radar/Hydro usage
-            for (eid, consumables) in controller.active_consumables() {
-                for c in consumables {
-                    let is_radar_or_hydro = match c.consumable.known() {
-                        Some(Consumable::Radar) => Some("Radar"),
-                        Some(Consumable::HydroacousticSearch) | Some(Consumable::Hydrophone) => Some("Hydro"),
-                        _ => None,
-                    };
-
-                    if let Some(event_name) = is_radar_or_hydro {
-                        if !active_radars.contains_key(eid) {
-                            active_radars.insert(*eid, elapsed);
-                            let ship_name = controller.player_entities().get(eid).map(|p| p.initial_state().username().to_string()).unwrap_or_else(|| "Unknown".to_string());
-                            forensic_events.push(serde_json::json!({
-                                "time": elapsed,
-                                "timestamp": elapsed,
-                                "type": "CONSUMABLE",
-                                "desc": format!("{} activated {}", ship_name, event_name),
-                                "team": if controller.player_entities().get(eid).map(|p| p.relation().is_ally() || p.relation().is_self()).unwrap_or(false) { 0 } else { 1 }
-                            }));
-                        }
-                    }
-                }
-            }
-
-            // 3. Detect Zone Captures
-            for (idx, cp) in controller.capture_points().iter().enumerate() {
-                if !cp.is_enabled { continue; }
-                let current_team = cp.team_id;
-                let prev_team = last_zone_teams.get(&idx).copied().unwrap_or(-1);
-
-                if current_team != prev_team && current_team != -1 {
-                    // Zone was captured by a team
-                    let zone_label = (b'A' + idx as u8) as char;
-                    let team_name = if current_team == 0 { "Team A" } else { "Team B" };
-                    forensic_events.push(serde_json::json!({
-                        "time": elapsed,
-                        "timestamp": elapsed,
-                        "type": "ZONE",
-                        "desc": format!("Zone {} captured by {}", zone_label, team_name),
-                        "team": current_team
-                    }));
-                }
-                last_zone_teams.insert(idx, current_team);
             }
         }
     }
 
-
-    // Save Forensic Events
-    if let Some(event_path) = args.dump_events {
-        let json = serde_json::to_string_pretty(&forensic_events)?;
-        std::fs::write(event_path, json)?;
-        info!("Forensic events dumped successfully.");
-    }
-
-    // Render final tick
-    if let Some(ref red_ctrl) = red_controller {
-        state_merger.merge(&controller, red_ctrl);
-        let dual = DualController::new(&controller, red_ctrl, &state_merger);
-        renderer.populate_players(&dual);
-        renderer.update_squadron_info(&dual);
-        renderer.update_ship_abilities(&dual);
-        encoder.advance_clock(prev_clock_green, &dual, &mut renderer, &mut target);
-        encoder.finish(&dual, &mut renderer, &mut target)?;
+    // By default the video starts at battle start, skipping the pre-battle
+    // spawn and countdown. --include-pre-battle renders from the replay start.
+    let render_start = if include_pre_battle {
+        wows_replays::types::GameClock(0.0)
     } else {
-        renderer.populate_players(&controller);
-        renderer.update_squadron_info(&controller);
-        renderer.update_ship_abilities(&controller);
-        encoder.advance_clock(prev_clock_green, &controller, &mut renderer, &mut target);
-        encoder.finish(&controller, &mut renderer, &mut target)?;
+        session.battle_start_clock().unwrap_or(wows_replays::types::GameClock(0.0))
+    };
+    if render_start.seconds() > 0.0 {
+        info!(start = %render_start, "Skipping pre-battle phase");
+    }
+    encoder.set_render_start(render_start);
+
+    if session.total_duration().seconds() > 0.0 {
+        encoder.set_battle_duration(session.total_duration());
     }
 
-    controller.finish();
-    if let Some(ref mut red_ctrl) = red_controller {
-        red_ctrl.finish();
+    let mut prev_render_clock = wows_replays::types::GameClock(0.0);
+    let mut arena_logged = false;
+    while let Some(safe_clock) = session.step().map_err(|e| report!("{e}"))? {
+        if !arena_logged && let Some(arena) = session.arena_id() {
+            info!(arena_id = %arena, replays = session.replays().len(), "Arena IDs match");
+            arena_logged = true;
+        }
+        if safe_clock.0 > prev_render_clock.0 {
+            let view = session.world_mut().view();
+            renderer.populate_players(&view);
+            renderer.update_squadron_info(&view);
+            renderer.update_ship_abilities(&view);
+            encoder.advance_clock(prev_render_clock, &view, &mut renderer, &mut target);
+            prev_render_clock = safe_clock;
+        }
+    }
+
+    let final_clock = session.total_duration();
+    if final_clock.0 > prev_render_clock.0 {
+        let view = session.world_mut().view();
+        renderer.populate_players(&view);
+        renderer.update_squadron_info(&view);
+        renderer.update_ship_abilities(&view);
+        encoder.advance_clock(final_clock, &view, &mut renderer, &mut target);
+    }
+
+    session.finish();
+    {
+        let view = session.world_mut().view();
+        encoder.finish(&view, &mut renderer, &mut target)?;
     }
 
     if let Some(pb) = progress_bar {
@@ -654,12 +633,23 @@ fn main() -> Result<(), Report> {
     Ok(())
 }
 
+fn available_codecs_for(kind: EncoderKind, status: &wows_minimap_renderer::encoder::EncoderStatus) -> String {
+    let mut names: Vec<&str> =
+        VideoCodec::ALL.into_iter().filter(|c| status.supports(kind, *c)).map(VideoCodec::as_str).collect();
+    if names.is_empty() {
+        names.push("(none)");
+    }
+    names.join(", ")
+}
+
 type LoadedGameData =
     (VfsPath, Vec<wowsunpack::rpc::entitydefs::EntitySpec>, GameMetadataProvider, GameMetadataProvider);
 
 /// Load game data from a full WoWS game installation.
 fn load_from_game_dir(game_dir: &std::path::Path, replay_version: &Version) -> Result<LoadedGameData, Report> {
-    info!(build = %replay_version.build, "Loading game data");
+    let replay_build =
+        replay_version.build_number().ok_or_else(|| report!("replay version carries no build number"))?;
+    info!(build = replay_build, "Loading game data");
     let resources = game_data::load_game_resources(game_dir, replay_version).map_err(|e| report!("{e}"))?;
     let vfs = resources.vfs;
     let specs = resources.specs;
@@ -670,7 +660,7 @@ fn load_from_game_dir(game_dir: &std::path::Path, replay_version: &Version) -> R
     let mut controller_game_params =
         GameMetadataProvider::from_vfs(&vfs).map_err(|e| report!("Failed to load GameParams for controller: {e:?}"))?;
 
-    let mo_path = game_data::translations_path(game_dir, replay_version.build);
+    let mo_path = game_data::translations_path(game_dir, replay_build);
     load_translations(&mo_path, &mut game_params, &mut controller_game_params);
 
     Ok((vfs, specs, game_params, controller_game_params))
@@ -698,15 +688,18 @@ fn resolve_extracted_dir(path: &std::path::Path, replay_version: &Version) -> Re
         bail!("Extracted data directory does not exist: {}", path.display());
     }
 
+    let replay_build =
+        replay_version.build_number().ok_or_else(|| report!("replay version carries no build number"))?;
+
     // If the path itself contains metadata.toml, it's already the version dir
     if let Some(meta) = read_metadata(path) {
-        if meta.build != replay_version.build {
+        if meta.build != replay_build {
             bail!(
                 "Extracted data is build {} ({}) but replay is build {}. \
                  Entity definitions will not match. Use extracted data for the correct build.",
                 meta.build,
                 meta.version,
-                replay_version.build
+                replay_build
             );
         }
         return Ok(path.to_path_buf());
@@ -733,8 +726,8 @@ fn resolve_extracted_dir(path: &std::path::Path, replay_version: &Version) -> Re
     }
 
     // Try to match by build number first
-    if let Some(matched) = candidates.iter().find(|(_, m)| m.build == replay_version.build) {
-        info!("Matched extracted data for build {}: {}", replay_version.build, matched.0.display());
+    if let Some(matched) = candidates.iter().find(|(_, m)| m.build == replay_build) {
+        info!("Matched extracted data for build {}: {}", replay_build, matched.0.display());
         return Ok(matched.0.clone());
     }
 
@@ -743,9 +736,9 @@ fn resolve_extracted_dir(path: &std::path::Path, replay_version: &Version) -> Re
     if builds_path.exists() {
         let version_str = format!("{}.{}.{}", replay_version.major, replay_version.minor, replay_version.patch);
         let index = wows_data_mgr::builds::BuildsIndex::load(&builds_path);
-        if let Some((entry, _exact)) = index.resolve_build(replay_version.build, Some(&version_str)) {
+        if let Some((entry, _exact)) = index.resolve_build(replay_build, Some(&version_str)) {
             let resolved = path.join(&entry.dir);
-            warn!("No exact data for build {}; using {} (build {})", replay_version.build, entry.version, entry.build);
+            warn!("No exact data for build {}; using {} (build {})", replay_build, entry.version, entry.build);
             return Ok(resolved);
         }
     }
@@ -753,17 +746,14 @@ fn resolve_extracted_dir(path: &std::path::Path, replay_version: &Version) -> Re
     // Also try version prefix match on candidates (legacy dumps without builds.toml)
     let version_str = format!("{}.{}.{}", replay_version.major, replay_version.minor, replay_version.patch);
     if let Some(matched) = candidates.iter().find(|(_, m)| m.version == version_str) {
-        warn!(
-            "No exact data for build {}; using {} (build {})",
-            replay_version.build, matched.1.version, matched.1.build
-        );
+        warn!("No exact data for build {}; using {} (build {})", replay_build, matched.1.version, matched.1.build);
         return Ok(matched.0.clone());
     }
 
     let available: Vec<String> = candidates.iter().map(|(_, m)| format!("{} (build {})", m.version, m.build)).collect();
     bail!(
         "No extracted data matches replay build {}. Available versions in {}: {}",
-        replay_version.build,
+        replay_build,
         path.display(),
         available.join(", ")
     );
@@ -803,37 +793,36 @@ fn load_from_extracted(
 
     // Load GameParams: try rkyv cache first, fall back to VFS if --recreate-game-params
     let rkyv_path = extracted_dir.join("game_params.rkyv");
-    let params: Vec<Param> = if rkyv_path.exists() {
-        info!("Loading game params from rkyv cache");
-        let rkyv_data = std::fs::read(&rkyv_path).attach_with(|| format!("Failed to read {}", rkyv_path.display()))?;
-        match rkyv::from_bytes::<Vec<Param>, rkyv::rancor::Error>(&rkyv_data) {
-            Ok(params) => params,
-            Err(e) if recreate_game_params => {
-                warn!("Failed to deserialize game_params.rkyv ({e}), recreating from GameParams.data");
-
-                recreate_rkyv_from_vfs(&vfs, &rkyv_path)?
-            }
-            Err(e) => {
-                bail!(
-                    "Failed to deserialize GameParams: {e}\n\
-                       Hint: the rkyv format may have changed. Pass --recreate-game-params to rebuild from GameParams.data"
-                );
-            }
+    let params: Vec<Param> = match wowsunpack::game_params::cache::load(&rkyv_path) {
+        Some(params) => {
+            info!("Loaded game params from rkyv cache");
+            params
         }
-    } else if recreate_game_params {
-        info!("game_params.rkyv not found, creating from GameParams.data");
-        recreate_rkyv_from_vfs(&vfs, &rkyv_path)?
-    } else {
-        bail!(
-            "game_params.rkyv not found at {}\n\
-               Hint: pass --recreate-game-params to create it from GameParams.data",
-            rkyv_path.display()
-        );
+        None if recreate_game_params => {
+            if rkyv_path.exists() {
+                warn!("Existing game_params.rkyv is incompatible (missing magic or wrong version); recreating");
+            } else {
+                info!("game_params.rkyv not found, creating from GameParams.data");
+            }
+            recreate_rkyv_from_vfs(&vfs, &rkyv_path)?
+        }
+        None => {
+            bail!(
+                "game_params.rkyv at {} is missing or incompatible.\n\
+                   Hint: pass --recreate-game-params to rebuild from GameParams.data",
+                rkyv_path.display()
+            );
+        }
     };
 
-    let mut game_params = GameMetadataProvider::from_params_no_specs(params.clone())
+    // Build providers with entity specs from the extracted VFS. The replay
+    // scan (scan_salvo_flight_times) reads entity defs through the provider's
+    // entity_specs(); from_params_no_specs would leave that empty and the
+    // packet parser would have no specs to resolve EntityCreate against. This
+    // matches the game-dir path, which builds providers via from_vfs.
+    let mut game_params = GameMetadataProvider::from_params_with_vfs(params.clone(), &vfs)
         .map_err(|e| report!("Failed to build GameMetadataProvider: {e:?}"))?;
-    let mut controller_game_params = GameMetadataProvider::from_params_no_specs(params)
+    let mut controller_game_params = GameMetadataProvider::from_params_with_vfs(params, &vfs)
         .map_err(|e| report!("Failed to build controller GameMetadataProvider: {e:?}"))?;
 
     // Load translations
@@ -850,10 +839,9 @@ fn recreate_rkyv_from_vfs(vfs: &VfsPath, rkyv_path: &std::path::Path) -> Result<
     let game_metadata =
         GameMetadataProvider::from_vfs(vfs).map_err(|e| report!("Failed to load GameParams from VFS: {e:?}"))?;
     let params: Vec<Param> = game_metadata.params().iter().map(|p| Arc::unwrap_or_clone(Arc::clone(p))).collect();
-    let bytes =
-        rkyv::to_bytes::<rkyv::rancor::Error>(&params).map_err(|e| report!("Failed to serialize GameParams: {e}"))?;
-    std::fs::write(rkyv_path, &bytes).attach_with(|| format!("Failed to write {}", rkyv_path.display()))?;
-    info!("Wrote {} ({} bytes)", rkyv_path.display(), bytes.len());
+    wowsunpack::game_params::cache::save(rkyv_path, &params)
+        .attach_with(|| format!("Failed to write {}", rkyv_path.display()))?;
+    info!("Wrote {}", rkyv_path.display());
     Ok(params)
 }
 

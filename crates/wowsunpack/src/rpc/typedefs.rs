@@ -137,9 +137,25 @@ pub enum ArgType {
     /// (allow_none, properties)
     FixedDict((bool, Vec<FixedDictProperty>)),
     Tuple((Box<ArgType>, usize)),
+
+    /// A type referenced through a def alias or named composite. Transparent:
+    /// layout and parsed value come from `inner`; `name` is the game's own
+    /// semantic type name (e.g. "ENTITY_ID", "WEATHER_LOGIC_PARAMS").
+    Named {
+        name: String,
+        inner: Box<ArgType>,
+    },
+
+    /// A `USER_TYPE` (a converter-backed custom type). Its value streams as the
+    /// bare `inner` network type (transparent, no length prefix), but for
+    /// exposed-method index ordering BigWorld treats every USER_TYPE as
+    /// variable-size (its converter's stream size is unbounded) — so it sorts
+    /// into the variable region regardless of the inner's fixed size. Conflating
+    /// it with the plain inner type shifts every later exposed-method id.
+    UserType(Box<ArgType>),
 }
 
-#[derive(Clone, Debug, PartialEq, variantly::Variantly)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ArgValue<'argtype> {
     Uint8(u8),
     Uint16(u16),
@@ -161,6 +177,28 @@ pub enum ArgValue<'argtype> {
     NullableFixedDict(Option<HashMap<&'argtype str, ArgValue<'argtype>>>),
     Tuple(Vec<ArgValue<'argtype>>),
 }
+
+variant_accessors!(ArgValue<'argtype> {
+    tuple Uint8(u8) => uint_8;
+    tuple Uint16(u16) => uint_16;
+    tuple Uint32(u32) => uint_32;
+    tuple Uint64(u64) => uint_64;
+    tuple Int8(i8) => int_8;
+    tuple Int16(i16) => int_16;
+    tuple Int32(i32) => int_32;
+    tuple Int64(i64) => int_64;
+    tuple Float32(f32) => float_32;
+    tuple Float64(f64) => float_64;
+    tuple Vector2((f32, f32)) => vector_2;
+    tuple Vector3((f32, f32, f32)) => vector_3;
+    tuple String(Vec<u8>) => string;
+    tuple UnicodeString(Vec<u8>) => unicode_string;
+    tuple Blob(Vec<u8>) => blob;
+    tuple Array(Vec<ArgValue<'argtype>>) => array;
+    tuple FixedDict(HashMap<&'argtype str, ArgValue<'argtype>>) => fixed_dict;
+    tuple NullableFixedDict(Option<HashMap<&'argtype str, ArgValue<'argtype>>>) => nullable_fixed_dict;
+    tuple Tuple(Vec<ArgValue<'argtype>>) => tuple;
+});
 
 impl<'argtype> ArgValue<'argtype> {
     /// Convert any integer variant to i32 (widening or narrowing as needed).
@@ -327,8 +365,12 @@ impl<'argtype> serde::Serialize for ArgValue<'argtype> {
                 obj.end()
             }
             Self::NullableFixedDict(None) => serializer.serialize_none(),
-            Self::Tuple(_t) => {
-                unimplemented!();
+            Self::Tuple(elements) => {
+                let mut seq = serializer.serialize_seq(Some(elements.len()))?;
+                for element in elements.iter() {
+                    seq.serialize_element(element)?;
+                }
+                seq.end()
             }
         }
     }
@@ -337,6 +379,24 @@ impl<'argtype> serde::Serialize for ArgValue<'argtype> {
 const INFINITY: usize = 0xffff;
 
 impl ArgType {
+    /// The outermost def type name, if this type was referenced via an alias
+    /// or named composite.
+    pub fn semantic_name(&self) -> Option<&str> {
+        match self {
+            Self::Named { name, .. } => Some(name),
+            _ => None,
+        }
+    }
+
+    /// Strip any `Named` wrappers down to the structural type.
+    pub fn peeled(&self) -> &ArgType {
+        match self {
+            Self::Named { inner, .. } => inner.peeled(),
+            Self::UserType(inner) => inner.peeled(),
+            other => other,
+        }
+    }
+
     pub fn sort_size(&self) -> usize {
         match self {
             Self::Primitive(PrimitiveType::Uint8) => 1,
@@ -372,6 +432,10 @@ impl ArgType {
                 let sort_size = t.sort_size();
                 if sort_size == INFINITY { INFINITY } else { sort_size * count }
             }
+            Self::Named { inner, .. } => inner.sort_size(),
+            // A USER_TYPE is variable-size for exposed-method ordering even when
+            // its inner streams a fixed number of bytes.
+            Self::UserType(_) => INFINITY,
         }
     }
 
@@ -405,9 +469,38 @@ impl ArgType {
                 }
                 if *allow_none { Ok(ArgValue::NullableFixedDict(Some(dict))) } else { Ok(ArgValue::FixedDict(dict)) }
             }
-            Self::Tuple((_t, _count)) => {
-                panic!("Tuple parsing is unsupported");
+            Self::Tuple((t, count)) => {
+                // A TUPLE is a fixed-size sequence: `count` elements back to back
+                // with no length prefix (the size is fixed in the schema), the
+                // same wire layout as a sized array.
+                let mut values = Vec::with_capacity(*count);
+                for _ in 0..*count {
+                    values.push(t.parse_value(input)?);
+                }
+                Ok(ArgValue::Tuple(values))
             }
+            Self::Named { inner, .. } => inner.parse_value(input),
+            // Transparent on the wire: the value is the bare inner type.
+            Self::UserType(inner) => inner.parse_value(input),
+        }
+    }
+
+    /// Collect every def semantic name appearing anywhere in this type tree.
+    pub fn collect_semantic_names(&self, out: &mut std::collections::BTreeSet<String>) {
+        match self {
+            Self::Named { name, inner } => {
+                out.insert(name.clone());
+                inner.collect_semantic_names(out);
+            }
+            Self::Array((_, inner)) => inner.collect_semantic_names(out),
+            Self::UserType(inner) => inner.collect_semantic_names(out),
+            Self::Tuple((inner, _)) => inner.collect_semantic_names(out),
+            Self::FixedDict((_, props)) => {
+                for p in props {
+                    p.prop_type.collect_semantic_names(out);
+                }
+            }
+            Self::Primitive(_) => {}
         }
     }
 }
@@ -445,8 +538,20 @@ pub fn parse_type(arg: &roxmltree::Node, aliases: &HashMap<String, ArgType>) -> 
         ArgType::Primitive(PrimitiveType::Vector3)
     } else if t == "BLOB" {
         ArgType::Primitive(PrimitiveType::Blob)
-    } else if t == "USER_TYPE" || t == "MAILBOX" || t == "PYTHON" {
-        // TODO: This is a HACKY HACKY workaround for things we don't recognize
+    } else if t == "USER_TYPE" {
+        // A USER_TYPE's value streams as the network type declared by its inner
+        // <Type> (e.g. FLAT_VECTOR streams as VECTOR2, GUN_DIRECTIONS as UINT16),
+        // transparently with no length prefix. But for exposed-method index
+        // ordering BigWorld treats every USER_TYPE as variable-size, so it must
+        // be wrapped (not collapsed to the inner) to sort into the variable
+        // region. Without an inner <Type> the type is converter-defined and
+        // opaque, streamed as a length-prefixed blob (already variable).
+        match child_by_name(arg, "Type") {
+            Some(inner) => ArgType::UserType(Box::new(parse_type(&inner, aliases))),
+            None => ArgType::Primitive(PrimitiveType::Blob),
+        }
+    } else if t == "MAILBOX" || t == "PYTHON" {
+        // Engine-internal references with no stable on-wire schema we model.
         ArgType::Primitive(PrimitiveType::Blob)
     } else if t == "ARRAY" {
         let subtype = parse_type(&child_by_name(arg, "of").unwrap(), aliases);
@@ -482,8 +587,8 @@ pub fn parse_type(arg: &roxmltree::Node, aliases: &HashMap<String, ArgType>) -> 
         let subtype = parse_type(&child_by_name(arg, "of").unwrap(), aliases);
         let count = child_by_name(arg, "size").unwrap().text().unwrap().trim().parse::<usize>().unwrap();
         ArgType::Tuple((Box::new(subtype), count))
-    } else if aliases.contains_key(t) {
-        aliases.get(t).unwrap().clone()
+    } else if let Some(resolved) = aliases.get(t) {
+        ArgType::Named { name: t.to_string(), inner: Box::new(resolved.clone()) }
     } else {
         panic!("Unrecognized type {t}");
     }
@@ -587,6 +692,26 @@ mod test {
     }
 
     #[test]
+    fn alias_preserves_semantic_name() {
+        let mut aliases = HashMap::new();
+        aliases.insert("ENTITY_ID".to_string(), ArgType::Primitive(PrimitiveType::Int32));
+
+        let doc = roxmltree::Document::parse("<Arg>ENTITY_ID</Arg>").unwrap();
+        let root = doc.root();
+        let t = parse_type(&root, &aliases);
+
+        // The semantic name survives, but the type is otherwise transparent.
+        assert_eq!(t.semantic_name(), Some("ENTITY_ID"));
+        assert_eq!(t.peeled(), &ArgType::Primitive(PrimitiveType::Int32));
+        assert_eq!(t.sort_size(), 4);
+
+        let data = [5, 0, 0, 0];
+        let mut input = &data[..];
+        assert_eq!(t.parse_value(&mut input).unwrap(), ArgValue::Int32(5));
+        assert!(input.is_empty());
+    }
+
+    #[test]
     fn test_fixed_dict() {
         let doc = "<Arg>
             FIXED_DICT
@@ -681,6 +806,45 @@ mod test {
     }
 
     #[test]
+    fn test_tuple_parses_fixed_count_without_prefix() {
+        // A TUPLE is `count` elements back to back with no length prefix.
+        let t = ArgType::Tuple((Box::new(ArgType::Primitive(PrimitiveType::Uint8)), 3));
+        let data = [7u8, 8, 9];
+        let mut input = &data[..];
+        let result = t.parse_value(&mut input).unwrap();
+        assert!(input.is_empty(), "all bytes consumed, no length prefix");
+        assert_eq!(result, ArgValue::Tuple(vec![ArgValue::Uint8(7), ArgValue::Uint8(8), ArgValue::Uint8(9)]));
+
+        // It serializes as a JSON array.
+        let json = serde_json::to_string(&result).unwrap();
+        assert_eq!(json, "[7,8,9]");
+    }
+
+    #[test]
+    fn user_type_is_variable_for_ordering_but_parses_as_inner() {
+        // A USER_TYPE whose inner streams as a fixed VECTOR2. On the wire its
+        // value is the bare inner (transparent, 8 bytes, no length prefix), but
+        // for exposed-method ordering BigWorld classifies USER_TYPE as variable
+        // (its converter's stream size is unbounded), so sort_size must be
+        // INFINITY. Getting this wrong sorts USER_TYPE methods into the
+        // fixed-size region and shifts every later exposed-method id.
+        let spec = "<Type>USER_TYPE<Type>VECTOR2</Type></Type>";
+        let doc = roxmltree::Document::parse(spec).unwrap();
+        let root = doc.root_element();
+        let aliases = HashMap::new();
+        let t = parse_type(&root, &aliases);
+
+        assert_eq!(t.sort_size(), INFINITY, "USER_TYPE is variable-size for ordering");
+
+        // Parsing is transparent: the inner VECTOR2's 8 bytes, no length prefix.
+        let data = [0, 0, 0x80, 0x3f, 0, 0, 0, 0x40]; // (1.0, 2.0)
+        let mut input = &data[..];
+        let result = t.parse_value(&mut input).unwrap();
+        assert!(input.is_empty(), "transparent: all 8 bytes consumed, no length prefix");
+        assert_eq!(result, ArgValue::Vector2((1.0, 2.0)));
+    }
+
+    #[test]
     fn test_fixedsize_array() {
         let spec = "<Type>ARRAY<of>UINT16</of><size>2</size></Type>";
         let doc = roxmltree::Document::parse(spec).unwrap();
@@ -704,6 +868,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::useless_vec)]
     fn test_unpacker_macro() {
         let args = vec![
             ArgValue::Uint8(5),
@@ -717,5 +882,28 @@ mod test {
         assert_eq!(args.0, 5);
         assert_eq!(args.1, -54);
         assert_eq!(args.2, vec![1, 3]);
+    }
+
+    #[test]
+    fn collect_semantic_names_recurses() {
+        use std::collections::BTreeSet;
+
+        let t = ArgType::Named {
+            name: "WEAPON_LOCKS".to_string(),
+            inner: Box::new(ArgType::Array((
+                None,
+                Box::new(ArgType::Named {
+                    name: "ENTITY_ID".to_string(),
+                    inner: Box::new(ArgType::Primitive(PrimitiveType::Int32)),
+                }),
+            ))),
+        };
+
+        let mut names = BTreeSet::new();
+        t.collect_semantic_names(&mut names);
+
+        assert!(names.contains("WEAPON_LOCKS"));
+        assert!(names.contains("ENTITY_ID"));
+        assert_eq!(names.len(), 2);
     }
 }

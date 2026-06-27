@@ -19,7 +19,7 @@ pub struct RenderOptions {
     pub show_capture_points: bool,
     pub show_buildings: bool,
     pub show_weather: bool,
-    pub show_turret_direction: bool,
+    pub show_camera_direction: bool,
     pub show_consumables: bool,
     pub show_armament: bool,
     pub show_trails: bool,
@@ -33,11 +33,10 @@ pub struct RenderOptions {
     pub show_advantage: bool,
     pub show_score_timer: bool,
     pub show_stats_panel: bool,
-    pub show_ribbon_popups: bool,
+    pub show_team_rosters: bool,
     pub large_elements: bool,
     pub compact_stats: bool,
     pub aspect_ratio_16_9: bool,
-    pub video_duration: f64,
     /// Controls which ships have their config circles rendered when show_ship_config is true.
     /// Defaults to SelfOnly (only the replay owner's circles).
     pub ship_config_visibility: ShipConfigVisibility,
@@ -59,7 +58,7 @@ impl Default for RenderOptions {
             show_capture_points: true,
             show_buildings: true,
             show_weather: true,
-            show_turret_direction: true,
+            show_camera_direction: true,
             show_consumables: true,
             show_armament: false,
             show_trails: false,
@@ -73,13 +72,25 @@ impl Default for RenderOptions {
             show_advantage: true,
             show_score_timer: true,
             show_stats_panel: true,
-            show_ribbon_popups: true,
+            show_team_rosters: true,
             large_elements: false,
             compact_stats: false,
             aspect_ratio_16_9: false,
-            video_duration: 0.0,
             ship_config_visibility: ShipConfigVisibility::default(),
         }
+    }
+}
+
+impl RenderOptions {
+    /// True when the self-perspective stats panel is actually rendered.
+    ///
+    /// Team rosters replace the stats panel when both flags are set, so the
+    /// raw `show_stats_panel` toggle alone isn't sufficient for deciding
+    /// whether overlays that overlap the panel area (kill feed, chat) should
+    /// hide themselves. Use this method for any "is the panel really showing"
+    /// decision.
+    pub fn stats_panel_visible(&self) -> bool {
+        self.show_stats_panel && !self.show_team_rosters
     }
 }
 
@@ -90,22 +101,28 @@ impl Default for RenderOptions {
 /// a config-file or default configuration.
 #[derive(Debug, Clone, Default)]
 pub struct CliOverrides {
+    pub show_player_names: bool,
     pub no_player_names: bool,
     pub no_ship_names: bool,
     pub no_capture_points: bool,
     pub no_buildings: bool,
-    pub no_turret_direction: bool,
+    pub no_camera_direction: bool,
     pub no_armament: bool,
     pub no_kill_feed: bool,
     pub no_chat: bool,
-    pub no_stats_panel: bool,
     pub show_trails: bool,
     pub no_dead_trails: bool,
     pub show_speed_trails: bool,
     pub show_ship_config: bool,
-    pub discord_layout: bool,
+    pub team_rosters: bool,
+    pub no_team_rosters: bool,
+    pub stats_panel: bool,
+    pub no_stats_panel: bool,
+    pub include_pre_battle: bool,
+    pub large_elements: bool,
+    pub compact_stats: bool,
     pub aspect_ratio_16_9: bool,
-    pub video_duration: Option<f64>,
+    pub discord_layout: bool,
 }
 
 /// Renderer configuration, loadable from a TOML file.
@@ -119,7 +136,8 @@ pub struct RendererConfig {
     pub show_ship_names: bool,
     pub show_capture_points: bool,
     pub show_buildings: bool,
-    pub show_turret_direction: bool,
+    #[serde(alias = "show_turret_direction")]
+    pub show_camera_direction: bool,
     pub show_hp_bars: bool,
     pub show_tracers: bool,
     pub show_torpedoes: bool,
@@ -139,21 +157,26 @@ pub struct RendererConfig {
     pub show_advantage: bool,
     pub show_score_timer: bool,
     pub show_stats_panel: bool,
-    pub show_ribbon_popups: bool,
-    pub large_elements: Option<bool>,
-    pub compact_stats: Option<bool>,
-    pub aspect_ratio_16_9: Option<bool>,
-    pub video_duration: Option<f64>,
+    pub show_team_rosters: bool,
+    pub large_elements: bool,
+    pub compact_stats: bool,
+    pub aspect_ratio_16_9: bool,
+    /// Include the pre-battle phase (spawn and countdown) at the start of the
+    /// video. When false, rendering begins at battle start.
+    pub include_pre_battle: bool,
 }
 
 impl Default for RendererConfig {
     fn default() -> Self {
         Self {
-            show_player_names: true,
+            // Mirrors `SavedRenderOptions::default()` on the desktop side
+            // (crates/wows-toolkit/src/data/settings.rs) so CLI and egui
+            // renders look the same out of the box.
+            show_player_names: false,
             show_ship_names: true,
             show_capture_points: true,
             show_buildings: true,
-            show_turret_direction: true,
+            show_camera_direction: true,
             show_hp_bars: true,
             show_tracers: true,
             show_torpedoes: true,
@@ -172,11 +195,11 @@ impl Default for RendererConfig {
             show_advantage: true,
             show_score_timer: true,
             show_stats_panel: true,
-            show_ribbon_popups: true,
-            large_elements: Some(false),
-            compact_stats: Some(false),
-            aspect_ratio_16_9: Some(false),
-            video_duration: Some(0.0),
+            show_team_rosters: false,
+            large_elements: false,
+            compact_stats: false,
+            aspect_ratio_16_9: false,
+            include_pre_battle: false,
         }
     }
 }
@@ -193,12 +216,16 @@ impl RendererConfig {
 
     /// Convert into RenderOptions for the renderer.
     pub fn into_render_options(self) -> RenderOptions {
+        // Stats panel and team rosters share the same gutter, so if a config
+        // file enables both the rosters win (matching the desktop behavior).
+        let show_team_rosters = self.show_team_rosters;
+        let show_stats_panel = self.show_stats_panel && !show_team_rosters;
         RenderOptions {
             show_player_names: self.show_player_names,
             show_ship_names: self.show_ship_names,
             show_capture_points: self.show_capture_points,
             show_buildings: self.show_buildings,
-            show_turret_direction: self.show_turret_direction,
+            show_camera_direction: self.show_camera_direction,
             show_hp_bars: self.show_hp_bars,
             show_tracers: self.show_tracers,
             show_torpedoes: self.show_torpedoes,
@@ -220,12 +247,11 @@ impl RendererConfig {
             show_weather: true,
             show_advantage: true,
             show_score_timer: true,
-            show_stats_panel: self.show_stats_panel,
-            show_ribbon_popups: self.show_ribbon_popups,
-            large_elements: self.large_elements.unwrap_or(false),
-            compact_stats: self.compact_stats.unwrap_or(false),
-            aspect_ratio_16_9: self.aspect_ratio_16_9.unwrap_or(false),
-            video_duration: self.video_duration.unwrap_or(0.0),
+            show_stats_panel,
+            show_team_rosters,
+            large_elements: self.large_elements,
+            compact_stats: self.compact_stats,
+            aspect_ratio_16_9: self.aspect_ratio_16_9,
             ship_config_visibility: ShipConfigVisibility::default(),
         }
     }
@@ -239,7 +265,7 @@ impl RendererConfig {
 # Display toggles (true = show, false = hide)
 
 # Show player names above ship icons
-show_player_names = true
+show_player_names = false
 
 # Show ship type names above ship icons
 show_ship_names = true
@@ -250,8 +276,8 @@ show_capture_points = true
 # Show building markers (e.g. shipyard structures)
 show_buildings = true
 
-# Show turret direction indicators
-show_turret_direction = true
+# Show camera/look direction indicators
+show_camera_direction = true
 
 # Show health bars below ship icons
 show_hp_bars = true
@@ -298,12 +324,27 @@ show_speed_trails = false
 # Show ship config range circles (detection, main battery, secondary, etc.)
 show_ship_config = false
 
+# Show the self-perspective stats panel on the right side of the canvas. Hidden
+# automatically when team rosters are enabled.
+show_stats_panel = true
+
+# Show team roster panels on either side of the minimap (HP, frags, damage,
+# consumables). Mutually exclusive with the stats panel.
+show_team_rosters = false
+
+# Include the pre-battle phase (spawn and countdown) at the start of the video.
+# When false, rendering begins at battle start.
+include_pre_battle = false
+
 "#
         .to_string()
     }
 
     /// Apply CLI flag overrides from parsed arguments.
     pub fn apply_cli_overrides(&mut self, overrides: &CliOverrides) {
+        if overrides.show_player_names {
+            self.show_player_names = true;
+        }
         if overrides.no_player_names {
             self.show_player_names = false;
         }
@@ -316,8 +357,8 @@ show_ship_config = false
         if overrides.no_buildings {
             self.show_buildings = false;
         }
-        if overrides.no_turret_direction {
-            self.show_turret_direction = false;
+        if overrides.no_camera_direction {
+            self.show_camera_direction = false;
         }
         if overrides.no_armament {
             self.show_armament = false;
@@ -340,19 +381,39 @@ show_ship_config = false
         if overrides.no_chat {
             self.show_chat = false;
         }
+        // Team rosters vs stats panel: enforcing exclusivity here keeps the
+        // CLI behavior aligned with the egui checkboxes. When both arrive
+        // enabled (e.g. team_rosters via CLI plus stats_panel from a config
+        // file), team rosters win.
+        if overrides.team_rosters {
+            self.show_team_rosters = true;
+            self.show_stats_panel = false;
+        }
+        if overrides.no_team_rosters {
+            self.show_team_rosters = false;
+        }
+        if overrides.stats_panel && !self.show_team_rosters {
+            self.show_stats_panel = true;
+        }
         if overrides.no_stats_panel {
             self.show_stats_panel = false;
         }
+        if overrides.include_pre_battle {
+            self.include_pre_battle = true;
+        }
         if overrides.discord_layout {
-            self.large_elements = Some(true);
-            self.compact_stats = Some(true);
-            self.aspect_ratio_16_9 = Some(true);
+            self.large_elements = true;
+            self.compact_stats = true;
+            self.aspect_ratio_16_9 = true;
         }
         if overrides.aspect_ratio_16_9 {
-            self.aspect_ratio_16_9 = Some(true);
+            self.aspect_ratio_16_9 = true;
         }
-        if let Some(dur) = overrides.video_duration {
-            self.video_duration = Some(dur);
+        if overrides.large_elements {
+            self.large_elements = true;
+        }
+        if overrides.compact_stats {
+            self.compact_stats = true;
         }
     }
 }

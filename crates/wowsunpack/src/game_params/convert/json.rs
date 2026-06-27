@@ -1,8 +1,11 @@
 use serde_json::Map;
 
+#[cfg(feature = "vfs")]
 use std::io::Read;
+#[cfg(feature = "vfs")]
 use std::io::Write;
 
+#[cfg(feature = "vfs")]
 use crate::error::GameDataError;
 
 fn hashable_pickle_to_json(pickled: pickled::HashableValue) -> serde_json::Value {
@@ -81,9 +84,12 @@ pub fn pickle_to_json(pickled: pickled::Value) -> serde_json::Value {
             serde_json::Value::Object(map)
         }
         pickled::Value::Object(ref o) => pickle_to_json(o.inner().__reduce__().state_or_none()),
+        // Recursive back-edge: no finite serialization, emit null.
+        pickled::Value::Weak(_) => serde_json::Value::Null,
     }
 }
 
+#[cfg(feature = "vfs")]
 pub fn read_game_params_as_json<W: Write>(
     pretty_print: bool,
     vfs: &vfs::VfsPath,

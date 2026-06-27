@@ -7,6 +7,13 @@ use std::collections::HashMap;
 use std::io::Read;
 use tracing::debug;
 use tracing::warn;
+use wowsunpack::data::Version;
+use wowsunpack::game_assets::GuiAsset;
+use wowsunpack::game_assets::GuiAssetDir;
+use wowsunpack::game_assets::PlaneMarkerKind;
+use wowsunpack::game_assets::Relation;
+use wowsunpack::game_assets::ShipIconState;
+use wowsunpack::game_params::types::Species;
 use wowsunpack::vfs::VfsPath;
 
 use crate::MINIMAP_SIZE;
@@ -23,9 +30,21 @@ fn read_vfs_file(vfs: &VfsPath, path: &str) -> Option<Vec<u8>> {
     if buf.is_empty() { None } else { Some(buf) }
 }
 
+/// Read an already-resolved VFS entry, returning its bytes or None if empty.
+fn read_vfs_entry(entry: &VfsPath) -> Option<Vec<u8>> {
+    let mut buf = Vec::new();
+    entry.open_file().ok()?.read_to_end(&mut buf).ok()?;
+    if buf.is_empty() { None } else { Some(buf) }
+}
+
 pub fn load_packed_image(path: &str, vfs: &VfsPath) -> Option<image::DynamicImage> {
     let buf = read_vfs_file(vfs, path)?;
     image::load_from_memory(&buf).ok()
+}
+
+/// Decode an image from an already-resolved VFS entry.
+fn load_image_entry(entry: &VfsPath) -> Option<image::DynamicImage> {
+    image::load_from_memory(&read_vfs_entry(entry)?).ok()
 }
 
 pub fn load_map_image(map_name: &str, vfs: &VfsPath) -> Option<RgbImage> {
@@ -151,51 +170,38 @@ pub fn load_map_info(map_name: &str, vfs: &VfsPath) -> Option<map_data::MapInfo>
 /// - `"{Species}_dead"` — destroyed ship
 /// - `"{Species}_invisible"` — not currently detected
 /// - `"{Species}_last_visible"` — last known position (minimap-only)
-pub fn load_ship_icons(vfs: &VfsPath) -> HashMap<String, RgbaImage> {
-    let species_names = ["Destroyer", "Cruiser", "Battleship", "AirCarrier", "Submarine", "Auxiliary"];
-    // (file suffix, key suffix) — all in gui/fla/minimap/ship_icons/
-    let variants: &[(&str, &str)] =
-        &[("", ""), ("_dead", "_dead"), ("_invisible", "_invisible"), ("_last_visible", "_last_visible")];
+pub fn load_ship_icons(vfs: &VfsPath, version: Option<&Version>) -> HashMap<String, RgbaImage> {
+    let species = [
+        Species::Destroyer,
+        Species::Cruiser,
+        Species::Battleship,
+        Species::AirCarrier,
+        Species::Submarine,
+        Species::Auxiliary,
+    ];
     let mut icons = HashMap::new();
-    let load_svg = |path: &str, key: &str, icons: &mut HashMap<String, RgbaImage>| {
-        if let Some(buf) = read_vfs_file(vfs, path)
+    let load_svg = |asset: GuiAsset<'_>, key: String, icons: &mut HashMap<String, RgbaImage>| {
+        if let Some(buf) = asset.read(vfs, version)
             && let Some(img) = rasterize_svg(&buf, ICON_SIZE)
         {
-            icons.insert(key.to_string(), img);
+            icons.insert(key, img);
             return true;
         }
         false
     };
-    for name in &species_names {
-        let lower = name.to_ascii_lowercase();
-        for &(file_suffix, key_suffix) in variants {
-            let path = format!("gui/fla/minimap/ship_icons/minimap_{}{}.svg", lower, file_suffix);
-            let key = format!("{}{}", name, key_suffix);
-            load_svg(&path, &key, &mut icons);
+    for species in species {
+        let name = species.name();
+        for (state, key_suffix) in [
+            (ShipIconState::Alive, ""),
+            (ShipIconState::Dead, "_dead"),
+            (ShipIconState::Invisible, "_invisible"),
+            (ShipIconState::LastVisible, "_last_visible"),
+        ] {
+            load_svg(GuiAsset::ShipClassIcon { species, state }, format!("{name}{key_suffix}"), &mut icons);
         }
-        // Self icons from ship_icons_self/ directory
-        // Try species-specific first, then generic fallback
-        let self_key = format!("{}_self", name);
-        let self_paths = [
-            format!("gui/fla/minimap/ship_icons_self/minimap_self_alive_{}.svg", lower),
-            "gui/fla/minimap/ship_icons_self/minimap_self_alive.svg".to_string(),
-        ];
-        for path in &self_paths {
-            if load_svg(path, &self_key, &mut icons) {
-                break;
-            }
-        }
-        // Dead-self variant
-        let dead_self_key = format!("{}_dead_self", name);
-        let dead_self_paths = [
-            format!("gui/fla/minimap/ship_icons_self/minimap_self_dead_{}.svg", lower),
-            "gui/fla/minimap/ship_icons_self/minimap_self_dead.svg".to_string(),
-        ];
-        for path in &dead_self_paths {
-            if load_svg(path, &dead_self_key, &mut icons) {
-                break;
-            }
-        }
+        // The self-icon resolver falls back from the species-specific path to a generic one.
+        load_svg(GuiAsset::SelfShipIcon { species, alive: true }, format!("{name}_self"), &mut icons);
+        load_svg(GuiAsset::SelfShipIcon { species, alive: false }, format!("{name}_dead_self"), &mut icons);
     }
     debug!(count = icons.len(), "Loaded ship icons");
     if icons.is_empty() {
@@ -205,12 +211,8 @@ pub fn load_ship_icons(vfs: &VfsPath) -> HashMap<String, RgbaImage> {
 }
 
 /// Load all plane icons from game files into a HashMap keyed by name (e.g. "fighter_ally").
-pub fn load_plane_icons(vfs: &VfsPath) -> HashMap<String, RgbaImage> {
-    let dirs = [
-        "gui/battle_hud/markers_minimap/plane/consumables",
-        "gui/battle_hud/markers_minimap/plane/controllable",
-        "gui/battle_hud/markers_minimap/plane/airsupport",
-    ];
+pub fn load_plane_icons(vfs: &VfsPath, version: Option<&Version>) -> HashMap<String, RgbaImage> {
+    let kinds = [PlaneMarkerKind::Consumables, PlaneMarkerKind::Controllable, PlaneMarkerKind::AirSupport];
     let suffixes = ["ally", "enemy", "own", "division", "teamkiller"];
     let base_names = [
         // controllable
@@ -237,14 +239,17 @@ pub fn load_plane_icons(vfs: &VfsPath) -> HashMap<String, RgbaImage> {
     ];
 
     let mut icons = HashMap::new();
-    for dir in &dirs {
-        // Use the last path component as namespace (e.g. "consumables", "controllable", "airsupport")
-        let dir_name = dir.rsplit('/').next().unwrap_or(dir);
+    for kind in kinds {
+        let Some(dir) = GuiAssetDir::PlaneMarkers(kind).resolve(vfs, version) else {
+            continue;
+        };
+        // Namespace keys by subdirectory (e.g. "consumables", "controllable", "airsupport").
+        let dir_name = dir.filename();
         for base in &base_names {
             for suffix in &suffixes {
                 let name = format!("{}_{}", base, suffix);
-                let path = format!("{}/{}.png", dir, name);
-                if let Some(img) = load_packed_image(&path, vfs) {
+                let Ok(entry) = dir.join(format!("{name}.png")) else { continue };
+                if let Some(img) = load_image_entry(&entry) {
                     let key = format!("{}/{}", dir_name, name);
                     let rgba = img.to_rgba8();
                     // Resize to ICON_SIZE to scale with minimap
@@ -263,16 +268,19 @@ pub fn load_plane_icons(vfs: &VfsPath) -> HashMap<String, RgbaImage> {
 ///
 /// Icons are at `gui/battle_hud/markers/building_icons/normal/icon_ground_{type}_{relation}.png`.
 /// Keys use the format `"artillery_enemy"`, `"airbase_dead"`, `"air_defence_suppressed_ally"`, etc.
-pub fn load_building_icons(vfs: &VfsPath) -> HashMap<String, RgbaImage> {
+pub fn load_building_icons(vfs: &VfsPath, version: Option<&Version>) -> HashMap<String, RgbaImage> {
     let types = ["airbase", "air_defence", "artillery", "generator", "radar", "station", "supply", "tower"];
     let relations = ["ally", "enemy", "neutral", "dead", "suppressed_ally", "suppressed_enemy", "suppressed_neutral"];
 
     let mut icons = HashMap::new();
+    let Some(dir) = GuiAssetDir::BuildingIcons.resolve(vfs, version) else {
+        return icons;
+    };
     for btype in &types {
         for relation in &relations {
             let filename = format!("icon_ground_{}_{}.png", btype, relation);
-            let path = format!("gui/battle_hud/markers/building_icons/normal/{}", filename);
-            if let Some(img) = load_packed_image(&path, vfs) {
+            let Ok(entry) = dir.join(&filename) else { continue };
+            if let Some(img) = load_image_entry(&entry) {
                 let resized =
                     image::imageops::resize(&img, ICON_SIZE, ICON_SIZE, image::imageops::FilterType::Lanczos3);
                 let key = format!("{}_{}", btype, relation);
@@ -288,10 +296,10 @@ pub fn load_building_icons(vfs: &VfsPath) -> HashMap<String, RgbaImage> {
 ///
 /// Discovers all `consumable_PCY*.png` files in `gui/consumables/` to support
 /// all ability variants (base, Premium, Super, TimeBased, etc.).
-pub fn load_consumable_icons(vfs: &VfsPath) -> HashMap<String, RgbaImage> {
+pub fn load_consumable_icons(vfs: &VfsPath, version: Option<&Version>) -> HashMap<String, RgbaImage> {
     let mut icons = HashMap::new();
 
-    if let Ok(dir) = vfs.join("gui/consumables")
+    if let Some(dir) = GuiAssetDir::Consumables.resolve(vfs, version)
         && let Ok(entries) = dir.read_dir()
     {
         for entry in entries {
@@ -301,9 +309,8 @@ pub fn load_consumable_icons(vfs: &VfsPath) -> HashMap<String, RgbaImage> {
                 if !pcy_name.starts_with("PCY") {
                     continue;
                 }
-                let path = format!("gui/consumables/{}", filename);
-                if let Some(img) = load_packed_image(&path, vfs) {
-                    let resized = image::imageops::resize(&img, 18, 18, image::imageops::FilterType::Lanczos3);
+                if let Some(img) = load_image_entry(&entry) {
+                    let resized = image::imageops::resize(&img, 28, 28, image::imageops::FilterType::Lanczos3);
                     icons.insert(pcy_name.to_string(), resized);
                 }
             }
@@ -314,24 +321,186 @@ pub fn load_consumable_icons(vfs: &VfsPath) -> HashMap<String, RgbaImage> {
     icons
 }
 
-/// Load death cause icons from game files into a HashMap keyed by cause name.
-///
-/// Discovers `icon_frag_*.png` files in `gui/battle_hud/icon_frag/` and stores
-/// them resized to `size x size` pixels, keyed by the base name (e.g. `"main_caliber"`).
-pub fn load_death_cause_icons(vfs: &VfsPath, size: u32) -> HashMap<String, RgbaImage> {
+/// Load ribbon icons from `gui/ribbons` (or `gui/ribbons/subribbons` when
+/// `dir` is `SubRibbons`), keyed by file stem to match `translate_ribbon`'s
+/// lowercased icon key. Absent in Flash-era builds; returns an empty map then.
+pub fn load_ribbon_icons(vfs: &VfsPath, dir: GuiAssetDir, version: Option<&Version>) -> HashMap<String, RgbaImage> {
     let mut icons = HashMap::new();
 
-    if let Ok(dir) = vfs.join("gui/battle_hud/icon_frag")
+    if let Some(dir) = dir.resolve(vfs, version)
         && let Ok(entries) = dir.read_dir()
     {
         for entry in entries {
             let filename = entry.filename();
-            if let Some(base_name) = filename.strip_prefix("icon_frag_").and_then(|s| s.strip_suffix(".png")) {
-                let path = format!("gui/battle_hud/icon_frag/{}", filename);
-                if let Some(img) = load_packed_image(&path, vfs) {
-                    let resized = image::imageops::resize(&img, size, size, image::imageops::FilterType::Lanczos3);
-                    icons.insert(base_name.to_string(), resized);
+            let Some(stem) = std::path::Path::new(&filename).file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if let Some(img) = load_image_entry(&entry) {
+                // Ribbon icons are wide (e.g. 133x51), so resize to a fixed
+                // height with proportional width to avoid squishing them.
+                let target_h = 32u32;
+                let (w, h) = (img.width(), img.height());
+                let target_w =
+                    if h > 0 { (((w as f32 / h as f32) * target_h as f32).round() as u32).max(1) } else { target_h };
+                let resized = image::imageops::resize(&img, target_w, target_h, image::imageops::FilterType::Lanczos3);
+                icons.insert(stem.to_string(), resized);
+            }
+        }
+    }
+
+    debug!(count = icons.len(), "Loaded ribbon icons");
+    icons
+}
+
+/// Load captain-skill icons from `gui/crew_commander/skills/`.
+///
+/// Filenames are snake_case matching `CrewSkill::internal_name()` after a
+/// `Case::Snake` conversion. The map is keyed by that snake_case slug
+/// (e.g. `"consumables_duration"`), so callers feed the converted internal
+/// name when looking up the icon for a learned skill.
+pub fn load_crew_skill_icons(vfs: &VfsPath, size: u32, version: Option<&Version>) -> HashMap<String, RgbaImage> {
+    use convert_case::Case;
+    use convert_case::Casing;
+
+    let mut icons = HashMap::new();
+    let resize =
+        |img: &image::DynamicImage| image::imageops::resize(img, size, size, image::imageops::FilterType::Lanczos3);
+
+    let Some(dir) = GuiAssetDir::CrewSkills.resolve(vfs, version) else {
+        debug!("crew skills dir not found");
+        return icons;
+    };
+
+    // Modern clients: flat icon files named by the snake-case skill slug, which
+    // matches the grid's lookup key directly.
+    if let Ok(entries) = dir.read_dir() {
+        for entry in entries {
+            let filename = entry.filename();
+            if let Some(key) = filename.strip_suffix(".png")
+                && let Some(img) = load_image_entry(&entry)
+            {
+                icons.insert(key.to_string(), resize(&img));
+            }
+        }
+    }
+
+    // Pre-rework clients keep skill icons in `big/` (preferred) or `small/`
+    // subdirs as `icon_perk_<InternalName>.png` rather than flat slugs. Key them
+    // by the snake-case internal name so they match the grid's lookup
+    // (skill.internal_name().to_case(Snake)). Only consulted when the flat
+    // layout yielded nothing.
+    if icons.is_empty() {
+        for sub in ["big", "small"] {
+            let Ok(subdir) = dir.join(sub) else { continue };
+            if !subdir.exists().unwrap_or(false) {
+                continue;
+            }
+            if let Ok(entries) = subdir.read_dir() {
+                for entry in entries {
+                    let filename = entry.filename();
+                    let Some(stem) = filename.strip_suffix(".png") else { continue };
+                    // Base state icon only; the grid doesn't use the disabled/penalty art.
+                    if stem.ends_with("_inactive") || stem.ends_with("_penalty") {
+                        continue;
+                    }
+                    let internal = stem
+                        .strip_prefix("icon_perk_small_")
+                        .or_else(|| stem.strip_prefix("icon_perk_"))
+                        .unwrap_or(stem);
+                    if let Some(img) = load_image_entry(&entry) {
+                        icons.insert(internal.to_case(Case::Snake), resize(&img));
+                    }
                 }
+            }
+            if !icons.is_empty() {
+                break;
+            }
+        }
+    }
+
+    debug!(count = icons.len(), "Loaded crew skill icons");
+    icons
+}
+
+/// Load modernization (ship upgrade) icons from `gui/modernization_icons/`.
+///
+/// Filenames are `icon_modernization_<PCM full name>.png`; the map is keyed
+/// by the full PCM name (`Param::name()`, e.g. `"PCM082_SpecialBonus_Mod_I"`)
+/// so callers can look up by the upgrade param's full name.
+pub fn load_modernization_icons(vfs: &VfsPath, size: u32, version: Option<&Version>) -> HashMap<String, RgbaImage> {
+    let mut icons = HashMap::new();
+
+    if let Some(dir) = GuiAssetDir::Modernizations.resolve(vfs, version)
+        && let Ok(entries) = dir.read_dir()
+    {
+        for entry in entries {
+            let filename = entry.filename();
+            if let Some(pcm_name) = filename.strip_prefix("icon_modernization_").and_then(|s| s.strip_suffix(".png"))
+                && let Some(img) = load_image_entry(&entry)
+            {
+                let resized = image::imageops::resize(&img, size, size, image::imageops::FilterType::Lanczos3);
+                icons.insert(pcm_name.to_string(), resized);
+            }
+        }
+    }
+
+    debug!(count = icons.len(), "Loaded modernization icons");
+    icons
+}
+
+/// Load signal-flag icons from `gui/signal_flags/`.
+///
+/// Filenames are `<PCEF full name>.png`; the map is keyed by the full PCEF
+/// name (`Param::name()`, e.g. `"PCEF014_NF_SignalFlag"`) so callers can
+/// look up by the signal param's full name.
+pub fn load_signal_flag_icons(vfs: &VfsPath, size: u32, version: Option<&Version>) -> HashMap<String, RgbaImage> {
+    let mut icons = HashMap::new();
+
+    if let Some(dir) = GuiAssetDir::SignalFlags.resolve(vfs, version)
+        && let Ok(entries) = dir.read_dir()
+    {
+        for entry in entries {
+            let filename = entry.filename();
+            if let Some(pcef_name) = filename.strip_suffix(".png") {
+                if !pcef_name.starts_with("PCEF") {
+                    continue;
+                }
+                if let Some(img) = load_image_entry(&entry) {
+                    let resized = image::imageops::resize(&img, size, size, image::imageops::FilterType::Lanczos3);
+                    icons.insert(pcef_name.to_string(), resized);
+                }
+            }
+        }
+    }
+
+    debug!(count = icons.len(), "Loaded signal flag icons");
+    icons
+}
+
+/// Load death cause icons from game files into a HashMap keyed by cause name.
+///
+/// Discovers `icon_frag_*.png` files in `gui/battle_hud/icon_frag/` and stores
+/// them resized to `size x size` pixels, keyed by the base name (e.g. `"main_caliber"`).
+pub fn load_death_cause_icons(vfs: &VfsPath, size: u32, version: Option<&Version>) -> HashMap<String, RgbaImage> {
+    let mut icons = HashMap::new();
+
+    if let Some(dir) = GuiAssetDir::DeathCauseIcons.resolve(vfs, version)
+        && let Ok(entries) = dir.read_dir()
+    {
+        for entry in entries {
+            let filename = entry.filename();
+            // `frags.png` sits next to the per-cause icons and is the in-game
+            // kill-count glyph (used by the roster panel's frag column).
+            let key = if filename == "frags.png" {
+                Some("frags".to_string())
+            } else {
+                filename.strip_prefix("icon_frag_").and_then(|s| s.strip_suffix(".png")).map(|s| s.to_string())
+            };
+            if let Some(base_name) = key
+                && let Some(img) = load_image_entry(&entry)
+            {
+                let resized = image::imageops::resize(&img, size, size, image::imageops::FilterType::Lanczos3);
+                icons.insert(base_name, resized);
             }
         }
     }
@@ -344,10 +513,10 @@ pub fn load_death_cause_icons(vfs: &VfsPath, size: u32) -> HashMap<String, RgbaI
 ///
 /// Discovers `icon_marker_*.png` files in `gui/powerups/drops/` and stores them
 /// resized to `size x size` pixels, keyed by marker name (e.g. `"damage_active"`).
-pub fn load_powerup_icons(vfs: &VfsPath, size: u32) -> HashMap<String, RgbaImage> {
+pub fn load_powerup_icons(vfs: &VfsPath, size: u32, version: Option<&Version>) -> HashMap<String, RgbaImage> {
     let mut icons = HashMap::new();
 
-    if let Ok(dir) = vfs.join("gui/powerups/drops")
+    if let Some(dir) = GuiAssetDir::PowerupDrops.resolve(vfs, version)
         && let Ok(entries) = dir.read_dir()
     {
         for entry in entries {
@@ -357,8 +526,7 @@ pub fn load_powerup_icons(vfs: &VfsPath, size: u32) -> HashMap<String, RgbaImage
                 if marker_name.ends_with("_small") {
                     continue;
                 }
-                let path = format!("gui/powerups/drops/{}", filename);
-                if let Some(img) = load_packed_image(&path, vfs) {
+                if let Some(img) = load_image_entry(&entry) {
                     let resized = image::imageops::resize(&img, size, size, image::imageops::FilterType::Lanczos3);
                     icons.insert(marker_name.to_string(), resized);
                 }
@@ -374,44 +542,18 @@ pub fn load_powerup_icons(vfs: &VfsPath, size: u32) -> HashMap<String, RgbaImage
 ///
 /// Returns a map keyed by `"ally"`, `"enemy"`, `"neutral"` containing the
 /// corresponding flag PNG from `gui/battle_hud/markers/capture_point/`.
-pub fn load_flag_icons(vfs: &VfsPath) -> HashMap<String, RgbaImage> {
-    let variants = [
-        ("ally", "gui/battle_hud/markers/capture_point/icon_base_ally_flag.png"),
-        ("enemy", "gui/battle_hud/markers/capture_point/icon_base_enemy_flag.png"),
-        ("neutral", "gui/battle_hud/markers/capture_point/icon_base_neutral_flag.png"),
-    ];
+pub fn load_flag_icons(vfs: &VfsPath, version: Option<&Version>) -> HashMap<String, RgbaImage> {
+    let variants = [("ally", Relation::Ally), ("enemy", Relation::Enemy), ("neutral", Relation::Neutral)];
     let mut icons = HashMap::new();
-    for (key, path) in &variants {
-        if let Some(img) = load_packed_image(path, vfs) {
+    for (key, relation) in variants {
+        if let Some(buf) = GuiAsset::CapturePointFlag(relation).read(vfs, version)
+            && let Ok(img) = image::load_from_memory(&buf)
+        {
             let resized = image::imageops::resize(&img, ICON_SIZE, ICON_SIZE, image::imageops::FilterType::Lanczos3);
             icons.insert(key.to_string(), resized);
         }
     }
     debug!(count = icons.len(), "Loaded flag icons");
-    icons
-}
-
-/// Load all ribbon icons from game files.
-/// Keyed by filename without extension (e.g. "ribbon_1", "ribbon_18").
-pub fn load_ribbon_icons(vfs: &VfsPath) -> HashMap<String, RgbaImage> {
-    let mut icons = HashMap::new();
-    if let Ok(dir) = vfs.join("gui/ribbons")
-        && let Ok(entries) = dir.read_dir()
-    {
-        for entry in entries {
-            let filename = entry.filename();
-            if let Some(key) = filename.strip_suffix(".png") {
-                let path = format!("gui/ribbons/{}", filename);
-                if let Some(img) = load_packed_image(&path, vfs) {
-                    let rgba = img.to_rgba8();
-                    // Ribbon icons are usually ~64x64, resize for the pop-up/panel.
-                    let resized = image::imageops::resize(&rgba, 48, 48, image::imageops::FilterType::Lanczos3);
-                    icons.insert(key.to_string(), resized);
-                }
-            }
-        }
-    }
-    debug!(count = icons.len(), "Loaded ribbon icons");
     icons
 }
 
@@ -627,12 +769,36 @@ fn compute_scale_factor(font: &FontArc) -> f32 {
     1.0
 }
 
-/// Load game fonts from packed game files.
-///
-/// Tries to load Warhelios Bold as the primary font. CJK fallback fonts
-/// (Korean, Japanese, Chinese) are loaded if present. Each font gets a
-/// scale correction factor computed automatically.
-pub fn load_game_fonts(vfs: &VfsPath) -> GameFonts {
+/// Load a Latin sans-serif font from a well-known OS location, used when the game
+/// VFS carries no usable TrueType face (older clients ship bitmap fonts only).
+fn load_system_fallback_font() -> Option<(FontArc, Vec<u8>)> {
+    const CANDIDATES: &[&str] = &[
+        // Windows
+        r"C:\Windows\Fonts\segoeui.ttf",
+        r"C:\Windows\Fonts\arial.ttf",
+        // macOS
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/Library/Fonts/Arial.ttf",
+        // Linux
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+    ];
+    for path in CANDIDATES {
+        if let Ok(bytes) = std::fs::read(path)
+            && let Ok(font) = FontArc::try_from_vec(bytes.clone())
+        {
+            debug!(path, "Loaded system fallback font");
+            return Some((font, bytes));
+        }
+    }
+    None
+}
+
+/// Try to load the game TrueType fonts (Warhelios primary + CJK fallbacks) from
+/// a single VFS. Returns None when the VFS carries no usable Warhelios TTF
+/// (older clients shipped bitmap fonts only).
+fn game_fonts_from_vfs(vfs: &VfsPath) -> Option<GameFonts> {
     let load_font = |path: &str| -> Option<(FontArc, Vec<u8>)> {
         let buf = read_vfs_file(vfs, path)?;
         let raw_bytes = buf.clone();
@@ -648,13 +814,9 @@ pub fn load_game_fonts(vfs: &VfsPath) -> GameFonts {
         }
     };
 
-    let (primary, primary_bytes) = load_font("gui/fonts/Warhelios_Bold.ttf")
-        .or_else(|| load_font("gui/fonts/Warhelios.ttf"))
+    let (primary, primary_bytes) = load_font("gui/fonts/Warhelios.ttf")
         .or_else(|| load_font("gui/fonts/Warhelios_Regular.ttf"))
-        .expect(
-            "Failed to load Warhelios font from game files. \
-             Make sure the game directory is correct.",
-        );
+        .or_else(|| load_font("gui/fonts/Warhelios_Bold.ttf"))?;
 
     let fallback_paths = [
         "gui/fonts/WarheliosKO_Bold.ttf",
@@ -671,5 +833,59 @@ pub fn load_game_fonts(vfs: &VfsPath) -> GameFonts {
 
     debug!(fallback_count = fallbacks.len(), primary_scale_factor, "Loaded game fonts");
 
-    GameFonts { primary, fallbacks, primary_scale_factor, fallback_scale_factors, primary_bytes, fallback_bytes }
+    Some(GameFonts { primary, fallbacks, primary_scale_factor, fallback_scale_factors, primary_bytes, fallback_bytes })
+}
+
+/// Build a `GameFonts` from a system sans-serif face, used when no game TTF is
+/// available in any VFS.
+fn system_game_fonts() -> GameFonts {
+    warn!("no Warhelios TTF in game files (older client?); falling back to a system font");
+    let (primary, primary_bytes) =
+        load_system_fallback_font().expect("no usable font found in the game files or on the system");
+    let primary_scale_factor = compute_scale_factor(&primary);
+    GameFonts {
+        primary,
+        fallbacks: Vec::new(),
+        primary_scale_factor,
+        fallback_scale_factors: Vec::new(),
+        primary_bytes,
+        fallback_bytes: Vec::new(),
+    }
+}
+
+/// Load game fonts from a single VFS, falling back to a system font when the
+/// VFS ships no TrueType face.
+pub fn load_game_fonts(vfs: &VfsPath) -> GameFonts {
+    game_fonts_from_vfs(vfs).unwrap_or_else(system_game_fonts)
+}
+
+/// First `Some` from `primary` then `fallbacks` in order, else `default`.
+fn first_available<T>(
+    primary: Option<T>,
+    fallbacks: impl IntoIterator<Item = Option<T>>,
+    default: impl FnOnce() -> T,
+) -> T {
+    primary.or_else(|| fallbacks.into_iter().flatten().next()).unwrap_or_else(default)
+}
+
+/// Load game fonts, trying `vfs` first, then each `fallbacks` VFS in order (dump
+/// builds newest-first for old replays that ship no TTF), and a system font only
+/// when none carry a usable face.
+pub fn load_game_fonts_with_fallbacks(vfs: &VfsPath, fallbacks: &[VfsPath]) -> GameFonts {
+    first_available(game_fonts_from_vfs(vfs), fallbacks.iter().map(game_fonts_from_vfs), system_game_fonts)
+}
+
+#[cfg(test)]
+mod font_fallback_test {
+    use super::first_available;
+
+    #[test]
+    fn picks_first_available_in_order() {
+        // Primary present: use it.
+        assert_eq!(first_available(Some(1), [Some(2), Some(3)], || 9), 1);
+        // Primary absent: first available fallback (newest-first ordering).
+        assert_eq!(first_available(None, [None, Some(2), Some(3)], || 9), 2);
+        // Nothing available: default (system font).
+        assert_eq!(first_available::<i32>(None, [None, None], || 9), 9);
+    }
 }

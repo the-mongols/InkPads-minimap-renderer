@@ -23,6 +23,14 @@
 //! ```
 
 pub mod builds;
+pub mod cas;
+pub mod cas_vfs;
+#[cfg(feature = "constants")]
+pub mod constants;
+#[cfg(feature = "download")]
+pub mod download_repo;
+pub mod dump;
+pub mod manifest;
 pub mod registry;
 
 use std::path::PathBuf;

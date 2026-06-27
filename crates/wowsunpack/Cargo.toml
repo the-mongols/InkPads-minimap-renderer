@@ -1,7 +1,7 @@
 [package]
 name = "wowsunpack"
 description = "Utility for interacting with World of Warships game assets"
-version = "0.31.0"
+version = "0.42.0"
 repository = "https://github.com/landaire/wows-toolkit"
 documentation = "https://docs.rs/wowsunpack/"
 exclude = ["format_templates/"]
@@ -18,7 +18,13 @@ name = "wowsunpack"
 path = "src/main.rs"
 required-features = ["bin"]
 
+[[bin]]
+name = "dhat_parse"
+path = "src/bin/dhat_parse.rs"
+required-features = ["dhat-heap"]
+
 [dependencies]
+wows-core = { workspace = true }
 clap = { workspace = true, optional = true }
 flate2 = { workspace = true }
 rootcause = { workspace = true }
@@ -29,9 +35,9 @@ serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 csv = { version = "1.4", optional = true }
 glob = { workspace = true, optional = true }
-pickled = { workspace = true, features = ["variantly"], optional = true }
+pickled = { workspace = true, optional = true }
 winnow = { workspace = true, optional = true }
-variantly = { version = "0.4", optional = true }
+paste = { workspace = true, optional = true }
 roxmltree = { workspace = true, optional = true }
 tracing = { workspace = true }
 itertools = { workspace = true, optional = true }
@@ -53,8 +59,8 @@ vfs = { version = "0.13", optional = true }
 async-trait = { version = "0.1", optional = true }
 async-std = { version = "1.13", optional = true }
 futures = { version = "0.3", optional = true }
-oval = { version = "2.0", optional = true }
-serde_cbor = { workspace = true, optional = true }
+ciborium = { workspace = true, optional = true }
+dhat = { version = "0.3", optional = true }
 
 [build-dependencies]
 serde = { workspace = true }
@@ -64,28 +70,31 @@ toml = { workspace = true }
 insta = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
-wows-data-mgr = { workspace = true }
 
 [features]
-arc = []
-serde = ["dep:serde"]
-rkyv = ["dep:rkyv"]
+arc = ["wows-core/arc"]
+serde = ["dep:serde", "wows-core/serde"]
+rkyv = ["dep:rkyv", "wows-core/rkyv"]
 json = ["dep:serde_json", "serde"]
-# Core parsing/processing: gates heavy deps (memmap2, pickled, winnow, etc.) and
-# modules that use them (data, game_data, game_params, models, rpc, export, game_constants).
+# Core parsing/processing: sans-io. Gates pickled, winnow, roxmltree, etc. and
+# the modules that use them. Compiles for wasm32 (no memmap2, no filesystem VFS).
 # Without this feature, only lightweight type modules are available (game_types, recognized, error).
 parsing = [
-    "dep:memmap2",
     "dep:pickled",
     "dep:winnow",
-    "dep:variantly",
+    "dep:paste",
     "dep:roxmltree",
     "dep:gettext",
     "dep:bon",
     "dep:convert_case",
     "dep:itertools",
+    "wows-core/parsing",
 ]
-vfs = ["arc", "dep:vfs", "dep:oval", "parsing"]
+# VFS abstraction over IDX/PKG archives. Pure Rust, wasm-compatible. Bring your
+# own `Prime` source: BytesPkgSource (in-memory) always, MmapPkgSource via vfs-mmap.
+vfs = ["arc", "dep:vfs", "parsing"]
+# Memory-mapped PKG file source (MmapPkgSource, pkg.rs). Native only; uses memmap2.
+vfs-mmap = ["vfs", "dep:memmap2"]
 async_vfs = ["vfs/async-vfs", "arc", "vfs", "dep:futures", "dep:async-std", "dep:async-trait"]
 models = [
     "dep:gltf-json",
@@ -105,10 +114,14 @@ bin = [
     "dep:regex",
     "dep:indicatif",
     "dep:thread_local",
+    "cbor",
     "models",
     "arc",
     "json",
-    "vfs",
+    "vfs-mmap",
 ]
 default = ["bin"]
-cbor = ["dep:serde_cbor", "serde"]
+cbor = ["dep:ciborium", "serde"]
+# Heap-profile the GameParams parse path with dhat. Enables the `dhat_parse`
+# binary; pair with the `profiling` cargo profile. Off by default.
+dhat-heap = ["dep:dhat", "vfs-mmap", "rkyv"]

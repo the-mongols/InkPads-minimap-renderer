@@ -11,14 +11,13 @@ pub struct MapInfo {
     pub space_size: i32,
 }
 
-/// Pixel position on the minimap image.
-/// (0,0) is top-left, positive X = right, positive Y = down.
-/// Does NOT include HUD offset — that's applied at draw time.
+/// Sub-pixel position on the minimap image. (0,0) is top-left.
+/// Does NOT include the HUD offset, which is applied at draw time.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct MinimapPos {
-    pub x: i32,
-    pub y: i32,
+    pub x: f32,
+    pub y: f32,
 }
 
 impl MapInfo {
@@ -32,8 +31,8 @@ impl MapInfo {
         let half = native / 2.0;
         let rescale = output_size as f64 / native;
         MinimapPos {
-            x: ((pos.x as f64 * scale + half) * rescale) as i32,
-            y: ((-pos.z as f64 * scale + half) * rescale) as i32,
+            x: ((pos.x as f64 * scale + half) * rescale) as f32,
+            y: ((-pos.z as f64 * scale + half) * rescale) as f32,
         }
     }
 
@@ -47,7 +46,7 @@ impl MapInfo {
         let rescale = output_size as f64 / native;
         let x = (pos.x as f64 / rescale - half) / scale;
         let z = -(pos.y as f64 / rescale - half) / scale;
-        WorldPos { x: x as f32, y: 0.0, z: z as f32 }
+        WorldPos::new(x as f32, 0.0, z as f32)
     }
 
     /// Convert minimap pixel coordinates (as f32) back to world coordinates.
@@ -61,7 +60,7 @@ impl MapInfo {
         let rescale = output_size as f64 / native;
         let wx = (x as f64 / rescale - half) / scale;
         let wz = -(y as f64 / rescale - half) / scale;
-        WorldPos { x: wx as f32, y: 0.0, z: wz as f32 }
+        WorldPos::new(wx as f32, 0.0, wz as f32)
     }
 
     /// Convert a distance in world (BigWorld) units to minimap pixels.
@@ -92,6 +91,6 @@ impl MapInfo {
         // NormalizedPos.y maps to world Z (north-south axis), but the minimap Y axis
         // is inverted relative to world Z. world_to_minimap handles -Z -> +Y, so we
         // pass z directly (world_to_minimap negates it internally).
-        self.world_to_minimap(WorldPos { x: world_x as f32, y: 0.0, z: world_z as f32 }, output_size)
+        self.world_to_minimap(WorldPos::new(world_x as f32, 0.0, world_z as f32), output_size)
     }
 }

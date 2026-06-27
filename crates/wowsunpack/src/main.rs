@@ -3,7 +3,7 @@ use rootcause::prelude::*;
 use pickled::HashableValue;
 use serde::Serialize;
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
@@ -81,6 +81,20 @@ enum Commands {
         /// Directory name to list
         dir: Option<String>,
     },
+    /// Resolve the minimal set of `.pkg` volume files that hold the files
+    /// matching the given glob patterns. Reads only the idx files, so it can be
+    /// run before any `.pkg` has been downloaded to determine which packages are
+    /// actually needed to extract a target path set.
+    Pkgs {
+        /// Glob patterns to resolve, e.g. `spaces/*/minimap*.png`. Uses the same
+        /// path format as `list`/`extract` (leading slash optional).
+        patterns: Vec<String>,
+
+        /// Emit JSON (`{"pkgs":[...],"matched_files":N,"unmatched_patterns":[...]}`)
+        /// instead of one pkg filename per line.
+        #[clap(long)]
+        json: bool,
+    },
     /// Extract files to an output directory
     Extract {
         /// Only extract files from assets.bin (not idx/pkg)
@@ -141,6 +155,18 @@ enum Commands {
         /// Which GameParams identifier to dump
         #[clap(long, default_value = "")]
         id: String,
+
+        /// Read a standalone `GameParams.data` (zlib-compressed pickle) from this
+        /// path instead of the VFS / pkg dir. Lets you convert a raw dump without
+        /// a full game install.
+        #[clap(short, long)]
+        input: Option<PathBuf>,
+
+        /// Emit the minimal normalized `Vec<Param>` as CBOR (the blob downstream
+        /// tools consume) instead of the raw pickle JSON. `--ugly`, `--full`,
+        /// `--id`, and `--print-ids` have no effect in this mode.
+        #[clap(long)]
+        min: bool,
 
         #[clap(default_value = "GameParams.json")]
         out_file: PathBuf,
@@ -545,6 +571,59 @@ fn run() -> Result<(), Report> {
     }
 
     match args.command {
+        Commands::Pkgs { patterns, json } => {
+            if patterns.is_empty() {
+                bail!("at least one glob pattern is required");
+            }
+            // Normalize: file_tree keys carry a leading slash, but patterns are
+            // written without one (matching the extract/list convention), so
+            // strip it from both sides before comparing.
+            let globs: Vec<glob::Pattern> = patterns
+                .iter()
+                .map(|p| glob::Pattern::new(p.trim_start_matches('/')).expect("invalid glob pattern"))
+                .collect();
+
+            let mut pkgs: BTreeSet<String> = BTreeSet::new();
+            let mut pattern_hit = vec![false; globs.len()];
+            let mut matched_files = 0usize;
+
+            for (path, entry) in &file_tree {
+                // assets.bin-backed paths have no standalone pkg, and the dump's
+                // required paths are all real volume files, so only consider
+                // volume-backed files.
+                let VfsEntry::File { volume, .. } = entry else {
+                    continue;
+                };
+                let rel = path.trim_start_matches('/');
+                for (i, glob) in globs.iter().enumerate() {
+                    if glob.matches(rel) {
+                        pattern_hit[i] = true;
+                        pkgs.insert(volume.filename.clone());
+                        matched_files += 1;
+                        break;
+                    }
+                }
+            }
+
+            let unmatched: Vec<&str> =
+                patterns.iter().zip(&pattern_hit).filter(|(_, hit)| !**hit).map(|(p, _)| p.as_str()).collect();
+
+            if json {
+                let obj = serde_json::json!({
+                    "pkgs": pkgs.iter().collect::<Vec<_>>(),
+                    "matched_files": matched_files,
+                    "unmatched_patterns": unmatched,
+                });
+                println!("{}", serde_json::to_string_pretty(&obj)?);
+            } else {
+                for pkg in &pkgs {
+                    println!("{pkg}");
+                }
+                if !unmatched.is_empty() {
+                    eprintln!("WARN: {} pattern(s) matched no files: {}", unmatched.len(), unmatched.join(", "));
+                }
+            }
+        }
         Commands::Extract { assets, flatten, files, out_dir, strip_prefix } => {
             let Some(vfs) = &vfs else {
                 bail!("Package file loader is unavailable. Check that the pkg_dir exists.");
@@ -638,7 +717,8 @@ fn run() -> Result<(), Report> {
                                 child_path.as_str()
                             };
 
-                            let out_path = out_dir.join(relative.trim_start_matches('/').replace('/', std::path::MAIN_SEPARATOR_STR));
+                            let out_path = out_dir
+                                .join(relative.trim_start_matches('/').replace('/', std::path::MAIN_SEPARATOR_STR));
                             if let Some(parent) = out_path.parent() {
                                 fs::create_dir_all(parent)?;
                             }
@@ -697,14 +777,34 @@ fn run() -> Result<(), Report> {
                 }
             };
         }
-        Commands::GameParams { out_file, ugly, id, print_ids: ids, full } => {
-            let Some(vfs) = &vfs else {
-                bail!("Package file loader is unavailable. Check that the pkg_dir exists.");
+        Commands::GameParams { out_file, ugly, id, print_ids: ids, full, input, min } => {
+            // Source bytes from a standalone GameParams.data on disk, or the VFS.
+            let game_params_data = match &input {
+                Some(path) => fs::read(path).context("Failed to read GameParams.data input")?,
+                None => {
+                    let Some(vfs) = &vfs else {
+                        bail!(
+                            "Package file loader is unavailable. Check that the pkg_dir exists, or pass --input <GameParams.data>."
+                        );
+                    };
+                    read_game_params_bytes(vfs)?
+                }
             };
 
-            let pickle = load_game_params(vfs)?;
+            // Normalized minimal output: the CBOR Vec<Param> downstream tools use.
+            if min {
+                let params =
+                    wowsunpack::game_params::provider::GameMetadataProvider::params_from_data(game_params_data)
+                        .context("Failed to normalize GameParams")?;
+                let writer = BufWriter::new(File::create(&out_file)?);
+                ciborium::into_writer(&params, writer).context("Failed to serialize CBOR")?;
+                println!("MinGameParams CBOR ({} params) written to {out_file:?}", params.len());
+                return Ok(());
+            }
 
-            fn print_ids(params_dict: &BTreeMap<pickled::HashableValue, pickled::Value>) {
+            let pickle = game_params_to_pickle(game_params_data).context("Failed to deserialize GameParams")?;
+
+            fn print_ids(params_dict: &pickled::Dict) {
                 for key in params_dict.keys() {
                     if let HashableValue::String(s) = key {
                         let s = s.inner();
@@ -1095,7 +1195,7 @@ fn dump_param(file_stem: &str, value: &pickled::Value, mut out_path: PathBuf) ->
     None
 }
 
-fn value_to_dict(value: pickled::Value) -> Option<std::collections::BTreeMap<pickled::HashableValue, pickled::Value>> {
+fn value_to_dict(value: pickled::Value) -> Option<pickled::Dict> {
     match value {
         pickled::Value::Dict(d) => Some(d.into_raw_or_cloned()),
         pickled::Value::Object(o) => {
@@ -1107,7 +1207,7 @@ fn value_to_dict(value: pickled::Value) -> Option<std::collections::BTreeMap<pic
     }
 }
 
-fn load_game_params(vfs: &VfsPath) -> Result<pickled::Value, Report> {
+fn read_game_params_bytes(vfs: &VfsPath) -> Result<Vec<u8>, Report> {
     let mut game_params_data: Vec<u8> = Vec::new();
     vfs.join("content/GameParams.data")
         .context("VFS path error")?
@@ -1116,7 +1216,11 @@ fn load_game_params(vfs: &VfsPath) -> Result<pickled::Value, Report> {
         .read_to_end(&mut game_params_data)
         .context("Failed to read GameParams")?;
 
-    let pickle = game_params_to_pickle(game_params_data).context("Failed to deserialize GameParams")?;
+    Ok(game_params_data)
+}
+
+fn load_game_params(vfs: &VfsPath) -> Result<pickled::Value, Report> {
+    let pickle = game_params_to_pickle(read_game_params_bytes(vfs)?).context("Failed to deserialize GameParams")?;
 
     Ok(pickle)
 }
@@ -2212,7 +2316,9 @@ fn main() -> Result<(), Report> {
 
     run()?;
 
-    println!("Finished in {} seconds", (Instant::now() - timestamp).as_secs_f32());
+    // To stderr so machine-readable command output (e.g. `pkgs --json`) on
+    // stdout stays clean.
+    eprintln!("Finished in {} seconds", (Instant::now() - timestamp).as_secs_f32());
 
     Ok(())
 }

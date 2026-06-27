@@ -73,7 +73,7 @@ impl BuildsIndex {
     /// Find all entries matching a version prefix.
     /// e.g. "15.2.0" matches all builds with that version, regardless of build number.
     pub fn find_by_version(&self, version_query: &str) -> Vec<&BuildEntry> {
-        self.builds.iter().filter(|e| version_matches(&e.version, version_query)).collect()
+        self.builds.iter().filter(|e| crate::manifest::version_matches(&e.version, version_query)).collect()
     }
 
     /// Resolve a build number to a dump entry.
@@ -113,6 +113,11 @@ pub struct BuildMetadata {
     /// VFS file path -> CAS hash. Only present in new-format dumps.
     #[serde(default)]
     pub files: BTreeMap<String, String>,
+    /// Build-relative path -> CAS hash for derived artifacts (the rkyv game
+    /// params blob and the compressed copies fetched by web clients). Kept
+    /// separate from `files`, which tracks the extracted `vfs/` tree.
+    #[serde(default)]
+    pub derived: BTreeMap<String, String>,
 }
 
 impl BuildMetadata {
@@ -135,25 +140,12 @@ impl BuildMetadata {
         !self.files.is_empty()
     }
 
-    /// Collect all unique hashes referenced by this build.
+    /// Collect all unique CAS hashes referenced by this build, across both the
+    /// extracted `vfs/` tree and the derived artifacts.
     pub fn referenced_hashes(&self) -> std::collections::HashSet<String> {
-        self.files.values().cloned().collect()
+        self.files.values().chain(self.derived.values()).cloned().collect()
     }
 }
-
-/// Check if a full version string matches a possibly-shorthand query.
-/// "15.1.0" matches "15.1", "15.1.0", and "15".
-pub fn version_matches(full: &str, query: &str) -> bool {
-    let full_parts: Vec<&str> = full.split('.').collect();
-    let query_parts: Vec<&str> = query.split('.').collect();
-
-    if query_parts.len() > full_parts.len() {
-        return false;
-    }
-
-    full_parts.iter().zip(query_parts.iter()).all(|(f, q)| f == q)
-}
-
 
 #[cfg(test)]
 mod tests {
@@ -226,7 +218,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("metadata.toml");
 
-        let mut meta = BuildMetadata { version: "15.2.0".into(), build: 12100000, files: BTreeMap::new() };
+        let mut meta = BuildMetadata {
+            version: "15.2.0".into(),
+            build: 12100000,
+            files: BTreeMap::new(),
+            derived: BTreeMap::new(),
+        };
         meta.files.insert("gui/test.png".into(), "abcdef1234567890abcd".into());
 
         meta.save(&path).unwrap();
