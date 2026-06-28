@@ -461,6 +461,13 @@ class ReplayAnalyzer:
                 self.zones[eid] = {"label": label, "index": idx, "team_id": team}
                 self.zone_team_state[eid] = team
 
+    def _get_player_eid(self) -> Optional[int]:
+        if self.player_name:
+            for eid, s in self.ships.items():
+                if s.get("name") == self.player_name:
+                    return eid
+        return None
+
     def _pass2_events(self, objects: List[Dict[str, Any]]):
         for obj in objects:
             if not isinstance(obj, dict): continue
@@ -493,6 +500,34 @@ class ReplayAnalyzer:
             em = payload.get("EntityMethod")
             if isinstance(em, dict):
                 self._handle_entity_method(clock, em)
+
+            ds = payload.get("DamageStat")
+            if isinstance(ds, list):
+                player_eid = self._get_player_eid()
+                if player_eid is not None:
+                    for entry in ds:
+                        if isinstance(entry, dict):
+                            category = entry.get("category", {})
+                            category_val = category.get("Known") or category.get("Unknown")
+                            total = entry.get("total", 0.0)
+                            if category_val == "Enemy":
+                                self.player_stats[player_eid]["damage"] = int(total)
+                            elif category_val == "Spotting":
+                                self.player_stats[player_eid]["spotting"] = int(total)
+                            elif category_val == "Potential":
+                                self.player_stats[player_eid]["potential"] = int(total)
+
+            dr = payload.get("DamageReceived")
+            if isinstance(dr, dict):
+                aggressors = dr.get("aggressors", [])
+                if isinstance(aggressors, list):
+                    for agg in aggressors:
+                        if isinstance(agg, dict):
+                            agg_eid = agg.get("aggressor")
+                            dmg = agg.get("damage", 0.0)
+                            player_eid = self._get_player_eid()
+                            if agg_eid is not None and agg_eid != player_eid:
+                                self.player_stats[agg_eid]["damage"] = self.player_stats[agg_eid].get("damage", 0) + int(dmg)
 
             if isinstance(payload, dict) and "BattleResults" in payload:
                 results_str = payload["BattleResults"]
