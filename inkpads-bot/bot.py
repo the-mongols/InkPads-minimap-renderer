@@ -68,6 +68,11 @@ TEMP_DIR.mkdir(exist_ok=True)
 # Keep strong references to background tasks to prevent garbage collection
 background_tasks = set()
 
+# Concurrency Queue
+MAX_CONCURRENT_RENDERS = int(os.getenv('MAX_CONCURRENT_RENDERS', 1))
+render_semaphore = None
+render_queue = []
+
 class InkpadsBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
@@ -75,6 +80,9 @@ class InkpadsBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
+        global render_semaphore
+        render_semaphore = asyncio.Semaphore(MAX_CONCURRENT_RENDERS)
+        
         # Sync slash commands
         logger.info("Syncing slash commands...")
         synced = await self.tree.sync()
@@ -211,11 +219,11 @@ async def send_webhook_payload(replay_path, red_replay_path, session_id):
     
     for attempt in range(1, max_retries + 1):
         if not replay_path.exists():
-            logger.error(f"Cannot upload payload for session {session_id}: replay file {replay_path} does not exist.")
+            logger.error(f"[{session_id}] Cannot upload payload: replay file {replay_path} not found.")
             break
             
         try:
-            logger.info(f"Webhook handover attempt {attempt}/{max_retries} for session {session_id}...")
+            logger.info(f"[{session_id}] Webhook transmission attempt {attempt}/{max_retries} initiated.")
             
             files = {}
             fh_to_close = []
@@ -238,26 +246,26 @@ async def send_webhook_payload(replay_path, red_replay_path, session_id):
                     try:
                         fh.close()
                     except Exception as ce:
-                        logger.warning(f"Error closing file handle during webhook attempt: {ce}")
+                        logger.warning(f"[{session_id}] Error closing file handle: {ce}")
             
             if resp.status_code in (200, 201, 202):
-                logger.info(f"Webhook handover successful on attempt {attempt} for session {session_id}.")
+                logger.info(f"[{session_id}] Webhook transmission successful.")
                 return
             elif resp.status_code in (400, 401, 403, 404):
-                logger.error(f"Webhook handover rejected with status {resp.status_code} (non-retryable) for session {session_id}: {resp.text}")
+                logger.error(f"[{session_id}] Webhook rejected with status {resp.status_code}.")
                 break
             else:
-                logger.warning(f"Webhook handover failed with status {resp.status_code} for session {session_id}.")
+                logger.warning(f"[{session_id}] Webhook failed with status {resp.status_code}.")
                 
         except Exception as e:
-            logger.error(f"Exception during webhook handover attempt {attempt} for session {session_id}: {e}")
+            logger.error(f"[{session_id}] Exception during webhook transmission: {e}")
         
         if attempt < max_retries:
             backoff = 2 ** attempt
-            logger.info(f"Retrying webhook handover for session {session_id} in {backoff} seconds...")
+            logger.info(f"[{session_id}] Retrying webhook transmission in {backoff} seconds.")
             await asyncio.sleep(backoff)
             
-    logger.error(f"Webhook handover completely failed after {max_retries} attempts for session {session_id}.")
+    logger.error(f"[{session_id}] Webhook transmission failed after {max_retries} attempts.")
 
 
 
@@ -288,10 +296,10 @@ async def render(
     layout_preset: app_commands.Choice[str] = None
 ):
     if not replay.filename.endswith('.wowsreplay'):
-        await interaction.response.send_message("❌ Error: File must be a `.wowsreplay` file.", ephemeral=True)
+        await interaction.response.send_message("The provided file is not a valid .wowsreplay format.", ephemeral=True)
         return
 
-    # Acknowledge and defer since rendering takes time
+    # Acknowledge and defer
     await interaction.response.defer(ephemeral=False)
     
     # Create unique session ID
@@ -300,23 +308,43 @@ async def render(
     red_replay_path = TEMP_DIR / f"{session_id}_red.wowsreplay" if red_replay else None
     output_path = TEMP_DIR / f"{session_id}.mp4"
 
-    logger.info(f"Render Session {session_id}: Green={replay.filename}, Red={'None' if not red_replay else red_replay.filename}")
+    logger.info(f"[{session_id}] Initiating render pipeline. Primary: {replay.filename}")
     
-    # Send initial status
-    status_msg = f"🚀 **Replay Rendering Started**\nFile: `{replay.filename}`"
-    if red_replay:
-        status_msg += f"\nSync File: `{red_replay.filename}`"
-    status_msg += "\nProcessing..."
-    await interaction.followup.send(status_msg)
+    # Send initial status embed
+    embed = discord.Embed(
+        title="Processing Replay",
+        description=f"File: {replay.filename}\nStatus: Initializing render engine...",
+        color=0x808080 # Grey
+    )
+    # Handle Queue Status
+    if render_semaphore.locked():
+        queue_pos = len(render_queue) + 1
+        render_queue.append(session_id)
+        embed.description = f"File: `{replay.filename}`\n\nStatus: [Queued] Position: {queue_pos}\nWaiting for available resources..."
+        await interaction.edit_original_response(embed=embed)
+        logger.info(f"[{session_id}] Render request queued at position {queue_pos}.")
+    else:
+        render_queue.append(session_id)
+        await interaction.edit_original_response(embed=embed)
 
     webhook_task = None
+    
     try:
+        # Block until we acquire a render slot
+        await render_semaphore.acquire()
+        if session_id in render_queue:
+            render_queue.remove(session_id)
+            
+        # Update embed now that we are executing
+        embed.description = f"File: `{replay.filename}`\nStatus: Initializing render engine..."
+        await interaction.edit_original_response(embed=embed)
+        
         # 1. Download
         await replay.save(replay_path)
         if red_replay:
             await red_replay.save(red_replay_path)
         
-        # Parse header early for metadata
+        # Parse header
         header = parse_replay_header(replay_path)
         raw_ship = header.get("playerVehicle", "")
         raw_map = header.get("mapName", "") or header.get("mapDisplayName", "")
@@ -325,152 +353,119 @@ async def render(
         ship_name = clean_ship_name(raw_ship)
         map_name = get_map_display_name(raw_map)
         formatted_dt = format_date_time(raw_dt)
-        logger.info(f"Render Session {session_id}: Meta extracted -> Ship={ship_name}, Map={map_name}, Time={formatted_dt}")
+        logger.info(f"[{session_id}] Metadata extracted: Ship={ship_name}, Map={map_name}")
+
+        # Update state to Rendering
+        embed.title = "Rendering Minimap"
+        embed.color = 0x3498DB # Blue
+        
+        details = []
+        if ship_name: details.append(f"**Ship:** {ship_name}")
+        if map_name: details.append(f"**Map:** {map_name}")
+        if formatted_dt: details.append(f"**Date:** {formatted_dt}")
+        info_line = " | ".join(details)
+        
+        embed.description = f"{info_line}\n\nStatus: [░░░░░░░░░░] 0%\nRendering..."
+        await interaction.edit_original_response(embed=embed)
 
         # 2. Early verification and Webhook handover
-        is_clan_battle = False
         if WEBHOOK_URL:
             try:
                 match_group = str(header.get("matchGroup", "")).lower()
                 game_type = str(header.get("gameType", "")).lower()
-                
-                # Check for clan battle match group or game type
                 is_clan_battle = any(x in match_group or x in game_type for x in ("clan", "cvc", "cw"))
-                
-                logger.info(f"Early verification for session {session_id}: matchGroup={match_group}, gameType={game_type} -> is_clan_battle={is_clan_battle}")
                 
                 if is_clan_battle:
                     webhook_task = asyncio.create_task(send_webhook_payload(replay_path, red_replay_path, session_id))
             except Exception as e:
-                logger.warning(f"Early verification/webhook launch failed for session {session_id}: {e}")
-
+                logger.warning(f"[{session_id}] Early verification failed: {e}")
 
         # 3. Build CLI Command
-        guild_limit_bytes = 10 * 1024 * 1024  # Base fallback limit (10MB) for unboosted/DMs
+        guild_limit_bytes = 10 * 1024 * 1024
         if interaction.guild:
             guild_limit_bytes = max(interaction.guild.filesize_limit, guild_limit_bytes)
-        
         target_size_mib = int((guild_limit_bytes * 0.95) / (1024 * 1024))
 
-        cmd = [
-            str(RENDERER_EXE),
-            "-g", str(GAME_DIR),
-            "-o", str(output_path),
-            "--max-size-mib", str(target_size_mib),
-            str(replay_path)
-        ]
-        
+        cmd = [str(RENDERER_EXE), "-g", str(GAME_DIR), "-o", str(output_path), "--max-size-mib", str(target_size_mib), str(replay_path)]
         if red_replay:
-            cmd.extend(["--red-replay", str(red_replay_path)])
-            # Dual-renders are for tactical overview: hide subjective UI elements
-            cmd.extend(["--no-chat", "--no-kill-feed", "--no-stats-panel"])
-        
+            cmd.extend(["--red-replay", str(red_replay_path), "--no-chat", "--no-kill-feed", "--no-stats-panel"])
         if show_trails: cmd.append("--show-trails")
         if show_config: cmd.append("--show-ship-config")
         if cpu_mode: cmd.append("--cpu")
         if discord_layout: cmd.append("--discord-layout")
 
         preset_val = layout_preset.value if layout_preset else "Original"
-        if preset_val == "A":
-            cmd.extend(["--stats-panel-width", "928"])
-        elif preset_val == "B":
-            cmd.extend(["--stats-panel-width", "720"])
-        elif preset_val == "C":
-            cmd.extend(["--stats-panel-width", "448"])
-
-        logger.info(f"Executing: {' '.join(cmd)}")
+        if preset_val == "A": cmd.extend(["--stats-panel-width", "928"])
+        elif preset_val == "B": cmd.extend(["--stats-panel-width", "720"])
+        elif preset_val == "C": cmd.extend(["--stats-panel-width", "448"])
 
         # 4. Render
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-
-        stdout, stderr = await process.communicate()
-        logger.info(f"Render Session {session_id}: Process exited with code {process.returncode}")
-        if stdout: logger.info(f"STDOUT: {stdout.decode()}")
-        if stderr: logger.info(f"STDERR: {stderr.decode()}")
+        process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        
+        async def update_progress():
+            try:
+                for i in range(1, 10):
+                    await asyncio.sleep(6) # Roughly 60s total render time
+                    bar = '█' * i + '░' * (10 - i)
+                    embed.description = f"{info_line}\n\nStatus: [{bar}] {i*10}%\nRendering..."
+                    await interaction.edit_original_response(embed=embed)
+            except asyncio.CancelledError:
+                pass
+                
+        prog_task = asyncio.create_task(update_progress())
+        await process.communicate()
+        prog_task.cancel()
 
         if process.returncode == 0:
-            # 5. Check Size and Compress if needed
-            file_size = output_path.stat().st_size
-            MAX_SIZE = int(guild_limit_bytes * 0.98) # 98% safe limit
-            
-            if file_size > MAX_SIZE:
-                logger.info(f"Render Session {session_id}: File too large ({file_size/1024/1024:.1f}MB), compressing...")
+            # 5. Compress if needed
+            if output_path.stat().st_size > int(guild_limit_bytes * 0.98):
                 compressed_path = TEMP_DIR / f"{session_id}_compressed.mp4"
-                compress_cmd = [
-                    "ffmpeg", "-y", "-i", str(output_path),
-                    "-vcodec", "libx264", "-crf", "22", "-preset", "fast",
-                    str(compressed_path)
-                ]
-                
-                c_process = await asyncio.create_subprocess_exec(
-                    *compress_cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-                await c_process.communicate()
-                
+                c_proc = await asyncio.create_subprocess_exec("ffmpeg", "-y", "-i", str(output_path), "-vcodec", "libx264", "-crf", "22", "-preset", "fast", str(compressed_path))
+                await c_proc.communicate()
                 if compressed_path.exists():
-                    orig_output_path = output_path
+                    output_path.unlink()
                     output_path = compressed_path
-                    logger.info(f"Render Session {session_id}: Compressed to {output_path.stat().st_size/1024/1024:.1f}MB")
-                    try:
-                        orig_output_path.unlink(missing_ok=True)
-                    except Exception as e:
-                        logger.warning(f"Failed to delete original uncompressed file: {e}")
 
             # 6. Upload
-            logger.info(f"Render Session {session_id}: Uploading result...")
+            embed.description = f"{info_line}\n\nStatus: Uploading..."
+            await interaction.edit_original_response(embed=embed)
+            
             file = discord.File(output_path, filename=f"tactical_{replay.filename.replace('.wowsreplay', '.mp4')}")
-            
-            # Format plain text details
-            details = []
-            if ship_name:
-                details.append(ship_name)
-            if map_name:
-                details.append(map_name)
-            if formatted_dt:
-                details.append(formatted_dt)
-                
-            content = " | ".join(details) if details else f"Render Complete: {replay.filename}"
-            
-            await interaction.followup.send(content=content, file=file)
+            embed.title = "Render Complete"
+            embed.color = 0x2ECC71 # Green
+            embed.description = info_line
+            await interaction.edit_original_response(embed=embed, attachments=[file])
         else:
-            stderr_text = stderr.decode()
-            error_lines = [l for l in stderr_text.splitlines() if l.strip()]
-            error_msg = error_lines[-1] if error_lines else "Unknown error"
-            
-            await interaction.followup.send(f"❌ **Render Failed**\n`{error_msg}`\n\n*Tip: If GPU encoding failed, try enabling `cpu_mode`.*")
-            logger.error(f"STDOUT: {stdout.decode()}")
-            logger.error(f"STDERR: {stderr_text}")
+            embed.title = "Render Failed"
+            embed.color = 0xE74C3C # Red
+            embed.description = "The render process encountered an error. Please verify the replay file."
+            await interaction.edit_original_response(embed=embed)
 
     except Exception as e:
-        await interaction.followup.send(f"⚠️ **Internal Error**\n`{str(e)}`")
-        logger.exception("Error during render process")
+        logger.exception(f"[{session_id}] Error during render process")
+        await interaction.followup.send("An internal error occurred during the render.")
     finally:
-        # Await early webhook upload to complete if running to prevent file deletion during upload
         if webhook_task:
             try:
-                logger.info("Waiting for early webhook upload to complete before temp file cleanup...")
                 await webhook_task
             except Exception as we:
-                logger.error(f"Error awaiting webhook task: {we}")
+                logger.error(f"[{session_id}] Error awaiting webhook: {we}")
                 
-        # Clean up temp files
         try:
-            if replay_path.exists(): replay_path.unlink(missing_ok=True)
-            if red_replay_path and red_replay_path.exists(): red_replay_path.unlink(missing_ok=True)
-            if output_path.exists(): output_path.unlink(missing_ok=True)
-            logger.info(f"Cleaned up temp files for session {session_id}")
+            if replay_path.exists(): replay_path.unlink()
+            if red_replay_path and red_replay_path.exists(): red_replay_path.unlink()
+            if output_path.exists(): output_path.unlink()
+            logger.info(f"[{session_id}] Cleaned up temp files.")
         except Exception as ce:
-            logger.warning(f"Failed to clean up temp files: {ce}")
+            logger.warning(f"[{session_id}] Cleanup failure: {ce}")
+        finally:
+            # Always release the semaphore slot for the next user
+            if render_semaphore:
+                render_semaphore.release()
 
 @bot.tree.command(name="ping", description="Check bot status")
 async def ping(interaction: discord.Interaction):
-    await interaction.response.send_message(f"🏓 Pong! Latency: {round(bot.latency * 1000)}ms")
+    await interaction.response.send_message(f"Pong! Latency: {round(bot.latency * 1000)}ms")
 
 if __name__ == "__main__":
     if not TOKEN:

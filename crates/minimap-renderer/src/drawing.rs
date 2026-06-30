@@ -27,6 +27,7 @@ use crate::assets::GameFonts;
 
 use crate::SHIP_ICON_OUTLINE_THICKNESS;
 
+use crate::draw_command::ActivityFeedEntry;
 use crate::draw_command::ActivityFeedKind;
 use crate::draw_command::ChatEntry;
 use crate::draw_command::DrawCommand;
@@ -562,8 +563,8 @@ fn draw_score_bar(
     max_score: i32,
     team0_timer: Option<&str>,
     team1_timer: Option<&str>,
-    advantage_label: &str,
-    advantage_team: i32,
+    _advantage_label: &str,
+    _advantage_team: i32,
     fonts: &GameFonts,
     map_width: u32,
     scale_factor: f32,
@@ -571,9 +572,8 @@ fn draw_score_bar(
     let width = map_width as f32;
     let sf = scale_factor;
     let bg_height = 64.0 * sf;
-    let bar_height = 48.0 * sf;
-    let progress_y = 16.0 * sf;
-    let progress_h = 20.0 * sf;
+    let progress_y = 0.0 * sf;
+    let progress_h = 36.0 * sf;
     let half = width / 2.0;
     let center_gap = 2.0f32 * sf; // small gap between the two bars
 
@@ -598,22 +598,21 @@ fn draw_score_bar(
     let timer_color: [u8; 3] = [200, 200, 200];
     let pill_pad_x = 4.0f32 * sf;
     let pill_pad_y = 1.0f32 * sf;
-    let pill_margin = 2.0f32 * sf;
     let pill_radius = 3.0f32 * sf;
     let pill_color: [u8; 3] = [0, 0, 0];
     let pill_alpha = 0.55f32;
 
     let score_scale = fonts.scale(21.0 * sf);
     let timer_scale = fonts.scale(18.0 * sf);
-    let advantage_scale = fonts.scale(16.0 * sf);
 
     let t0 = format!("{}", team0_score);
     let t1 = format!("{}", team1_score);
     let (t0w, t0h) = text_size(score_scale, font, &t0);
     let (t1w, _) = text_size(score_scale, font, &t1);
 
-    let pill_h = (t0h as f32 + pill_pad_y * 2.0).min(bar_height - pill_margin * 2.0);
-    let pill_y = progress_y + (bar_height - pill_h) / 2.0;
+    let pill_h = t0h as f32 + pill_pad_y * 2.0;
+    // Shift points value / expected time-to-win pill up vertically to fit within constraints of progress_h
+    let pill_y = (progress_h - pill_h) / 2.0;
     let text_y = pill_y as i32 + pill_pad_y as i32;
 
     // ── Measure team 0 pill width ──
@@ -622,20 +621,12 @@ fn draw_score_bar(
         let (tw, _) = text_size(timer_scale, font, timer);
         t0_total_w += 4.0 * sf + tw as f32;
     }
-    if advantage_team == 0 && !advantage_label.is_empty() {
-        let (aw, _) = text_size(advantage_scale, font, advantage_label);
-        t0_total_w += 6.0 * sf + aw as f32;
-    }
 
     // ── Measure team 1 pill width ──
     let mut t1_total_w = t1w as f32;
     if let Some(timer) = team1_timer {
         let (tw, _) = text_size(timer_scale, font, timer);
         t1_total_w += 4.0 * sf + tw as f32;
-    }
-    if advantage_team == 1 && !advantage_label.is_empty() {
-        let (aw, _) = text_size(advantage_scale, font, advantage_label);
-        t1_total_w += 6.0 * sf + aw as f32;
     }
 
     // ── Draw team 0 pill background + text ──
@@ -657,12 +648,6 @@ fn draw_score_bar(
     if let Some(timer) = team0_timer {
         t0_cursor += (4.0 * sf) as i32;
         draw_text(pm, timer_color, t0_cursor, text_y + (1.0 * sf) as i32, timer_scale, font, timer);
-        let (tw, _) = text_size(timer_scale, font, timer);
-        t0_cursor += tw as i32;
-    }
-    if advantage_team == 0 && !advantage_label.is_empty() {
-        t0_cursor += (6.0 * sf) as i32;
-        draw_text(pm, [255, 255, 255], t0_cursor, text_y + (2.0 * sf) as i32, advantage_scale, font, advantage_label);
     }
 
     // ── Draw team 1 pill background + text ──
@@ -678,7 +663,7 @@ fn draw_score_bar(
         pill_alpha,
     );
 
-    // Team 1 draws right-to-left: [advantage] [timer] [score]
+    // Team 1 draws right-to-left: [timer] [score]
     let mut t1_cursor = (width - 8.0 * sf) as i32; // right edge of score
     // Score (rightmost)
     let t1_x = t1_cursor - t1w as i32;
@@ -690,14 +675,6 @@ fn draw_score_bar(
         t1_cursor -= (4.0 * sf) as i32;
         let tx = t1_cursor - tw as i32;
         draw_text(pm, timer_color, tx, text_y + (1.0 * sf) as i32, timer_scale, font, timer);
-        t1_cursor = tx;
-    }
-    // Advantage (leftmost)
-    if advantage_team == 1 && !advantage_label.is_empty() {
-        let (aw, _) = text_size(advantage_scale, font, advantage_label);
-        t1_cursor -= (6.0 * sf) as i32;
-        let ax = t1_cursor - aw as i32;
-        draw_text(pm, [255, 255, 255], ax, text_y + (2.0 * sf) as i32, advantage_scale, font, advantage_label);
     }
 }
 
@@ -705,8 +682,8 @@ fn draw_score_bar(
 fn draw_timer(pm: &mut Pixmap, time_remaining: Option<i64>, elapsed: ElapsedClock, fonts: &GameFonts, map_width: u32) {
     let font = &fonts.primary;
     let center_x = map_width as i32 / 2;
-    let main_scale = fonts.scale(24.0);
-    let small_scale = fonts.scale(16.0);
+    let main_scale = fonts.scale(48.0);
+    let small_scale = fonts.scale(32.0);
 
     if let Some(remaining) = time_remaining {
         // Show time remaining as main timer (centered)
@@ -715,7 +692,7 @@ fn draw_timer(pm: &mut Pixmap, time_remaining: Option<i64>, elapsed: ElapsedCloc
         let remaining_text = format!("{:02}:{:02}", r_mins, r_secs);
         let (rw, _) = text_size(main_scale, font, &remaining_text);
         let rx = center_x - rw as i32 / 2;
-        draw_text_shadow(pm, [255, 255, 255], rx, 20, main_scale, font, &remaining_text);
+        draw_text_shadow(pm, [255, 255, 255], rx, 12, main_scale, font, &remaining_text);
 
         // Show elapsed as smaller text below
         let e_mins = (elapsed.seconds() as i32) / 60;
@@ -723,7 +700,7 @@ fn draw_timer(pm: &mut Pixmap, time_remaining: Option<i64>, elapsed: ElapsedCloc
         let elapsed_text = format!("+{:02}:{:02}", e_mins, e_secs);
         let (ew, _) = text_size(small_scale, font, &elapsed_text);
         let ex = center_x - ew as i32 / 2;
-        draw_text_shadow(pm, [180, 180, 180], ex, 44, small_scale, font, &elapsed_text);
+        draw_text_shadow(pm, [180, 180, 180], ex, 54, small_scale, font, &elapsed_text);
     } else {
         // Fallback: just show elapsed time centered (no timeLeft data yet)
         let mins = (elapsed.seconds() as i32) / 60;
@@ -731,7 +708,7 @@ fn draw_timer(pm: &mut Pixmap, time_remaining: Option<i64>, elapsed: ElapsedCloc
         let text = format!("{:02}:{:02}", mins, secs);
         let (w, _) = text_size(main_scale, font, &text);
         let x = center_x - w as i32 / 2;
-        draw_text_shadow(pm, [255, 255, 255], x, 28, main_scale, font, &text);
+        draw_text_shadow(pm, [255, 255, 255], x, 20, main_scale, font, &text);
     }
 }
 
@@ -2538,16 +2515,16 @@ impl RenderTarget for ImageTarget {
                     label_y += (17.0 * scale_factor).round() as i32;
                 }
                 if let Some(name) = ship_name {
-                    let (ship_font, ship_font_scale) = self.fonts.font_and_scale(name, 10.0 * scale_factor);
+                    let (ship_font, ship_font_scale) = self.fonts.font_and_scale(name, 16.0 * scale_factor);
                     let (tw, _) = text_size(ship_font_scale, ship_font, name);
                     let tx = inner_x + (inner_w - tw as i32) / 2;
                     draw_text_shadow(&mut self.canvas, [180, 180, 180], tx, label_y, ship_font_scale, ship_font, name);
-                    label_y += (10.0 * scale_factor).round() as i32;
+                    label_y += (20.0 * scale_factor).round() as i32;
                 }
 
                 // Draw silhouette: gray base + colored HP + white healable overlay
                 let sil_y = label_y + (0.0 * scale_factor).round() as i32;
-                let sil_h = (*y + *height - (14.0 * scale_factor).round() as i32 - sil_y).max(20);
+                let sil_h = (*y + *height - (26.0 * scale_factor).round() as i32 - sil_y).max(20);
                 if let Some(sil_img) = silhouette {
                     // Scale silhouette to fit the available area
                     let aspect = sil_img.width() as f32 / sil_img.height() as f32;
@@ -2558,8 +2535,11 @@ impl RenderTarget for ImageTarget {
                     } else {
                         ((fit_h as f32 * aspect) as u32, fit_h)
                     };
-                    let draw_w = draw_w.max(1);
-                    let draw_h = draw_h.max(1);
+                    
+                    // Scale up by 1.35x to make better use of space
+                    let scale_mult = 1.35f32;
+                    let draw_w = ((draw_w as f32 * scale_mult) as u32).min(fit_w).max(1);
+                    let draw_h = ((draw_h as f32 * scale_mult) as u32).min(fit_h + 30).max(1);
 
                     // Charcoal silhouette base (remainder = unhealable lost HP shows through)
                     let base_sil = tint_silhouette(sil_img, crate::draw_command::SILHOUETTE_BASE_RGB);
@@ -2625,7 +2605,7 @@ impl RenderTarget for ImageTarget {
                     &mut self.canvas,
                     [220, 220, 220],
                     hp_text_x,
-                    *y + *height - (14.0 * scale_factor).round() as i32,
+                    *y + *height - (26.0 * scale_factor).round() as i32,
                     hp_scale,
                     &self.fonts.primary,
                     &hp_text,
@@ -2650,7 +2630,7 @@ impl RenderTarget for ImageTarget {
 
                 let mut cur_y = *y + (4.0 * scale_factor).round() as i32;
 
-                // Total enemy damage header (DMG)
+                // Total enemy damage header (DAMAGE)
                 let total_damage: f64 = breakdowns.iter().map(|e| e.damage).sum();
                 draw_text_shadow(
                     &mut self.canvas,
@@ -2659,7 +2639,7 @@ impl RenderTarget for ImageTarget {
                     cur_y,
                     header_scale,
                     &self.fonts.primary,
-                    "DMG",
+                    "DAMAGE",
                 );
                 let total_str = format_number(total_damage as i64);
                 let (tw, _) = text_size(header_scale, &self.fonts.primary, &total_str);
@@ -2674,7 +2654,7 @@ impl RenderTarget for ImageTarget {
                 );
                 cur_y += header_row_h;
 
-                // Spotting (SPOT)
+                // Spotting (SPOTTING)
                 draw_text_shadow(
                     &mut self.canvas,
                     [200, 200, 200],
@@ -2682,7 +2662,7 @@ impl RenderTarget for ImageTarget {
                     cur_y,
                     header_scale,
                     &self.fonts.primary,
-                    "SPOT",
+                    "SPOTTING",
                 );
                 let spot_str = format_number(*damage_spotting as i64);
                 let (tw, _) = text_size(header_scale, &self.fonts.primary, &spot_str);
@@ -2697,7 +2677,7 @@ impl RenderTarget for ImageTarget {
                 );
                 cur_y += header_row_h;
 
-                // Potential (POT)
+                // Potential (POTENTIAL)
                 draw_text_shadow(
                     &mut self.canvas,
                     [200, 200, 200],
@@ -2705,7 +2685,7 @@ impl RenderTarget for ImageTarget {
                     cur_y,
                     header_scale,
                     &self.fonts.primary,
-                    "POT",
+                    "POTENTIAL",
                 );
                 let pot_str = format_number(*damage_potential as i64);
                 let (tw, _) = text_size(header_scale, &self.fonts.primary, &pot_str);
@@ -2796,7 +2776,6 @@ impl RenderTarget for ImageTarget {
             DrawCommand::StatsActivityFeed { x, y, width, height, entries } => {
                 let sf = if self.large_elements { 1.5f32 } else { 1.0f32 };
                 let padding = (8.0 * sf).round() as i32;
-                let inner_x = *x + padding;
                 let inner_w = *width - padding * 2;
                 let name_scale = self.fonts.scale(14.0 * sf);
                 let msg_scale = self.fonts.scale(13.0 * sf);
@@ -2829,200 +2808,268 @@ impl RenderTarget for ImageTarget {
                     1.0,
                 );
 
-                // Pre-compute entry heights
-                let mut entry_heights: Vec<i32> = Vec::new();
-                for entry in entries.iter() {
-                    let h = match &entry.kind {
-                        ActivityFeedKind::Kill(_) => kill_row_h,
-                        ActivityFeedKind::Chat(chat) => {
-                            let msg_font = match chat.font_hint {
-                                FontHint::Primary => &self.fonts.primary,
-                                FontHint::Fallback(i) => self.fonts.fallbacks.get(i).unwrap_or(&self.fonts.primary),
-                            };
-                            let msg_lines = word_wrap(&chat.message, inner_w as u32, msg_scale, msg_font);
-                            chat_header_h + msg_lines.len().max(1) as i32 * chat_line_h + 2
-                        }
-                    };
-                    entry_heights.push(h);
-                }
+                // Asymmetric division: 40% Kill Feed (left), 60% Chat Feed (right)
+                let divider_x = *x + padding + (inner_w * 4) / 10;
+                
+                // Draw vertical divider down the middle of the feed panel
+                draw_line(
+                    &mut self.canvas,
+                    divider_x as f32,
+                    *y as f32 + 4.0,
+                    divider_x as f32,
+                    (*y + *height - 4) as f32,
+                    [55, 60, 72],
+                    0.4,
+                    1.0,
+                );
 
-                // Show most recent entries that fit
-                let total_h = *height;
-                let mut consumed = 0i32;
-                let mut start_idx = entries.len();
-                for i in (0..entries.len()).rev() {
-                    let needed = consumed + entry_heights[i];
-                    if needed > total_h - 4 {
+                let left_x = *x + padding;
+                let left_w = divider_x - left_x - 6;
+
+                let right_x = divider_x + 6;
+                let right_w = *x + *width - padding - right_x;
+
+                // Filter entries
+                let kill_entries: Vec<&ActivityFeedEntry> = entries
+                    .iter()
+                    .filter(|e| matches!(e.kind, ActivityFeedKind::Kill(_)))
+                    .collect();
+                let chat_entries: Vec<&ActivityFeedEntry> = entries
+                    .iter()
+                    .filter(|e| matches!(e.kind, ActivityFeedKind::Chat(_)))
+                    .collect();
+
+                // 1. Render Kill Feed (Left column)
+                let mut kill_consumed = 0i32;
+                let mut kill_start_idx = kill_entries.len();
+                for i in (0..kill_entries.len()).rev() {
+                    let needed = kill_consumed + kill_row_h;
+                    if needed > *height - 8 {
                         break;
                     }
-                    consumed = needed;
-                    start_idx = i;
+                    kill_consumed = needed;
+                    kill_start_idx = i;
                 }
 
-                let mut ey = *y + 4;
-                for entry in entries.iter().skip(start_idx) {
-                    if ey >= *y + *height {
+                let mut ky = *y + 4;
+                for entry in kill_entries.iter().skip(kill_start_idx) {
+                    if ky >= *y + *height {
                         break;
                     }
-                    match &entry.kind {
-                        ActivityFeedKind::Kill(kill) => {
-                            let (_, text_h) = text_size(name_scale, font, "Ag");
-                            let icon_y = ey + (text_h as i32 - icon_size) / 2;
-                            let mut cx = inner_x;
+                    if let ActivityFeedKind::Kill(kill) = &entry.kind {
+                        let (_, text_h) = text_size(name_scale, font, "Ag");
+                        let icon_y = ky + (text_h as i32 - icon_size) / 2;
+                        let mut cx = left_x;
 
-                            // Kill prefix
-                            let prefix = " | ";
-                            draw_text_shadow(&mut self.canvas, [140, 140, 140], cx, ey, name_scale, font, prefix);
-                            let (pw, _) = text_size(name_scale, font, prefix);
-                            cx += pw as i32;
+                        // Kill prefix
+                        let prefix = " | ";
+                        draw_text_shadow(&mut self.canvas, [140, 140, 140], cx, ky, name_scale, font, prefix);
+                        let (pw, _) = text_size(name_scale, font, prefix);
+                        cx += pw as i32;
 
-                            // Killer name
-                            let (kf, ks) = self.fonts.font_and_scale(&kill.killer_name, 14.0);
-                            draw_text_shadow(&mut self.canvas, kill.killer_color, cx, ey, ks, kf, &kill.killer_name);
-                            let (kw, _) = text_size(ks, kf, &kill.killer_name);
-                            cx += kw as i32 + gap;
+                        // Measure icons
+                        let has_killer_icon = kill.killer_species.is_some() && self.ship_icons.contains_key(kill.killer_species.as_ref().unwrap());
+                        let has_victim_icon = kill.victim_species.is_some() && self.ship_icons.contains_key(kill.victim_species.as_ref().unwrap());
+                        let cause_key = death_cause_icon_key(&kill.cause);
+                        let has_cause_icon = self.death_cause_icons.contains_key(cause_key);
 
-                            // Killer ship icon (friendly=left, enemy=right)
-                            if let Some(ref species) = kill.killer_species
-                                && let Some(icon) = self.ship_icons.get(species)
-                            {
-                                draw_kill_feed_icon(
-                                    &mut self.canvas,
-                                    icon,
-                                    cx,
-                                    icon_y,
-                                    icon_size,
-                                    kill.killer_color,
-                                    !kill.killer_is_friendly,
-                                );
-                                cx += icon_size + gap;
-                            }
+                        let mut icons_w = 0i32;
+                        if has_killer_icon { icons_w += icon_size + gap; }
+                        if has_cause_icon { icons_w += icon_size + gap; }
+                        if has_victim_icon { icons_w += icon_size; }
 
-                            // Death cause icon
-                            let cause_key = death_cause_icon_key(&kill.cause);
-                            if let Some(cause_icon) = self.death_cause_icons.get(cause_key) {
-                                let cause_center_y = icon_y + icon_size / 2;
-                                draw_icon(
-                                    &mut self.canvas,
-                                    cause_icon,
-                                    (cx + icon_size / 2) as f32,
-                                    cause_center_y as f32,
-                                );
-                                cx += icon_size + gap;
-                            }
+                        // Remaining space divided equally for names
+                        let remaining_w = (left_x + left_w - cx).saturating_sub(icons_w);
+                        let name_max_w = (remaining_w / 2).max(20);
 
-                            // Victim name
-                            let (vf, vs) = self.fonts.font_and_scale(&kill.victim_name, 14.0);
-                            draw_text_shadow(&mut self.canvas, kill.victim_color, cx, ey, vs, vf, &kill.victim_name);
-                            let (vw, _) = text_size(vs, vf, &kill.victim_name);
-                            cx += vw as i32 + gap;
+                        // Killer name
+                        let (kf, ks) = self.fonts.font_and_scale(&kill.killer_name, 14.0);
+                        let killer_display = truncate_to_fit(&kill.killer_name, name_max_w as u32, ks, kf);
+                        draw_text_shadow(&mut self.canvas, kill.killer_color, cx, ky, ks, kf, &killer_display);
+                        let (kw, _) = text_size(ks, kf, &killer_display);
+                        cx += kw as i32 + gap;
 
-                            // Victim ship icon (friendly=left, enemy=right)
-                            if let Some(ref species) = kill.victim_species
-                                && let Some(icon) = self.ship_icons.get(species)
-                            {
-                                draw_kill_feed_icon(
-                                    &mut self.canvas,
-                                    icon,
-                                    cx,
-                                    icon_y,
-                                    icon_size,
-                                    kill.victim_color,
-                                    !kill.victim_is_friendly,
-                                );
-                            }
-
-                            ey += kill_row_h;
-                        }
-                        ActivityFeedKind::Chat(chat) => {
-                            let mut cx = inner_x;
-
-                            // Clan tag + Player name (use same font for both)
-                            let (chat_name_font, chat_name_scale) = self.fonts.font_and_scale(&chat.player_name, 14.0);
-                            if !chat.clan_tag.is_empty() {
-                                let clan_color = chat.clan_color.unwrap_or(chat.team_color);
-                                let clan_text = format!("[{}] ", chat.clan_tag);
-                                draw_text_shadow(
-                                    &mut self.canvas,
-                                    clan_color,
-                                    cx,
-                                    ey,
-                                    chat_name_scale,
-                                    chat_name_font,
-                                    &clan_text,
-                                );
-                                let (cw, _) = text_size(chat_name_scale, chat_name_font, &clan_text);
-                                cx += cw as i32;
-                            }
-
-                            // Player name
-                            draw_text_shadow(
+                        // Killer ship icon
+                        if has_killer_icon {
+                            let icon = self.ship_icons.get(kill.killer_species.as_ref().unwrap()).unwrap();
+                            draw_kill_feed_icon(
                                 &mut self.canvas,
-                                chat.team_color,
+                                icon,
                                 cx,
-                                ey,
-                                chat_name_scale,
-                                chat_name_font,
-                                &chat.player_name,
+                                icon_y,
+                                icon_size,
+                                kill.killer_color,
+                                !kill.killer_is_friendly,
                             );
-                            let (nw, text_h) = text_size(chat_name_scale, chat_name_font, &chat.player_name);
-                            cx += nw as i32 + gap;
+                            cx += icon_size + gap;
+                        }
 
-                            // Ship icon
-                            let icon_y = ey + (text_h as i32 - icon_size) / 2;
-                            if let Some(ref species) = chat.ship_species
-                                && let Some(icon) = self.ship_icons.get(species.as_str())
-                            {
-                                draw_kill_feed_icon(
-                                    &mut self.canvas,
-                                    icon,
-                                    cx,
-                                    icon_y,
-                                    icon_size,
-                                    chat.team_color,
-                                    false,
-                                );
-                                cx += icon_size + gap;
-                            }
+                        // Death cause icon
+                        if has_cause_icon {
+                            let cause_icon = self.death_cause_icons.get(cause_key).unwrap();
+                            let cause_center_y = icon_y + icon_size / 2;
+                            draw_icon(
+                                &mut self.canvas,
+                                cause_icon,
+                                (cx + icon_size / 2) as f32,
+                                cause_center_y as f32,
+                            );
+                            cx += icon_size + gap;
+                        }
 
-                            // Ship name
+                        // Victim name
+                        let (vf, vs) = self.fonts.font_and_scale(&kill.victim_name, 14.0);
+                        let victim_display = truncate_to_fit(&kill.victim_name, name_max_w as u32, vs, vf);
+                        draw_text_shadow(&mut self.canvas, kill.victim_color, cx, ky, vs, vf, &victim_display);
+                        let (vw, _) = text_size(vs, vf, &victim_display);
+                        cx += vw as i32 + gap;
+
+                        // Victim ship icon
+                        if has_victim_icon {
+                            let icon = self.ship_icons.get(kill.victim_species.as_ref().unwrap()).unwrap();
+                            draw_kill_feed_icon(
+                                &mut self.canvas,
+                                icon,
+                                cx,
+                                icon_y,
+                                icon_size,
+                                kill.victim_color,
+                                !kill.victim_is_friendly,
+                            );
+                        }
+
+                        ky += kill_row_h;
+                    }
+                }
+
+                // 2. Render Chat Feed (Right column)
+                let mut chat_heights: Vec<i32> = Vec::new();
+                for entry in chat_entries.iter() {
+                    if let ActivityFeedKind::Chat(chat) = &entry.kind {
+                        let msg_font = match chat.font_hint {
+                            FontHint::Primary => &self.fonts.primary,
+                            FontHint::Fallback(i) => self.fonts.fallbacks.get(i).unwrap_or(&self.fonts.primary),
+                        };
+                        let msg_lines = word_wrap(&chat.message, right_w as u32, msg_scale, msg_font);
+                        let h = chat_header_h + msg_lines.len().max(1) as i32 * chat_line_h + 2;
+                        chat_heights.push(h);
+                    }
+                }
+
+                let mut chat_consumed = 0i32;
+                let mut chat_start_idx = chat_entries.len();
+                for i in (0..chat_entries.len()).rev() {
+                    let needed = chat_consumed + chat_heights[i] + 2;
+                    if needed > *height - 8 {
+                        break;
+                    }
+                    chat_consumed = needed;
+                    chat_start_idx = i;
+                }
+
+                let mut cy = *y + 4;
+                for entry in chat_entries.iter().skip(chat_start_idx) {
+                    if cy >= *y + *height {
+                        break;
+                    }
+                    if let ActivityFeedKind::Chat(chat) = &entry.kind {
+                        let mut cx = right_x;
+
+                        // Clan tag + Player name
+                        let (chat_name_font, chat_name_scale) = self.fonts.font_and_scale(&chat.player_name, 14.0);
+                        
+                        let ship_icon_w = if chat.ship_species.is_some() { icon_size + gap } else { 0 };
+                        let mut ship_name_w = 0i32;
+                        if let Some(ref ship_name) = chat.ship_name {
+                            let (sw, _) = text_size(name_scale, font, ship_name);
+                            ship_name_w = sw as i32;
+                        }
+                        let clan_w = if !chat.clan_tag.is_empty() {
+                            let clan_text = format!("[{}] ", chat.clan_tag);
+                            let (cw, _) = text_size(chat_name_scale, chat_name_font, &clan_text);
+                            cw as i32
+                        } else {
+                            0
+                        };
+
+                        let available_player_w = right_w - clan_w - ship_icon_w - ship_name_w - gap * 3;
+                        let player_name_w = if available_player_w > 30 {
+                            available_player_w
+                        } else {
+                            ship_name_w = 0; // omit ship name if space is tight
+                            (right_w - clan_w - ship_icon_w - gap * 2).max(20)
+                        };
+
+                        // Clan Tag
+                        if !chat.clan_tag.is_empty() {
+                            let clan_color = chat.clan_color.unwrap_or(chat.team_color);
+                            let clan_text = format!("[{}] ", chat.clan_tag);
+                            draw_text_shadow(&mut self.canvas, clan_color, cx, cy, chat_name_scale, chat_name_font, &clan_text);
+                            cx += clan_w;
+                        }
+
+                        // Player Name
+                        let player_display = truncate_to_fit(&chat.player_name, player_name_w as u32, chat_name_scale, chat_name_font);
+                        draw_text_shadow(&mut self.canvas, chat.team_color, cx, cy, chat_name_scale, chat_name_font, &player_display);
+                        let (nw, text_h) = text_size(chat_name_scale, chat_name_font, &player_display);
+                        cx += nw as i32 + gap;
+
+                        // Ship Icon
+                        let icon_y = cy + (text_h as i32 - icon_size) / 2;
+                        if let Some(ref species) = chat.ship_species
+                            && let Some(icon) = self.ship_icons.get(species.as_str())
+                        {
+                            draw_kill_feed_icon(
+                                &mut self.canvas,
+                                icon,
+                                cx,
+                                icon_y,
+                                icon_size,
+                                chat.team_color,
+                                false,
+                            );
+                            cx += icon_size + gap;
+                        }
+
+                        // Ship Name
+                        if ship_name_w > 0 {
                             if let Some(ref ship_name) = chat.ship_name {
                                 draw_text_shadow(
                                     &mut self.canvas,
                                     chat.team_color,
                                     cx,
-                                    ey,
+                                    cy,
                                     name_scale,
                                     font,
                                     ship_name,
                                 );
                             }
-
-                            ey += chat_header_h;
-
-                            // Message lines (word-wrapped)
-                            let msg_font = match chat.font_hint {
-                                FontHint::Primary => &self.fonts.primary,
-                                FontHint::Fallback(idx) => self.fonts.fallbacks.get(idx).unwrap_or(&self.fonts.primary),
-                            };
-                            let msg_lines = word_wrap(&chat.message, inner_w as u32, msg_scale, msg_font);
-                            for line in &msg_lines {
-                                draw_text_shadow(
-                                    &mut self.canvas,
-                                    chat.message_color,
-                                    inner_x,
-                                    ey,
-                                    msg_scale,
-                                    msg_font,
-                                    line,
-                                );
-                                ey += chat_line_h;
-                            }
-                            if msg_lines.is_empty() {
-                                ey += chat_line_h;
-                            }
-                            ey += 2; // small gap after chat
                         }
+
+                        cy += chat_header_h;
+
+                        // Message lines (word-wrapped)
+                        let msg_font = match chat.font_hint {
+                            FontHint::Primary => &self.fonts.primary,
+                            FontHint::Fallback(idx) => self.fonts.fallbacks.get(idx).unwrap_or(&self.fonts.primary),
+                        };
+                        let msg_lines = word_wrap(&chat.message, right_w as u32, msg_scale, msg_font);
+                        for line in &msg_lines {
+                            draw_text_shadow(
+                                &mut self.canvas,
+                                chat.message_color,
+                                right_x,
+                                cy,
+                                msg_scale,
+                                msg_font,
+                                line,
+                            );
+                            cy += chat_line_h;
+                        }
+                        if msg_lines.is_empty() {
+                            cy += chat_line_h;
+                        }
+                        cy += 2; // small gap after chat
                     }
                 }
             }
