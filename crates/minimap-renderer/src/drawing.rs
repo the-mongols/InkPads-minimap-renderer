@@ -22,7 +22,8 @@ use tiny_skia::Transform;
 
 use std::sync::Arc;
 
-use crate::{STATS_PANEL_WIDTH, STATS_PANEL_WIDTH_16_9};
+use crate::STATS_PANEL_WIDTH;
+use crate::STATS_PANEL_WIDTH_16_9;
 use crate::assets::GameFonts;
 
 use crate::SHIP_ICON_OUTLINE_THICKNESS;
@@ -480,9 +481,8 @@ fn draw_ship_icon(
     // Build transform: translate icon center to destination, then rotate, then scale
     let tx = x - cx;
     let ty = y - cy;
-    let transform = Transform::from_scale(scale_factor, scale_factor)
-        .post_translate(tx, ty)
-        .post_rotate_at(angle_deg, x, y);
+    let transform =
+        Transform::from_scale(scale_factor, scale_factor).post_translate(tx, ty).post_rotate_at(angle_deg, x, y);
 
     let paint = PixmapPaint { opacity, blend_mode: BlendMode::SourceOver, quality: FilterQuality::Bilinear };
 
@@ -2418,14 +2418,7 @@ impl RenderTarget for ImageTarget {
                 );
             }
             DrawCommand::ChatOverlay { entries } => {
-                draw_chat_overlay(
-                    &mut self.canvas,
-                    entries,
-                    &self.fonts,
-                    &self.ship_icons,
-                    64,
-                    self.map_x_offset,
-                );
+                draw_chat_overlay(&mut self.canvas, entries, &self.fonts, &self.ship_icons, 64, self.map_x_offset);
             }
             DrawCommand::BattleResultOverlay { result, finish_type, color, subtitle_above } => {
                 let text = self.text_resolver.resolve(&TranslatableText::BattleResult(*result));
@@ -2535,7 +2528,7 @@ impl RenderTarget for ImageTarget {
                     } else {
                         ((fit_h as f32 * aspect) as u32, fit_h)
                     };
-                    
+
                     // Scale up by 1.35x to make better use of space
                     let scale_mult = 1.35f32;
                     let draw_w = ((draw_w as f32 * scale_mult) as u32).min(fit_w).max(1);
@@ -2810,7 +2803,7 @@ impl RenderTarget for ImageTarget {
 
                 // Asymmetric division: 40% Kill Feed (left), 60% Chat Feed (right)
                 let divider_x = *x + padding + (inner_w * 4) / 10;
-                
+
                 // Draw vertical divider down the middle of the feed panel
                 draw_line(
                     &mut self.canvas,
@@ -2830,14 +2823,10 @@ impl RenderTarget for ImageTarget {
                 let right_w = *x + *width - padding - right_x;
 
                 // Filter entries
-                let kill_entries: Vec<&ActivityFeedEntry> = entries
-                    .iter()
-                    .filter(|e| matches!(e.kind, ActivityFeedKind::Kill(_)))
-                    .collect();
-                let chat_entries: Vec<&ActivityFeedEntry> = entries
-                    .iter()
-                    .filter(|e| matches!(e.kind, ActivityFeedKind::Chat(_)))
-                    .collect();
+                let kill_entries: Vec<&ActivityFeedEntry> =
+                    entries.iter().filter(|e| matches!(e.kind, ActivityFeedKind::Kill(_))).collect();
+                let chat_entries: Vec<&ActivityFeedEntry> =
+                    entries.iter().filter(|e| matches!(e.kind, ActivityFeedKind::Chat(_))).collect();
 
                 // 1. Render Kill Feed (Left column)
                 let mut kill_consumed = 0i32;
@@ -2868,15 +2857,23 @@ impl RenderTarget for ImageTarget {
                         cx += pw as i32;
 
                         // Measure icons
-                        let has_killer_icon = kill.killer_species.is_some() && self.ship_icons.contains_key(kill.killer_species.as_ref().unwrap());
-                        let has_victim_icon = kill.victim_species.is_some() && self.ship_icons.contains_key(kill.victim_species.as_ref().unwrap());
+                        let has_killer_icon = kill.killer_species.is_some()
+                            && self.ship_icons.contains_key(kill.killer_species.as_ref().unwrap());
+                        let has_victim_icon = kill.victim_species.is_some()
+                            && self.ship_icons.contains_key(kill.victim_species.as_ref().unwrap());
                         let cause_key = death_cause_icon_key(&kill.cause);
                         let has_cause_icon = self.death_cause_icons.contains_key(cause_key);
 
                         let mut icons_w = 0i32;
-                        if has_killer_icon { icons_w += icon_size + gap; }
-                        if has_cause_icon { icons_w += icon_size + gap; }
-                        if has_victim_icon { icons_w += icon_size; }
+                        if has_killer_icon {
+                            icons_w += icon_size + gap;
+                        }
+                        if has_cause_icon {
+                            icons_w += icon_size + gap;
+                        }
+                        if has_victim_icon {
+                            icons_w += icon_size;
+                        }
 
                         // Remaining space divided equally for names
                         let remaining_w = (left_x + left_w - cx).saturating_sub(icons_w);
@@ -2908,12 +2905,7 @@ impl RenderTarget for ImageTarget {
                         if has_cause_icon {
                             let cause_icon = self.death_cause_icons.get(cause_key).unwrap();
                             let cause_center_y = icon_y + icon_size / 2;
-                            draw_icon(
-                                &mut self.canvas,
-                                cause_icon,
-                                (cx + icon_size / 2) as f32,
-                                cause_center_y as f32,
-                            );
+                            draw_icon(&mut self.canvas, cause_icon, (cx + icon_size / 2) as f32, cause_center_y as f32);
                             cx += icon_size + gap;
                         }
 
@@ -2977,7 +2969,7 @@ impl RenderTarget for ImageTarget {
 
                         // Clan tag + Player name
                         let (chat_name_font, chat_name_scale) = self.fonts.font_and_scale(&chat.player_name, 14.0);
-                        
+
                         let ship_icon_w = if chat.ship_species.is_some() { icon_size + gap } else { 0 };
                         let mut ship_name_w = 0i32;
                         if let Some(ref ship_name) = chat.ship_name {
@@ -3004,13 +2996,30 @@ impl RenderTarget for ImageTarget {
                         if !chat.clan_tag.is_empty() {
                             let clan_color = chat.clan_color.unwrap_or(chat.team_color);
                             let clan_text = format!("[{}] ", chat.clan_tag);
-                            draw_text_shadow(&mut self.canvas, clan_color, cx, cy, chat_name_scale, chat_name_font, &clan_text);
+                            draw_text_shadow(
+                                &mut self.canvas,
+                                clan_color,
+                                cx,
+                                cy,
+                                chat_name_scale,
+                                chat_name_font,
+                                &clan_text,
+                            );
                             cx += clan_w;
                         }
 
                         // Player Name
-                        let player_display = truncate_to_fit(&chat.player_name, player_name_w as u32, chat_name_scale, chat_name_font);
-                        draw_text_shadow(&mut self.canvas, chat.team_color, cx, cy, chat_name_scale, chat_name_font, &player_display);
+                        let player_display =
+                            truncate_to_fit(&chat.player_name, player_name_w as u32, chat_name_scale, chat_name_font);
+                        draw_text_shadow(
+                            &mut self.canvas,
+                            chat.team_color,
+                            cx,
+                            cy,
+                            chat_name_scale,
+                            chat_name_font,
+                            &player_display,
+                        );
                         let (nw, text_h) = text_size(chat_name_scale, chat_name_font, &player_display);
                         cx += nw as i32 + gap;
 
@@ -3019,15 +3028,7 @@ impl RenderTarget for ImageTarget {
                         if let Some(ref species) = chat.ship_species
                             && let Some(icon) = self.ship_icons.get(species.as_str())
                         {
-                            draw_kill_feed_icon(
-                                &mut self.canvas,
-                                icon,
-                                cx,
-                                icon_y,
-                                icon_size,
-                                chat.team_color,
-                                false,
-                            );
+                            draw_kill_feed_icon(&mut self.canvas, icon, cx, icon_y, icon_size, chat.team_color, false);
                             cx += icon_size + gap;
                         }
 

@@ -2289,7 +2289,8 @@ impl<'a> MinimapRenderer<'a> {
 
             // Ribbons: stable icon-position order, resolve localized display names
             let self_ribbons = controller.self_ribbons();
-            let mut aggregated_ribbons: std::collections::HashMap<wowsunpack::game_types::Ribbon, usize> = std::collections::HashMap::new();
+            let mut aggregated_ribbons: std::collections::HashMap<wowsunpack::game_types::Ribbon, usize> =
+                std::collections::HashMap::new();
             for (ribbon, &count) in self_ribbons.iter() {
                 use wowsunpack::game_types::Ribbon;
                 let target_ribbon = match ribbon {
@@ -2308,8 +2309,7 @@ impl<'a> MinimapRenderer<'a> {
                     | Ribbon::RocketOverPenetration
                     | Ribbon::RocketRicochet
                     | Ribbon::RocketTorpedoProtectionHit => Ribbon::Rocket,
-                    Ribbon::DepthChargeFullDamage
-                    | Ribbon::DepthChargePartialDamage => Ribbon::DepthChargeHit,
+                    Ribbon::DepthChargeFullDamage | Ribbon::DepthChargePartialDamage => Ribbon::DepthChargeHit,
                     other => *other,
                 };
                 *aggregated_ribbons.entry(target_ribbon).or_default() += count;
