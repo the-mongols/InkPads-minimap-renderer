@@ -62,6 +62,7 @@ use crate::map_data;
 use crate::HUD_HEIGHT;
 use crate::MINIMAP_SIZE;
 use crate::STATS_PANEL_WIDTH;
+use crate::STATS_PANEL_WIDTH_16_9;
 
 // How long various effects persist in game-seconds
 const TRACER_LEN: f32 = 0.12; // fraction of total shot path length, at the largest caliber
@@ -2147,7 +2148,11 @@ impl<'a> MinimapRenderer<'a> {
         // this branch is skipped entirely so the panel doesn't double up.
         if self.options.show_stats_panel && !self.options.show_team_rosters {
             let panel_x = MINIMAP_SIZE as i32;
-            let panel_w = STATS_PANEL_WIDTH as i32;
+            let panel_w = if self.options.aspect_ratio_16_9 {
+                self.options.stats_panel_width.unwrap_or(STATS_PANEL_WIDTH_16_9)
+            } else {
+                self.options.stats_panel_width.unwrap_or(STATS_PANEL_WIDTH)
+            } as i32;
             // The score bar spans only the minimap width, not this side strip, so
             // the panel's top is free. Start the header near the top (a small pad
             // matching the score-bar pill inset) instead of below the HUD, which

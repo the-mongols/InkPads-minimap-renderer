@@ -37,6 +37,7 @@ pub struct RenderOptions {
     pub large_elements: bool,
     pub compact_stats: bool,
     pub aspect_ratio_16_9: bool,
+    pub stats_panel_width: Option<u32>,
     /// Controls which ships have their config circles rendered when show_ship_config is true.
     /// Defaults to SelfOnly (only the replay owner's circles).
     pub ship_config_visibility: ShipConfigVisibility,
@@ -76,6 +77,7 @@ impl Default for RenderOptions {
             large_elements: false,
             compact_stats: false,
             aspect_ratio_16_9: false,
+            stats_panel_width: None,
             ship_config_visibility: ShipConfigVisibility::default(),
         }
     }
@@ -123,6 +125,7 @@ pub struct CliOverrides {
     pub compact_stats: bool,
     pub aspect_ratio_16_9: bool,
     pub discord_layout: bool,
+    pub stats_panel_width: Option<u32>,
 }
 
 /// Renderer configuration, loadable from a TOML file.
@@ -161,6 +164,7 @@ pub struct RendererConfig {
     pub large_elements: bool,
     pub compact_stats: bool,
     pub aspect_ratio_16_9: bool,
+    pub stats_panel_width: Option<u32>,
     /// Include the pre-battle phase (spawn and countdown) at the start of the
     /// video. When false, rendering begins at battle start.
     pub include_pre_battle: bool,
@@ -199,6 +203,7 @@ impl Default for RendererConfig {
             large_elements: false,
             compact_stats: false,
             aspect_ratio_16_9: false,
+            stats_panel_width: None,
             include_pre_battle: false,
         }
     }
@@ -252,6 +257,7 @@ impl RendererConfig {
             large_elements: self.large_elements,
             compact_stats: self.compact_stats,
             aspect_ratio_16_9: self.aspect_ratio_16_9,
+            stats_panel_width: self.stats_panel_width,
             ship_config_visibility: ShipConfigVisibility::default(),
         }
     }
@@ -414,6 +420,9 @@ include_pre_battle = false
         }
         if overrides.compact_stats {
             self.compact_stats = true;
+        }
+        if overrides.stats_panel_width.is_some() {
+            self.stats_panel_width = overrides.stats_panel_width;
         }
     }
 }

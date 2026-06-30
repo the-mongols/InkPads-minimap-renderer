@@ -223,6 +223,10 @@ struct Args {
     #[arg(long = "discord-layout")]
     discord_layout: bool,
 
+    /// Override the statistics side panel width in pixels
+    #[arg(long)]
+    stats_panel_width: Option<u32>,
+
     /// Backward compatibility alias for --merge (Red/opponent replay)
     #[arg(long = "red-replay")]
     red_replay: Option<PathBuf>,
@@ -403,6 +407,7 @@ fn main() -> Result<(), Report> {
         compact_stats: args.compact_stats,
         aspect_ratio_16_9: args.aspect_ratio_16_9,
         discord_layout: args.discord_layout,
+        stats_panel_width: args.stats_panel_width,
     });
     let include_pre_battle = config.include_pre_battle;
     let mut options = config.into_render_options();
@@ -422,6 +427,7 @@ fn main() -> Result<(), Report> {
         wows_minimap_renderer::drawing::SidePanelLayout::from_options(&options),
         options.large_elements,
         options.aspect_ratio_16_9,
+        options.stats_panel_width,
     );
 
     // Load self player's ship silhouette for the stats panel

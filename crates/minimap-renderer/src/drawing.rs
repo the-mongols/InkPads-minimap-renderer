@@ -566,42 +566,46 @@ fn draw_score_bar(
     advantage_team: i32,
     fonts: &GameFonts,
     map_width: u32,
+    scale_factor: f32,
 ) {
     let width = map_width as f32;
-    let bar_height = 48.0;
-    let max_score = max_score as f32;
+    let sf = scale_factor;
+    let bg_height = 64.0 * sf;
+    let bar_height = 48.0 * sf;
+    let progress_y = 16.0 * sf;
+    let progress_h = 20.0 * sf;
     let half = width / 2.0;
-    let center_gap = 2.0f32; // small gap between the two bars
+    let center_gap = 2.0f32 * sf; // small gap between the two bars
 
     // Dark background for the entire bar area - faint overlay to keep map visible & prevent chroma artifacts
-    draw_filled_rect(pm, 0.0, 0.0, width, 64.0, [30, 30, 30], 0.25);
+    draw_filled_rect(pm, 0.0, 0.0, width, bg_height, [30, 30, 30], 0.25);
 
     // Team 0 progress: grows from left edge toward center
-    let t0_frac = (team0_score as f32 / max_score).clamp(0.0, 1.0);
+    let t0_frac = (team0_score as f32 / max_score as f32).clamp(0.0, 1.0);
     let t0_width = t0_frac * (half - center_gap);
     if t0_width > 0.0 {
-        draw_filled_rect(pm, 0.0, 16.0, t0_width, 12.0, team0_color, 1.0);
+        draw_filled_rect(pm, 0.0, progress_y, t0_width, progress_h, team0_color, 1.0);
     }
 
     // Team 1 progress: grows from right edge toward center
-    let t1_frac = (team1_score as f32 / max_score).clamp(0.0, 1.0);
+    let t1_frac = (team1_score as f32 / max_score as f32).clamp(0.0, 1.0);
     let t1_width = t1_frac * (half - center_gap);
     if t1_width > 0.0 {
-        draw_filled_rect(pm, width - t1_width, 16.0, t1_width, 12.0, team1_color, 1.0);
+        draw_filled_rect(pm, width - t1_width, progress_y, t1_width, progress_h, team1_color, 1.0);
     }
 
     let font = &fonts.primary;
     let timer_color: [u8; 3] = [200, 200, 200];
-    let pill_pad_x = 4.0f32;
-    let pill_pad_y = 1.0f32;
-    let pill_margin = 2.0f32;
-    let pill_radius = 3.0f32;
+    let pill_pad_x = 4.0f32 * sf;
+    let pill_pad_y = 1.0f32 * sf;
+    let pill_margin = 2.0f32 * sf;
+    let pill_radius = 3.0f32 * sf;
     let pill_color: [u8; 3] = [0, 0, 0];
     let pill_alpha = 0.55f32;
 
-    let score_scale = fonts.scale(21.0);
-    let timer_scale = fonts.scale(18.0);
-    let advantage_scale = fonts.scale(16.0);
+    let score_scale = fonts.scale(21.0 * sf);
+    let timer_scale = fonts.scale(18.0 * sf);
+    let advantage_scale = fonts.scale(16.0 * sf);
 
     let t0 = format!("{}", team0_score);
     let t1 = format!("{}", team1_score);
@@ -609,33 +613,33 @@ fn draw_score_bar(
     let (t1w, _) = text_size(score_scale, font, &t1);
 
     let pill_h = (t0h as f32 + pill_pad_y * 2.0).min(bar_height - pill_margin * 2.0);
-    let pill_y = 16.0 + (bar_height - pill_h) / 2.0;
+    let pill_y = progress_y + (bar_height - pill_h) / 2.0;
     let text_y = pill_y as i32 + pill_pad_y as i32;
 
     // ── Measure team 0 pill width ──
     let mut t0_total_w = t0w as f32;
     if let Some(timer) = team0_timer {
         let (tw, _) = text_size(timer_scale, font, timer);
-        t0_total_w += 4.0 + tw as f32;
+        t0_total_w += 4.0 * sf + tw as f32;
     }
     if advantage_team == 0 && !advantage_label.is_empty() {
         let (aw, _) = text_size(advantage_scale, font, advantage_label);
-        t0_total_w += 6.0 + aw as f32;
+        t0_total_w += 6.0 * sf + aw as f32;
     }
 
     // ── Measure team 1 pill width ──
     let mut t1_total_w = t1w as f32;
     if let Some(timer) = team1_timer {
         let (tw, _) = text_size(timer_scale, font, timer);
-        t1_total_w += 4.0 + tw as f32;
+        t1_total_w += 4.0 * sf + tw as f32;
     }
     if advantage_team == 1 && !advantage_label.is_empty() {
         let (aw, _) = text_size(advantage_scale, font, advantage_label);
-        t1_total_w += 6.0 + aw as f32;
+        t1_total_w += 6.0 * sf + aw as f32;
     }
 
     // ── Draw team 0 pill background + text ──
-    let t0_pill_x = 8.0 - pill_pad_x;
+    let t0_pill_x = 8.0 * sf - pill_pad_x;
     draw_rounded_rect(
         pm,
         t0_pill_x,
@@ -647,22 +651,22 @@ fn draw_score_bar(
         pill_alpha,
     );
 
-    let mut t0_cursor = 8i32;
+    let mut t0_cursor = (8.0 * sf) as i32;
     draw_text(pm, [255, 255, 255], t0_cursor, text_y, score_scale, font, &t0);
     t0_cursor += t0w as i32;
     if let Some(timer) = team0_timer {
-        t0_cursor += 4;
-        draw_text(pm, timer_color, t0_cursor, text_y + 1, timer_scale, font, timer);
+        t0_cursor += (4.0 * sf) as i32;
+        draw_text(pm, timer_color, t0_cursor, text_y + (1.0 * sf) as i32, timer_scale, font, timer);
         let (tw, _) = text_size(timer_scale, font, timer);
         t0_cursor += tw as i32;
     }
     if advantage_team == 0 && !advantage_label.is_empty() {
-        t0_cursor += 6;
-        draw_text(pm, [255, 255, 255], t0_cursor, text_y + 2, advantage_scale, font, advantage_label);
+        t0_cursor += (6.0 * sf) as i32;
+        draw_text(pm, [255, 255, 255], t0_cursor, text_y + (2.0 * sf) as i32, advantage_scale, font, advantage_label);
     }
 
     // ── Draw team 1 pill background + text ──
-    let t1_pill_x = width - 8.0 - t1_total_w - pill_pad_x;
+    let t1_pill_x = width - 8.0 * sf - t1_total_w - pill_pad_x;
     draw_rounded_rect(
         pm,
         t1_pill_x,
@@ -675,7 +679,7 @@ fn draw_score_bar(
     );
 
     // Team 1 draws right-to-left: [advantage] [timer] [score]
-    let mut t1_cursor = (width - 8.0) as i32; // right edge of score
+    let mut t1_cursor = (width - 8.0 * sf) as i32; // right edge of score
     // Score (rightmost)
     let t1_x = t1_cursor - t1w as i32;
     draw_text(pm, [255, 255, 255], t1_x, text_y, score_scale, font, &t1);
@@ -683,17 +687,17 @@ fn draw_score_bar(
     // Timer (left of score)
     if let Some(timer) = team1_timer {
         let (tw, _) = text_size(timer_scale, font, timer);
-        t1_cursor -= 4;
+        t1_cursor -= (4.0 * sf) as i32;
         let tx = t1_cursor - tw as i32;
-        draw_text(pm, timer_color, tx, text_y + 1, timer_scale, font, timer);
+        draw_text(pm, timer_color, tx, text_y + (1.0 * sf) as i32, timer_scale, font, timer);
         t1_cursor = tx;
     }
     // Advantage (leftmost)
     if advantage_team == 1 && !advantage_label.is_empty() {
         let (aw, _) = text_size(advantage_scale, font, advantage_label);
-        t1_cursor -= 6;
+        t1_cursor -= (6.0 * sf) as i32;
         let ax = t1_cursor - aw as i32;
-        draw_text(pm, [255, 255, 255], ax, text_y + 2, advantage_scale, font, advantage_label);
+        draw_text(pm, [255, 255, 255], ax, text_y + (2.0 * sf) as i32, advantage_scale, font, advantage_label);
     }
 }
 
@@ -1871,6 +1875,7 @@ impl ImageTarget {
             layout,
             large_elements,
             aspect_ratio_16_9,
+            None,
         )
     }
 
@@ -1888,10 +1893,12 @@ impl ImageTarget {
         layout: SidePanelLayout,
         large_elements: bool,
         aspect_ratio_16_9: bool,
+        stats_panel_width_override: Option<u32>,
     ) -> Self {
         let map = map_image.unwrap_or_else(|| RgbImage::from_pixel(MINIMAP_SIZE, MINIMAP_SIZE, Rgb([30, 40, 60])));
 
-        let panel_width = if aspect_ratio_16_9 { STATS_PANEL_WIDTH_16_9 } else { STATS_PANEL_WIDTH };
+        let base_panel_width = if aspect_ratio_16_9 { STATS_PANEL_WIDTH_16_9 } else { STATS_PANEL_WIDTH };
+        let panel_width = stats_panel_width_override.unwrap_or(base_panel_width);
         let (canvas_width, map_x_offset, hud_width) = match layout {
             SidePanelLayout::None => (MINIMAP_SIZE, 0, MINIMAP_SIZE),
             SidePanelLayout::StatsPanel => (MINIMAP_SIZE + panel_width, 0, MINIMAP_SIZE),
@@ -2234,6 +2241,7 @@ impl RenderTarget for ImageTarget {
                     .map(|(level, _)| self.text_resolver.resolve(&wt_translations::TranslatableText::Advantage(level)))
                     .unwrap_or_default();
                 let advantage_team = advantage.map(|(_, team)| team as i32).unwrap_or(-1);
+                let scale_factor = if self.large_elements { 1.8f32 } else { 1.0f32 };
                 draw_score_bar(
                     &mut self.canvas,
                     *team0,
@@ -2247,6 +2255,7 @@ impl RenderTarget for ImageTarget {
                     advantage_team,
                     &self.fonts,
                     self.hud_width,
+                    scale_factor,
                 );
             }
             DrawCommand::TeamAdvantage { .. } => {

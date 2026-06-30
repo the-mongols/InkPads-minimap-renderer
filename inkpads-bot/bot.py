@@ -268,8 +268,15 @@ async def send_webhook_payload(replay_path, red_replay_path, session_id):
     show_trails="Display ship movement trails (heatmap)",
     show_config="Show detection and weapon range circles",
     cpu_mode="Use CPU encoding (slower, but safer if GPU is busy)",
-    discord_layout="Optimize layout elements and statistics for Discord embeds (default: True)"
+    discord_layout="Optimize layout elements and statistics for Discord embeds (default: True)",
+    layout_preset="Gutter size preset (Original: 256px, A: 928px, B: 720px, C: 448px)"
 )
+@app_commands.choices(layout_preset=[
+    app_commands.Choice(name="Original (256px)", value="Original"),
+    app_commands.Choice(name="A: Widescreen 16:9 (928px)", value="A"),
+    app_commands.Choice(name="B: Compromise 16:10 (720px)", value="B"),
+    app_commands.Choice(name="C: Discord-Maximized (448px)", value="C")
+])
 async def render(
     interaction: discord.Interaction, 
     replay: discord.Attachment,
@@ -277,7 +284,8 @@ async def render(
     show_trails: bool = False,
     show_config: bool = False,
     cpu_mode: bool = False,
-    discord_layout: bool = True
+    discord_layout: bool = True,
+    layout_preset: app_commands.Choice[str] = None
 ):
     if not replay.filename.endswith('.wowsreplay'):
         await interaction.response.send_message("❌ Error: File must be a `.wowsreplay` file.", ephemeral=True)
@@ -361,6 +369,14 @@ async def render(
         if show_config: cmd.append("--show-ship-config")
         if cpu_mode: cmd.append("--cpu")
         if discord_layout: cmd.append("--discord-layout")
+
+        preset_val = layout_preset.value if layout_preset else "Original"
+        if preset_val == "A":
+            cmd.extend(["--stats-panel-width", "928"])
+        elif preset_val == "B":
+            cmd.extend(["--stats-panel-width", "720"])
+        elif preset_val == "C":
+            cmd.extend(["--stats-panel-width", "448"])
 
         logger.info(f"Executing: {' '.join(cmd)}")
 
