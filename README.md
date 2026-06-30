@@ -1,6 +1,6 @@
 # InkPads Minimap Renderer
 
-This tool was developed for Wargaming.net. 
+This project was developed on Wargaming's request for the community. 
 
 **Copyright © 2026 Wargaming.net**
 
