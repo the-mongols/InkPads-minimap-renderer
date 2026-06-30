@@ -338,10 +338,17 @@ async def render(
 
 
         # 3. Build CLI Command
+        guild_limit_bytes = 10 * 1024 * 1024  # Base fallback limit (10MB) for unboosted/DMs
+        if interaction.guild:
+            guild_limit_bytes = max(interaction.guild.filesize_limit, guild_limit_bytes)
+        
+        target_size_mib = int((guild_limit_bytes * 0.95) / (1024 * 1024))
+
         cmd = [
             str(RENDERER_EXE),
             "-g", str(GAME_DIR),
             "-o", str(output_path),
+            "--max-size-mib", str(target_size_mib),
             str(replay_path)
         ]
         
@@ -372,7 +379,7 @@ async def render(
         if process.returncode == 0:
             # 5. Check Size and Compress if needed
             file_size = output_path.stat().st_size
-            MAX_SIZE = int(9.8 * 1024 * 1024) # 9.8MB safe limit
+            MAX_SIZE = int(guild_limit_bytes * 0.98) # 98% safe limit
             
             if file_size > MAX_SIZE:
                 logger.info(f"Render Session {session_id}: File too large ({file_size/1024/1024:.1f}MB), compressing...")

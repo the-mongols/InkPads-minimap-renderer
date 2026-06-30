@@ -568,26 +568,26 @@ fn draw_score_bar(
     map_width: u32,
 ) {
     let width = map_width as f32;
-    let bar_height = crate::HUD_HEIGHT as f32;
+    let bar_height = 48.0;
     let max_score = max_score as f32;
     let half = width / 2.0;
     let center_gap = 2.0f32; // small gap between the two bars
 
-    // Dark background for the entire bar area
-    draw_filled_rect(pm, 0.0, 0.0, width, bar_height, [30, 30, 30], 0.8);
+    // Dark background for the entire bar area - faint overlay to keep map visible & prevent chroma artifacts
+    draw_filled_rect(pm, 0.0, 0.0, width, 64.0, [30, 30, 30], 0.25);
 
     // Team 0 progress: grows from left edge toward center
     let t0_frac = (team0_score as f32 / max_score).clamp(0.0, 1.0);
     let t0_width = t0_frac * (half - center_gap);
     if t0_width > 0.0 {
-        draw_filled_rect(pm, 0.0, 0.0, t0_width, bar_height, team0_color, 1.0);
+        draw_filled_rect(pm, 0.0, 16.0, t0_width, 12.0, team0_color, 1.0);
     }
 
     // Team 1 progress: grows from right edge toward center
     let t1_frac = (team1_score as f32 / max_score).clamp(0.0, 1.0);
     let t1_width = t1_frac * (half - center_gap);
     if t1_width > 0.0 {
-        draw_filled_rect(pm, width - t1_width, 0.0, t1_width, bar_height, team1_color, 1.0);
+        draw_filled_rect(pm, width - t1_width, 16.0, t1_width, 12.0, team1_color, 1.0);
     }
 
     let font = &fonts.primary;
@@ -599,9 +599,9 @@ fn draw_score_bar(
     let pill_color: [u8; 3] = [0, 0, 0];
     let pill_alpha = 0.55f32;
 
-    let score_scale = fonts.scale(14.0);
-    let timer_scale = fonts.scale(12.0);
-    let advantage_scale = fonts.scale(11.0);
+    let score_scale = fonts.scale(21.0);
+    let timer_scale = fonts.scale(18.0);
+    let advantage_scale = fonts.scale(16.0);
 
     let t0 = format!("{}", team0_score);
     let t1 = format!("{}", team1_score);
@@ -609,7 +609,7 @@ fn draw_score_bar(
     let (t1w, _) = text_size(score_scale, font, &t1);
 
     let pill_h = (t0h as f32 + pill_pad_y * 2.0).min(bar_height - pill_margin * 2.0);
-    let pill_y = (bar_height - pill_h) / 2.0;
+    let pill_y = 16.0 + (bar_height - pill_h) / 2.0;
     let text_y = pill_y as i32 + pill_pad_y as i32;
 
     // ── Measure team 0 pill width ──
@@ -701,8 +701,8 @@ fn draw_score_bar(
 fn draw_timer(pm: &mut Pixmap, time_remaining: Option<i64>, elapsed: ElapsedClock, fonts: &GameFonts, map_width: u32) {
     let font = &fonts.primary;
     let center_x = map_width as i32 / 2;
-    let main_scale = fonts.scale(16.0);
-    let small_scale = fonts.scale(11.0);
+    let main_scale = fonts.scale(24.0);
+    let small_scale = fonts.scale(16.0);
 
     if let Some(remaining) = time_remaining {
         // Show time remaining as main timer (centered)
@@ -711,7 +711,7 @@ fn draw_timer(pm: &mut Pixmap, time_remaining: Option<i64>, elapsed: ElapsedCloc
         let remaining_text = format!("{:02}:{:02}", r_mins, r_secs);
         let (rw, _) = text_size(main_scale, font, &remaining_text);
         let rx = center_x - rw as i32 / 2;
-        draw_text_shadow(pm, [255, 255, 255], rx, 2, main_scale, font, &remaining_text);
+        draw_text_shadow(pm, [255, 255, 255], rx, 20, main_scale, font, &remaining_text);
 
         // Show elapsed as smaller text below
         let e_mins = (elapsed.seconds() as i32) / 60;
@@ -719,7 +719,7 @@ fn draw_timer(pm: &mut Pixmap, time_remaining: Option<i64>, elapsed: ElapsedCloc
         let elapsed_text = format!("+{:02}:{:02}", e_mins, e_secs);
         let (ew, _) = text_size(small_scale, font, &elapsed_text);
         let ex = center_x - ew as i32 / 2;
-        draw_text_shadow(pm, [180, 180, 180], ex, 18, small_scale, font, &elapsed_text);
+        draw_text_shadow(pm, [180, 180, 180], ex, 44, small_scale, font, &elapsed_text);
     } else {
         // Fallback: just show elapsed time centered (no timeLeft data yet)
         let mins = (elapsed.seconds() as i32) / 60;
@@ -727,7 +727,7 @@ fn draw_timer(pm: &mut Pixmap, time_remaining: Option<i64>, elapsed: ElapsedCloc
         let text = format!("{:02}:{:02}", mins, secs);
         let (w, _) = text_size(main_scale, font, &text);
         let x = center_x - w as i32 / 2;
-        draw_text_shadow(pm, [255, 255, 255], x, 2, main_scale, font, &text);
+        draw_text_shadow(pm, [255, 255, 255], x, 28, main_scale, font, &text);
     }
 }
 
@@ -1264,11 +1264,11 @@ fn draw_grid_at(pm: &mut Pixmap, minimap_size: u32, x_off: u32, y_off: u32, font
         );
     }
 
-    // Labels: numbers 1-10 across the top, letters A-J down the left
+    // Labels: numbers 1-10 across the bottom, letters A-J down the left
     for i in 0..10 {
         let label = format!("{}", i + 1);
         let x = (x_off_f + i as f32 * cell + cell / 2.0 - 3.0) as i32;
-        let y = y_off as i32 + 2;
+        let y = (y_off + minimap_size) as i32 - 15;
         draw_text_shadow(pm, [255, 255, 255], x, y, label_scale, font, &label);
     }
     let labels_row = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
@@ -1404,6 +1404,7 @@ fn format_number(n: i64) -> String {
 }
 
 /// Short display name for a ribbon variant (for the compact stats panel).
+#[allow(dead_code)]
 fn damage_label_color_rgb(label: &str) -> [u8; 3] {
     match label {
         "AP" => [255, 200, 80],
@@ -2230,7 +2231,7 @@ impl RenderTarget for ImageTarget {
                 advantage,
             } => {
                 let advantage_label = advantage
-                    .map(|(level, _)| self.text_resolver.resolve(&TranslatableText::Advantage(level)))
+                    .map(|(level, _)| self.text_resolver.resolve(&wt_translations::TranslatableText::Advantage(level)))
                     .unwrap_or_default();
                 let advantage_team = advantage.map(|(_, team)| team as i32).unwrap_or(-1);
                 draw_score_bar(
@@ -2267,7 +2268,7 @@ impl RenderTarget for ImageTarget {
             DrawCommand::TeamBuffs { friendly_buffs, enemy_buffs } => {
                 let icon_size = 16i32;
                 let gap = 2i32;
-                let buff_y = HUD_HEIGHT as i32;
+                let buff_y = 64;
                 let count_scale = self.fonts.scale(10.0);
 
                 // Friendly buffs: left side of the minimap (shifted right by
@@ -2436,7 +2437,7 @@ impl RenderTarget for ImageTarget {
                     entries,
                     &self.fonts,
                     &self.ship_icons,
-                    HUD_HEIGHT,
+                    64,
                     self.map_x_offset,
                 );
             }
@@ -2493,7 +2494,7 @@ impl RenderTarget for ImageTarget {
                 let inner_w = *width - padding * 2;
 
                 // Draw clan tag + player name, and ship name above the silhouette
-                let mut label_y = *y + (2.0 * scale_factor).round() as i32;
+                let mut label_y = *y + (4.0 * scale_factor).round() as i32;
 
                 if player_name.is_some() || clan_tag.as_ref().is_some_and(|t| !t.is_empty()) {
                     let clan_prefix = clan_tag.as_ref().filter(|t| !t.is_empty()).map(|t| format!("[{t}] "));
@@ -2525,19 +2526,19 @@ impl RenderTarget for ImageTarget {
                             name_part,
                         );
                     }
-                    label_y += (13.0 * scale_factor).round() as i32;
+                    label_y += (17.0 * scale_factor).round() as i32;
                 }
                 if let Some(name) = ship_name {
                     let (ship_font, ship_font_scale) = self.fonts.font_and_scale(name, 10.0 * scale_factor);
                     let (tw, _) = text_size(ship_font_scale, ship_font, name);
                     let tx = inner_x + (inner_w - tw as i32) / 2;
                     draw_text_shadow(&mut self.canvas, [180, 180, 180], tx, label_y, ship_font_scale, ship_font, name);
-                    label_y += (13.0 * scale_factor).round() as i32;
+                    label_y += (10.0 * scale_factor).round() as i32;
                 }
 
                 // Draw silhouette: gray base + colored HP + white healable overlay
-                let sil_y = label_y + 1;
-                let sil_h = (*y + *height - 18 - sil_y).max(20);
+                let sil_y = label_y + (0.0 * scale_factor).round() as i32;
+                let sil_h = (*y + *height - (14.0 * scale_factor).round() as i32 - sil_y).max(20);
                 if let Some(sil_img) = silhouette {
                     // Scale silhouette to fit the available area
                     let aspect = sil_img.width() as f32 / sil_img.height() as f32;
@@ -2627,23 +2628,20 @@ impl RenderTarget for ImageTarget {
                 width,
                 breakdowns,
                 damage_spotting,
-                spotting_breakdowns,
+                spotting_breakdowns: _,
                 damage_potential,
-                potential_breakdowns,
+                potential_breakdowns: _,
             } => {
                 let scale_factor = if self.large_elements { 1.8f32 } else { 1.0f32 };
                 let padding = (8.0 * scale_factor).round() as i32;
                 let inner_x = *x + padding;
-                let indent_x = inner_x + (12.0 * scale_factor).round() as i32;
                 let header_scale = self.fonts.scale(16.0 * scale_factor);
-                let breakdown_scale = self.fonts.scale(13.0 * scale_factor);
-                let header_row_h = (22.0 * scale_factor).round() as i32;
-                let breakdown_row_h = (18.0 * scale_factor).round() as i32;
+                let header_row_h = (26.0 * scale_factor).round() as i32;
                 let right_x = *x + *width - padding;
 
                 let mut cur_y = *y + (4.0 * scale_factor).round() as i32;
 
-                // Total enemy damage header
+                // Total enemy damage header (DMG)
                 let total_damage: f64 = breakdowns.iter().map(|e| e.damage).sum();
                 draw_text_shadow(
                     &mut self.canvas,
@@ -2667,87 +2665,50 @@ impl RenderTarget for ImageTarget {
                 );
                 cur_y += header_row_h;
 
-                // Indented breakdown rows
-                for entry in breakdowns.iter() {
-                    let color = damage_label_color_rgb(&entry.label);
-                    draw_text_shadow(
-                        &mut self.canvas,
-                        [140, 140, 140],
-                        indent_x,
-                        cur_y,
-                        breakdown_scale,
-                        &self.fonts.primary,
-                        &entry.label,
-                    );
-                    let val_str = format_number(entry.damage as i64);
-                    let (tw, _) = text_size(breakdown_scale, &self.fonts.primary, &val_str);
-                    draw_text_shadow(
-                        &mut self.canvas,
-                        color,
-                        right_x - tw as i32,
-                        cur_y,
-                        breakdown_scale,
-                        &self.fonts.primary,
-                        &val_str,
-                    );
-                    cur_y += breakdown_row_h;
-                }
+                // Spotting (SPOT)
+                draw_text_shadow(
+                    &mut self.canvas,
+                    [200, 200, 200],
+                    inner_x,
+                    cur_y,
+                    header_scale,
+                    &self.fonts.primary,
+                    "SPOT",
+                );
+                let spot_str = format_number(*damage_spotting as i64);
+                let (tw, _) = text_size(header_scale, &self.fonts.primary, &spot_str);
+                draw_text_shadow(
+                    &mut self.canvas,
+                    [120, 200, 255],
+                    right_x - tw as i32,
+                    cur_y,
+                    header_scale,
+                    &self.fonts.primary,
+                    &spot_str,
+                );
+                cur_y += header_row_h;
 
-                // Spotting + Potential with sub-breakdowns
-                let summary_sections: [(&str, f64, &[_], [u8; 3]); 2] = [
-                    ("SPOT", *damage_spotting, spotting_breakdowns, [120u8, 200, 255]),
-                    ("POT", *damage_potential, potential_breakdowns, [180, 180, 180]),
-                ];
-                for (label, total, sub_breakdowns, color) in &summary_sections {
-                    // Header row
-                    draw_text_shadow(
-                        &mut self.canvas,
-                        [140, 140, 140],
-                        inner_x,
-                        cur_y,
-                        breakdown_scale,
-                        &self.fonts.primary,
-                        label,
-                    );
-                    let val_str = format_number(*total as i64);
-                    let (tw, _) = text_size(breakdown_scale, &self.fonts.primary, &val_str);
-                    draw_text_shadow(
-                        &mut self.canvas,
-                        *color,
-                        right_x - tw as i32,
-                        cur_y,
-                        breakdown_scale,
-                        &self.fonts.primary,
-                        &val_str,
-                    );
-                    cur_y += breakdown_row_h;
-
-                    // Sub-breakdown rows
-                    for entry in sub_breakdowns.iter() {
-                        let sub_color = damage_label_color_rgb(&entry.label);
-                        draw_text_shadow(
-                            &mut self.canvas,
-                            [140, 140, 140],
-                            indent_x,
-                            cur_y,
-                            breakdown_scale,
-                            &self.fonts.primary,
-                            &entry.label,
-                        );
-                        let sub_val_str = format_number(entry.damage as i64);
-                        let (tw, _) = text_size(breakdown_scale, &self.fonts.primary, &sub_val_str);
-                        draw_text_shadow(
-                            &mut self.canvas,
-                            sub_color,
-                            right_x - tw as i32,
-                            cur_y,
-                            breakdown_scale,
-                            &self.fonts.primary,
-                            &sub_val_str,
-                        );
-                        cur_y += breakdown_row_h;
-                    }
-                }
+                // Potential (POT)
+                draw_text_shadow(
+                    &mut self.canvas,
+                    [200, 200, 200],
+                    inner_x,
+                    cur_y,
+                    header_scale,
+                    &self.fonts.primary,
+                    "POT",
+                );
+                let pot_str = format_number(*damage_potential as i64);
+                let (tw, _) = text_size(header_scale, &self.fonts.primary, &pot_str);
+                draw_text_shadow(
+                    &mut self.canvas,
+                    [180, 180, 180],
+                    right_x - tw as i32,
+                    cur_y,
+                    header_scale,
+                    &self.fonts.primary,
+                    &pot_str,
+                );
             }
             DrawCommand::StatsRibbons { x, y, width, ribbons } => {
                 use crate::draw_command::STATS_RIBBON_CELL_W;
@@ -2756,7 +2717,7 @@ impl RenderTarget for ImageTarget {
                 let padding = 8;
                 let inner_x = *x + padding;
                 let inner_w = *width - padding * 2;
-                let scale = self.fonts.scale(14.0);
+                let scale = self.fonts.scale(18.0);
                 let icon_h = STATS_RIBBON_ICON;
                 let cell_w = STATS_RIBBON_CELL_W;
                 let gap = 2;

@@ -20,9 +20,9 @@ use crate::map_data::MinimapPos;
 /// command emitter (which positions the activity feed below the grid) and the
 /// render backends agree exactly on rows-per-line. `CELL_W` fits the widest
 /// ribbon icon (~2.6:1 at `ICON` height) plus a 2-digit count.
-pub const STATS_RIBBON_ICON: i32 = 18;
-pub const STATS_RIBBON_CELL_W: i32 = 76;
-pub const STATS_RIBBON_ROW_H: i32 = 24;
+pub const STATS_RIBBON_ICON: i32 = 24;
+pub const STATS_RIBBON_CELL_W: i32 = 82;
+pub const STATS_RIBBON_ROW_H: i32 = 30;
 
 /// Opacity for the ammo-colored shell tip dot. Dimmed so the tips read as
 /// accents on the tracer rather than dominating the map. Shared by every render

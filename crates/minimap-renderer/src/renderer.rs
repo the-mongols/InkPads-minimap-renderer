@@ -2152,7 +2152,6 @@ impl<'a> MinimapRenderer<'a> {
             // the panel's top is free. Start the header near the top (a small pad
             // matching the score-bar pill inset) instead of below the HUD, which
             // moves the block up and frees vertical room for the ribbon grid.
-            let stats_top = 4i32;
 
             // Panel background
             commands.push(DrawCommand::StatsPanel { x: panel_x, width: panel_w });
@@ -2211,8 +2210,8 @@ impl<'a> MinimapRenderer<'a> {
                 })
                 .unwrap_or_default();
 
-            let silhouette_y = if self.options.aspect_ratio_16_9 { 15 } else { stats_top };
-            let silhouette_h = if self.options.aspect_ratio_16_9 { 210 } else { 110 };
+            let silhouette_y = if self.options.aspect_ratio_16_9 { 15 } else { 2 };
+            let silhouette_h = if self.options.aspect_ratio_16_9 { 210 } else { 170 };
             commands.push(DrawCommand::StatsSilhouette {
                 x: panel_x,
                 y: silhouette_y,
@@ -2265,12 +2264,12 @@ impl<'a> MinimapRenderer<'a> {
             let damage_spotting: f64 = spotting_breakdowns.iter().map(|e| e.damage).sum();
             let damage_potential: f64 = potential_breakdowns.iter().map(|e| e.damage).sum();
 
-            // Dynamic layout: header (22px) + breakdown rows (18px each) + spot/pot headers+breakdowns + padding
-            let spot_rows = 1 + spotting_breakdowns.len() as i32;
-            let pot_rows = 1 + potential_breakdowns.len() as i32;
-            let damage_section_height = 22 + breakdowns.len() as i32 * 18 + (spot_rows + pot_rows) * 18 + 12;
+            let scale_factor = if self.options.large_elements { 1.8f32 } else { 1.0f32 };
+            let header_row_h = (26.0 * scale_factor).round() as i32;
+            let padding_y = (8.0 * scale_factor).round() as i32;
+            let damage_section_height = 3 * header_row_h + padding_y;
 
-            let damage_y = if self.options.aspect_ratio_16_9 { 250 } else { stats_top + 80 };
+            let damage_y = if self.options.aspect_ratio_16_9 { 250 } else { silhouette_y + silhouette_h + 4 };
 
             commands.push(DrawCommand::StatsDamage {
                 x: panel_x,
@@ -2285,9 +2284,60 @@ impl<'a> MinimapRenderer<'a> {
 
             // Ribbons: stable icon-position order, resolve localized display names
             let self_ribbons = controller.self_ribbons();
-            let mut ribbons: Vec<RibbonCount> = self_ribbons
-                .iter()
-                .map(|(ribbon, &count)| {
+            let mut aggregated_ribbons: std::collections::HashMap<wowsunpack::game_types::Ribbon, usize> = std::collections::HashMap::new();
+            for (ribbon, &count) in self_ribbons.iter() {
+                use wowsunpack::game_types::Ribbon;
+                let target_ribbon = match ribbon {
+                    Ribbon::Penetration
+                    | Ribbon::OverPenetration
+                    | Ribbon::NonPenetration
+                    | Ribbon::Ricochet
+                    | Ribbon::TorpedoProtectionHit => Ribbon::MainCaliber,
+                    Ribbon::BombOverPenetration
+                    | Ribbon::BombNonPenetration
+                    | Ribbon::BombRicochet
+                    | Ribbon::BombTorpedoProtectionHit
+                    | Ribbon::DiveBombPenetration => Ribbon::Bomb,
+                    Ribbon::RocketPenetration
+                    | Ribbon::RocketNonPenetration
+                    | Ribbon::RocketOverPenetration
+                    | Ribbon::RocketRicochet
+                    | Ribbon::RocketTorpedoProtectionHit => Ribbon::Rocket,
+                    Ribbon::DepthChargeFullDamage
+                    | Ribbon::DepthChargePartialDamage => Ribbon::DepthChargeHit,
+                    other => *other,
+                };
+                *aggregated_ribbons.entry(target_ribbon).or_default() += count;
+            }
+
+            let mut ribbons: Vec<RibbonCount> = aggregated_ribbons
+                .into_iter()
+                .filter(|(ribbon, _)| {
+                    use wowsunpack::game_types::Ribbon;
+                    match ribbon {
+                        Ribbon::Destroyed
+                        | Ribbon::MainCaliber
+                        | Ribbon::Citadel
+                        | Ribbon::Incapacitation
+                        | Ribbon::SetFire
+                        | Ribbon::SecondaryHit
+                        | Ribbon::PlaneShotDown
+                        | Ribbon::ShotDownByAircraft
+                        | Ribbon::TorpedoHit
+                        | Ribbon::Flooding
+                        | Ribbon::Bomb
+                        | Ribbon::Rocket
+                        | Ribbon::DepthChargeHit
+                        | Ribbon::SonarOneHit
+                        | Ribbon::SonarTwoHits
+                        | Ribbon::Spotted
+                        | Ribbon::Defended
+                        | Ribbon::AssistedInCapture
+                        | Ribbon::Captured => true,
+                        _ => false,
+                    }
+                })
+                .map(|(ribbon, count)| {
                     let translation = ribbon.translation_key().and_then(|key| {
                         wowsunpack::game_params::translations::translate_ribbon(
                             key,
@@ -2296,9 +2346,9 @@ impl<'a> MinimapRenderer<'a> {
                     });
                     let (display_name, icon_key, is_subribbon) = match translation {
                         Some(t) => (t.display_name, t.icon_key, t.is_subribbon),
-                        None => (ribbon_fallback_name(ribbon).to_string(), String::new(), false),
+                        None => (ribbon_fallback_name(&ribbon).to_string(), String::new(), false),
                     };
-                    RibbonCount { ribbon: *ribbon, count, display_name, icon_key, is_subribbon }
+                    RibbonCount { ribbon, count, display_name, icon_key, is_subribbon }
                 })
                 .collect();
 
@@ -2312,11 +2362,7 @@ impl<'a> MinimapRenderer<'a> {
                 };
                 ribbons.sort_by_key(|rc| rank(rc));
             }
-            let ribbon_y = if self.options.aspect_ratio_16_9 {
-                damage_y + damage_section_height
-            } else {
-                stats_top + 80 + damage_section_height
-            };
+            let ribbon_y = damage_y + damage_section_height;
             let ribbon_count = ribbons.len();
             commands.push(DrawCommand::StatsRibbons { x: panel_x, y: ribbon_y, width: panel_w, ribbons });
 
@@ -2417,11 +2463,7 @@ impl<'a> MinimapRenderer<'a> {
             let per_row = (inner_w / STATS_RIBBON_CELL_W).max(1);
             let rows = ((ribbon_count as i32) + per_row - 1) / per_row;
             let ribbon_section_height = rows * STATS_RIBBON_ROW_H + 8;
-            let feed_y = if self.options.aspect_ratio_16_9 {
-                390
-            } else {
-                ribbon_y + ribbon_section_height
-            };
+            let feed_y = ribbon_y + ribbon_section_height;
             let feed_height = (MINIMAP_SIZE as i32 + HUD_HEIGHT as i32) - feed_y;
             commands.push(DrawCommand::StatsActivityFeed {
                 x: panel_x,
@@ -2647,8 +2689,8 @@ impl<'a> MinimapRenderer<'a> {
         // TEAM_ROSTER_WIDTH on each side; the friendly roster sits at x=0 and
         // the enemy roster at x=MINIMAP_SIZE+TEAM_ROSTER_WIDTH.
         let roster_w = crate::TEAM_ROSTER_WIDTH as i32;
-        let roster_h = MINIMAP_SIZE as i32;
-        let roster_y = HUD_HEIGHT as i32;
+        let roster_y = 64;
+        let roster_h = MINIMAP_SIZE as i32 - 64;
         if !friendly.is_empty() {
             commands.push(DrawCommand::TeamRoster {
                 side: RosterSide::Friendly,

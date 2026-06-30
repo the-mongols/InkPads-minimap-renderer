@@ -200,7 +200,7 @@ impl GpuEncoder {
                 &mut nv12_image,
                 rgb,
                 width * 3,
-                YuvRange::Full,
+                YuvRange::Limited,
                 YuvStandardMatrix::Bt709,
                 YuvConversionMode::Balanced,
             )
