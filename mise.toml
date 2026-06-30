@@ -1,3 +1,15 @@
+[env]
+# Make NASM discoverable to rav1e's build.rs without forcing contributors to
+# fix their system PATH. Covers both the project-local install dropped by
+# `mise run setup` and the winget default install location. Nonexistent
+# entries (e.g. the Windows path on Linux/macOS) are ignored. Active in any
+# shell with `mise activate`, and via `mise exec -- <cmd>`.
+_.path = [".tooling/nasm", "C:/Program Files/NASM"]
+
+[tasks.setup]
+description = "Ensure the local build environment is configured (currently: NASM for rav1e asm)."
+run = "python scripts/setup.py"
+
 [tasks.fmt]
 description = "Runs rustfmt with unstable features"
 run = "cargo fmt -- --config unstable_features=true --config imports_granularity=Item --config imports_layout=Vertical"
@@ -16,13 +28,17 @@ depends_post = ["fmt"]
 
 [tasks.clippy-fix]
 description = "Runs cargo-clippy-fix against all features"
-run = "cargo clippy --fix --all-features --allow-dirty"
+run = "cargo clippy --fix --all-features --all-targets --allow-dirty"
 depends_post = ["fmt"]
 
 [tasks.fix-all]
-description = "Runs clippy fix, fmt, and checks WASM target"
+description = "Runs clippy fix, fmt, lints the publish (default-feature) config, and checks WASM target"
 run = [
-    "cargo clippy --fix --all-features --allow-dirty",
+    "cargo clippy --fix --all-features --all-targets --allow-dirty",
+    # Lint the default-feature config the published crates build with: --all-features
+    # hides feature-gated dead code (e.g. a helper used only by a parsing-gated fn).
+    # wows_minimap_renderer is omitted (native rav1e build dep); the all-features pass covers it.
+    "cargo clippy --all-targets -p wows-core -p wowsunpack -p wows_replays -p wows-battle-world -p wows-data-mgr -p wows-replay-insights -p wt-translations -- -D warnings",
     "cargo check -p wt-web --target wasm32-unknown-unknown",
 ]
 depends_post = ["fmt"]
@@ -30,10 +46,13 @@ depends_post = ["fmt"]
 [tasks.bump]
 description = "Bump versions for published crates and sync workspace deps (usage: mise run bump -- minor)"
 run = [
+    "cargo set-version -p wows-core --bump {{arg(name=\"level\", i=0)}}",
     "cargo set-version -p wowsunpack --bump {{arg(name=\"level\", i=0)}}",
     "cargo set-version -p wows_replays --bump {{arg(name=\"level\", i=0)}}",
     "cargo set-version -p wows_minimap_renderer --bump {{arg(name=\"level\", i=0)}}",
+    "cargo set-version -p wows-battle-world --bump {{arg(name=\"level\", i=0)}}",
     "cargo set-version -p wows-data-mgr --bump {{arg(name=\"level\", i=0)}}",
+    "cargo set-version -p wows-replay-insights --bump {{arg(name=\"level\", i=0)}}",
     "cargo set-version -p wt-translations --bump {{arg(name=\"level\", i=0)}}",
-    "cargo upgrade -p wowsunpack -p wows_replays -p wows_minimap_renderer -p wows-data-mgr -p wt-translations --incompatible allow --pinned allow",
+    "cargo upgrade -p wows-core -p wowsunpack -p wows_replays -p wows_minimap_renderer -p wows-battle-world -p wows-data-mgr -p wows-replay-insights -p wt-translations --incompatible allow --pinned allow",
 ]

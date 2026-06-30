@@ -7,34 +7,41 @@ members = [
     "crates/minimap-renderer",
     "crates/replayshark",
     "crates/wows-data-mgr",
+    "crates/wt-translations",
     "crates/wows-replay-insights",
     "crates/wows-battle-world",
-    "crates/wt-translations",
 ]
 
 [workspace.package]
-version = "0.1.69"
+version = "0.1.70"
 edition = "2024"
 rust-version = "1.92"
-license = "Apache-2.0"
+license = "MIT"
 
 [workspace.metadata.crane]
 name = "wows-toolkit"
 
 [workspace.dependencies]
-# Internal crates
-wows-core = { version = "0.10.0", path = "crates/wows-core", default-features = false }
-wowsunpack = { version = "0.42.0", path = "crates/wowsunpack", default-features = false }
-wows_replays = { version = "0.43.0", path = "crates/wows-replays", default-features = false }
-wows_minimap_renderer = { version = "0.36.0", path = "crates/minimap-renderer", default-features = false }
-wows-battle-world = { version = "0.10.0", path = "crates/wows-battle-world", default-features = false }
-wows-data-mgr = { version = "0.18.0", path = "crates/wows-data-mgr", default-features = false }
-wows-replay-insights = { version = "0.10.0", path = "crates/wows-replay-insights", default-features = false }
-wt-translations = { version = "0.13.0", path = "crates/wt-translations" }
-
+# Internal crates (versions synced by scripts/bump-versions.sh)
+wows-core = { version = "0.11.0", path = "crates/wows-core", default-features = false }
+wowsunpack = { version = "0.43.0", path = "crates/wowsunpack", default-features = false }
+wows_replays = { version = "0.44.0", path = "crates/wows-replays", default-features = false }
+wows_minimap_renderer = { version = "0.37.0", path = "crates/minimap-renderer", default-features = false }
+wows-battle-world = { version = "0.11.0", path = "crates/wows-battle-world", default-features = false }
+wows-data-mgr = { version = "0.19.0", path = "crates/wows-data-mgr", default-features = false }
+wows-replay-insights = { version = "0.11.0", path = "crates/wows-replay-insights", default-features = false }
+wt-collab-protocol = { path = "crates/wt-collab-protocol" }
+wt-collab-egui = { path = "crates/wt-collab-egui" }
+wt-translations = { version = "0.14.0", path = "crates/wt-translations" }
 # Shared UI dependencies
+egui = "0.34.1"
+egui-phosphor = "0.12"
+egui_dock = "0.19.1"
+eframe = { version = "0.34.1", default-features = false }
+# Pin to match eframe's wgpu version so backend features unify correctly.
+# This dependency with `default-features = true` is also needed to ensure
+# that targets are properly initialized.
 wgpu = { version = "29", default-features = true }
-
 # Shared external dependencies
 bon = "3.9.1"
 data-encoding = "2.10.0"
@@ -46,6 +53,7 @@ image_dds = { version = "0.7", default-features = false }
 itertools = "0.14"
 paste = "1"
 pickled = { version = "2.0.0-alpha9" }
+iroh = { version = "1.0.0-rc.1", default-features = false, features = ["tls-ring"] }
 rkyv = "0.8.15"
 rootcause = "0.12"
 roxmltree = "0.21"
@@ -56,7 +64,6 @@ thiserror = "2.0"
 tracing = "0.1"
 web-time = "1"
 winnow = "1.0"
-
 # Shared tool/CLI dependencies
 anyhow = "1.0"
 chrono = "0.4"
@@ -70,8 +77,20 @@ tracing-subscriber = "0.3"
 walkdir = "2.5"
 insta = { version = "1.47", features = ["yaml"] }
 sha2 = "0.10"
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
 rust-i18n = "3.1.5"
 sys-locale = "0.3"
+
+[patch.crates-io]
+# pickled = { path = "../pickled" }
+# egui = { git = "https://github.com/emilk/egui", branch = "main" }
+# eframe = { git = "https://github.com/emilk/egui", branch = "main" }
+# epaint = { git = "https://github.com/emilk/egui", branch = "main" }
+# emath = { git = "https://github.com/emilk/egui", branch = "main" }
+# egui_glow = { git = "https://github.com/emilk/egui", branch = "main" }
+# egui-wgpu = { git = "https://github.com/emilk/egui", branch = "main" }
+# egui-winit = { git = "https://github.com/emilk/egui", branch = "main" }
+# egui_extras = { git = "https://github.com/emilk/egui", branch = "main" }
 
 [profile.release]
 opt-level = 3
