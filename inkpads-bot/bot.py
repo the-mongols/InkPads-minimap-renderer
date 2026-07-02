@@ -3,6 +3,7 @@ from discord import app_commands
 from discord.ext import commands
 import os
 import asyncio
+import aiohttp
 import uuid
 import requests
 import json
@@ -87,6 +88,13 @@ class InkpadsBot(commands.Bot):
         logger.info("Syncing slash commands...")
         synced = await self.tree.sync()
         logger.info(f"Synced {len(synced)} commands.")
+        
+        # Adjust session timeout to allow slow connections to upload without timing out
+        if hasattr(self.http, "_HTTPClient__session") and self.http._HTTPClient__session:
+            self.http._HTTPClient__session._timeout = aiohttp.ClientTimeout(
+                total=900, connect=None, sock_read=None, sock_connect=60
+            )
+            logger.info("Adjusted HTTP client session timeout to 900 seconds.")
 
 bot = InkpadsBot()
 
@@ -405,16 +413,20 @@ async def render(
         async def update_progress():
             try:
                 for i in range(1, 10):
-                    await asyncio.sleep(6) # Roughly 60s total render time
+                    await asyncio.sleep(12) # Roughly 120s total render time, updated less frequently
                     bar = '█' * i + '░' * (10 - i)
                     embed.description = f"{info_line}\n\nStatus: [{bar}] {i*10}%\nRendering..."
-                    await interaction.edit_original_response(embed=embed)
+                    await asyncio.shield(interaction.edit_original_response(embed=embed))
             except asyncio.CancelledError:
                 pass
                 
         prog_task = asyncio.create_task(update_progress())
         await process.communicate()
         prog_task.cancel()
+        try:
+            await prog_task
+        except asyncio.CancelledError:
+            pass
 
         if process.returncode == 0:
             # 5. Compress if needed
