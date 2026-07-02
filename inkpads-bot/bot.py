@@ -278,6 +278,8 @@ async def send_webhook_payload(replay_path, red_replay_path, session_id):
 
 
 @bot.tree.command(name="render", description="Render a WoWS replay into a tactical video")
+@app_commands.allowed_installs(guilds=True, users=True)
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 @app_commands.describe(
     replay="The primary (Green) .wowsreplay file",
     red_replay="Optional secondary (Red) .wowsreplay file from the opposing team",
@@ -476,6 +478,8 @@ async def render(
                 render_semaphore.release()
 
 @bot.tree.command(name="ping", description="Check bot status")
+@app_commands.allowed_installs(guilds=True, users=True)
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 async def ping(interaction: discord.Interaction):
     await interaction.response.send_message(f"Pong! Latency: {round(bot.latency * 1000)}ms")
 
