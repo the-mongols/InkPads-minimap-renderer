@@ -394,7 +394,7 @@ async def render(
             guild_limit_bytes = max(interaction.guild.filesize_limit, guild_limit_bytes)
         target_size_mib = int((guild_limit_bytes * 0.95) / (1024 * 1024))
 
-        cmd = [str(RENDERER_EXE), "-g", str(GAME_DIR), "-o", str(output_path), "--max-size-mib", str(target_size_mib), str(replay_path)]
+        cmd = [str(RENDERER_EXE), "-g", str(GAME_DIR), "-o", str(output_path), "--max-size-mib", str(target_size_mib), "--codec", "h264", str(replay_path)]
         if red_replay:
             cmd.extend(["--red-replay", str(red_replay_path), "--no-chat", "--no-kill-feed", "--no-stats-panel"])
         if show_trails: cmd.append("--show-trails")
