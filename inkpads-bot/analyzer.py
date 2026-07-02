@@ -40,6 +40,7 @@ class ReplayAnalyzer:
         self.arena_id = None
         self.match_date = None
         self.player_name = None
+        self.game_duration = 1200.0
 
         # Advantage Tracking
         self.team_scores = [0, 0]
@@ -88,6 +89,11 @@ class ReplayAnalyzer:
                     self.player_name = meta.get("playerName")
                     if "dateTime" in meta:
                         self.match_date = meta["dateTime"]
+                    if "duration" in meta:
+                        try:
+                            self.game_duration = float(meta["duration"])
+                        except:
+                            pass
                     
                     vehicles = meta.get("vehicles", [])
                     for idx, v in enumerate(vehicles):
@@ -213,6 +219,16 @@ class ReplayAnalyzer:
         self._pass1_metadata(raw_lines)
         self._pass2_events(raw_lines)
         self._resolve_ship_names()  # Hydrate ship_name/ship_index via query players
+
+        # Recalculate accurate video_timestamp for all events based on dynamic game duration
+        start_clock = self.battle_start_clock if self.battle_start_clock is not None else 0.0
+        game_dur = getattr(self, "game_duration", 1200.0)
+        window_duration = max(1.0, game_dur - start_clock)
+        scale_factor = window_duration / 60.0
+        
+        for ev in self.events:
+            elapsed = ev.get("time", 0.0)
+            ev["video_timestamp"] = round(elapsed / scale_factor, 2)
 
         return sorted(self.events, key=lambda e: e["time"])
 
@@ -799,7 +815,9 @@ class ReplayAnalyzer:
             "league": l_info.get("league"),
             "mm_rating": l_info.get("mm_rating"),
             "public_rating": l_info.get("public_rating"),
-            "player_stats": stats_summary
+            "player_stats": stats_summary,
+            "battle_start_clock": self.battle_start_clock,
+            "game_duration": getattr(self, "game_duration", 1200.0)
         }
 
 if __name__ == "__main__":
