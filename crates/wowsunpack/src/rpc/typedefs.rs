@@ -331,11 +331,17 @@ impl<'argtype> serde::Serialize for ArgValue<'argtype> {
                 // Also, make pickled::Value implement Serialize
                 #[cfg(feature = "json")]
                 {
-                    let decoded: Result<serde_json::Value, _> =
-                        pickled::from_slice(blob, pickled::de::DeOptions::new());
+                    // A valid binary pickle protocol 2-5 starts with a PROTO opcode (0x80) and ends with a STOP opcode (0x2e).
+                    // This prevents crashes from trying to deserialize arbitrary binary blobs as Python pickles.
+                    let is_pickle = blob.len() >= 2 && blob[0] == 0x80 && (blob[1] >= 2 && blob[1] <= 5) && blob[blob.len() - 1] == 0x2e;
+                    let decoded: Option<serde_json::Value> = if is_pickle {
+                        pickled::from_slice(blob, pickled::de::DeOptions::new()).ok()
+                    } else {
+                        None
+                    };
                     match decoded {
-                        Ok(v) => serializer.serialize_some(&v),
-                        Err(_) => serializer.serialize_bytes(blob),
+                        Some(v) => serializer.serialize_some(&v),
+                        None => serializer.serialize_bytes(blob),
                     }
                 }
                 #[cfg(not(feature = "json"))]
