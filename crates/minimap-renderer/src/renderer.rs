@@ -1165,7 +1165,7 @@ impl<'a> MinimapRenderer<'a> {
                     pos: px,
                     radius: px_radius.max(5),
                     color,
-                    alpha: 0.15,
+                    alpha: 0.28,
                     label,
                     progress,
                     invader_color,
@@ -2462,8 +2462,8 @@ impl<'a> MinimapRenderer<'a> {
             // Sort merged entries by game clock
             activity_entries.sort_by(|a, b| a.clock.cmp(&b.clock));
 
-            let feed_y = 708;
-            let feed_height = 492;
+            let feed_y = 684;
+            let feed_height = 516;
             commands.push(DrawCommand::StatsActivityFeed {
                 x: panel_x,
                 y: feed_y,

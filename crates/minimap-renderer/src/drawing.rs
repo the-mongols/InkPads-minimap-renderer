@@ -304,7 +304,7 @@ fn draw_capture_point(
     if progress > 0.001
         && let Some(inv_color) = invader_color
     {
-        let fill_alpha = alpha + 0.10;
+        let fill_alpha = 0.65;
         // Pie-slice from top (-PI/2), sweeping clockwise by progress * 2*PI
         let start_angle = -std::f32::consts::FRAC_PI_2;
         let sweep = progress * std::f32::consts::TAU;
@@ -341,7 +341,7 @@ fn draw_capture_point(
     } else {
         color
     };
-    draw_circle_outline(pm, x, y, radius, outline_color, 0.6, 2.0);
+    draw_circle_outline(pm, x, y, radius, outline_color, 0.85, 2.0);
 
     // Centered label: icon for base-type, text for domination
     if let Some(icon) = flag_icon {
@@ -692,7 +692,7 @@ fn draw_timer(pm: &mut Pixmap, time_remaining: Option<i64>, elapsed: ElapsedCloc
         let remaining_text = format!("{:02}:{:02}", r_mins, r_secs);
         let (rw, _) = text_size(main_scale, font, &remaining_text);
         let rx = center_x - rw as i32 / 2;
-        draw_text_shadow(pm, [255, 255, 255], rx, 12, main_scale, font, &remaining_text);
+        draw_text_shadow(pm, [255, 255, 255], rx, 4, main_scale, font, &remaining_text);
 
         // Show elapsed as smaller text below
         let e_mins = (elapsed.seconds() as i32) / 60;
@@ -700,7 +700,7 @@ fn draw_timer(pm: &mut Pixmap, time_remaining: Option<i64>, elapsed: ElapsedCloc
         let elapsed_text = format!("+{:02}:{:02}", e_mins, e_secs);
         let (ew, _) = text_size(small_scale, font, &elapsed_text);
         let ex = center_x - ew as i32 / 2;
-        draw_text_shadow(pm, [180, 180, 180], ex, 54, small_scale, font, &elapsed_text);
+        draw_text_shadow(pm, [180, 180, 180], ex, 58, small_scale, font, &elapsed_text);
     } else {
         // Fallback: just show elapsed time centered (no timeLeft data yet)
         let mins = (elapsed.seconds() as i32) / 60;
@@ -2698,9 +2698,9 @@ impl RenderTarget for ImageTarget {
                 let inner_w = *width - padding * 2;
                 let scale = self.fonts.scale(13.0);
                 
-                // Ribbons scaled up to 2.5x: icon height 48, row height 58, cell width 120
-                let icon_h = 48;
-                let row_h = 58;
+                // Ribbons scaled up to 3x: icon height 72, row height 82, cell width 120
+                let icon_h = 72;
+                let row_h = 82;
                 let cell_w = 120;
                 let gap = 2;
 
@@ -2801,9 +2801,11 @@ impl RenderTarget for ImageTarget {
                 let sf = if self.large_elements { 1.5f32 } else { 1.0f32 };
                 let padding = (8.0 * sf).round() as i32;
                 let inner_w = *width - padding * 2;
-                let name_scale = self.fonts.scale(14.0 * sf);
+
                 let msg_scale = self.fonts.scale(13.0 * sf);
-                let kill_row_h = (20.0 * sf).round() as i32;
+                let kill_name_scale = self.fonts.scale(16.0 * sf);
+                let kill_row_h = (28.0 * sf).round() as i32;
+                let kill_icon_size = (20.0 * sf).round() as i32;
                 let chat_header_h = (18.0 * sf).round() as i32;
                 let chat_line_h = (17.0 * sf).round() as i32;
                 let icon_size = (16.0 * sf).round() as i32;
@@ -2839,7 +2841,7 @@ impl RenderTarget for ImageTarget {
                 let right_w = inner_w;
 
                 // Draw horizontal divider separating Kill Feed and Chat Feed
-                let divider_y = *y + 252;
+                let divider_y = *y + 276;
                 draw_line(
                     &mut self.canvas,
                     *x as f32 + 4.0,
@@ -2857,12 +2859,12 @@ impl RenderTarget for ImageTarget {
                 let chat_entries: Vec<&ActivityFeedEntry> =
                     entries.iter().filter(|e| matches!(e.kind, ActivityFeedKind::Chat(_))).collect();
 
-                // 1. Render Kill Feed (Top region, 252px height)
+                // 1. Render Kill Feed (Top region, 276px height)
                 let mut kill_consumed = 0i32;
                 let mut kill_start_idx = kill_entries.len();
                 for i in (0..kill_entries.len()).rev() {
                     let needed = kill_consumed + kill_row_h;
-                    if needed > 252 - 8 {
+                    if needed > 276 - 8 {
                         break;
                     }
                     kill_consumed = needed;
@@ -2871,18 +2873,18 @@ impl RenderTarget for ImageTarget {
 
                 let mut ky = *y + 4;
                 for entry in kill_entries.iter().skip(kill_start_idx) {
-                    if ky + kill_row_h > *y + 252 {
+                    if ky + kill_row_h > *y + 276 {
                         break;
                     }
                     if let ActivityFeedKind::Kill(kill) = &entry.kind {
-                        let (_, text_h) = text_size(name_scale, font, "Ag");
-                        let icon_y = ky + (text_h as i32 - icon_size) / 2;
+                        let (_, text_h) = text_size(kill_name_scale, font, "Ag");
+                        let icon_y = ky + (text_h as i32 - kill_icon_size) / 2;
                         let mut cx = left_x;
 
                         // Kill prefix
                         let prefix = " | ";
-                        draw_text_shadow(&mut self.canvas, [140, 140, 140], cx, ky, name_scale, font, prefix);
-                        let (pw, _) = text_size(name_scale, font, prefix);
+                        draw_text_shadow(&mut self.canvas, [140, 140, 140], cx, ky, kill_name_scale, font, prefix);
+                        let (pw, _) = text_size(kill_name_scale, font, prefix);
                         cx += pw as i32;
 
                         // Measure icons
@@ -2895,13 +2897,13 @@ impl RenderTarget for ImageTarget {
 
                         let mut icons_w = 0i32;
                         if has_killer_icon {
-                            icons_w += icon_size + gap;
+                            icons_w += kill_icon_size + gap;
                         }
                         if has_cause_icon {
-                            icons_w += icon_size + gap;
+                            icons_w += kill_icon_size + gap;
                         }
                         if has_victim_icon {
-                            icons_w += icon_size;
+                            icons_w += kill_icon_size;
                         }
 
                         // Remaining space divided equally for names
@@ -2909,7 +2911,7 @@ impl RenderTarget for ImageTarget {
                         let name_max_w = (remaining_w / 2).max(40);
 
                         // Killer name
-                        let (kf, ks) = self.fonts.font_and_scale(&kill.killer_name, 14.0);
+                        let (kf, ks) = self.fonts.font_and_scale(&kill.killer_name, 16.0);
                         let killer_display = truncate_to_fit(&kill.killer_name, name_max_w as u32, ks, kf);
                         draw_text_shadow(&mut self.canvas, kill.killer_color, cx, ky, ks, kf, &killer_display);
                         let (kw, _) = text_size(ks, kf, &killer_display);
@@ -2923,23 +2925,23 @@ impl RenderTarget for ImageTarget {
                                 icon,
                                 cx,
                                 icon_y,
-                                icon_size,
+                                kill_icon_size,
                                 kill.killer_color,
                                 !kill.killer_is_friendly,
                             );
-                            cx += icon_size + gap;
+                            cx += kill_icon_size + gap;
                         }
 
                         // Death cause icon
                         if has_cause_icon {
                             let cause_icon = self.death_cause_icons.get(cause_key).unwrap();
-                            let cause_center_y = icon_y + icon_size / 2;
-                            draw_icon(&mut self.canvas, cause_icon, (cx + icon_size / 2) as f32, cause_center_y as f32);
-                            cx += icon_size + gap;
+                            let cause_center_y = icon_y + kill_icon_size / 2;
+                            draw_icon(&mut self.canvas, cause_icon, (cx + kill_icon_size / 2) as f32, cause_center_y as f32);
+                            cx += kill_icon_size + gap;
                         }
 
                         // Victim name
-                        let (vf, vs) = self.fonts.font_and_scale(&kill.victim_name, 14.0);
+                        let (vf, vs) = self.fonts.font_and_scale(&kill.victim_name, 16.0);
                         let victim_display = truncate_to_fit(&kill.victim_name, name_max_w as u32, vs, vf);
                         draw_text_shadow(&mut self.canvas, kill.victim_color, cx, ky, vs, vf, &victim_display);
                         let (vw, _) = text_size(vs, vf, &victim_display);
@@ -2953,7 +2955,7 @@ impl RenderTarget for ImageTarget {
                                 icon,
                                 cx,
                                 icon_y,
-                                icon_size,
+                                kill_icon_size,
                                 kill.victim_color,
                                 !kill.victim_is_friendly,
                             );
@@ -2988,7 +2990,7 @@ impl RenderTarget for ImageTarget {
                     chat_start_idx = i;
                 }
 
-                let mut cy = *y + 252 + 4;
+                let mut cy = *y + 276 + 4;
                 for entry in chat_entries.iter().skip(chat_start_idx) {
                     if cy >= *y + *height {
                         break;
@@ -3002,7 +3004,8 @@ impl RenderTarget for ImageTarget {
                         let ship_icon_w = if chat.ship_species.is_some() { icon_size + gap } else { 0 };
                         let mut ship_name_w = 0i32;
                         if let Some(ref ship_name) = chat.ship_name {
-                            let (sw, _) = text_size(name_scale, font, ship_name);
+                            let (ship_font, ship_scale) = self.fonts.font_and_scale(ship_name, 14.0);
+                            let (sw, _) = text_size(ship_scale, ship_font, ship_name);
                             ship_name_w = sw as i32;
                         }
                         let clan_w = if !chat.clan_tag.is_empty() {
@@ -3064,13 +3067,14 @@ impl RenderTarget for ImageTarget {
                         // Ship Name
                         if ship_name_w > 0 {
                             if let Some(ref ship_name) = chat.ship_name {
+                                let (ship_font, ship_scale) = self.fonts.font_and_scale(ship_name, 14.0);
                                 draw_text_shadow(
                                     &mut self.canvas,
                                     chat.team_color,
                                     cx,
                                     cy,
-                                    name_scale,
-                                    font,
+                                    ship_scale,
+                                    ship_font,
                                     ship_name,
                                 );
                             }

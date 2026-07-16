@@ -287,7 +287,7 @@ async def send_webhook_payload(replay_path, red_replay_path, session_id):
     show_config="Show detection and weapon range circles",
     cpu_mode="Use CPU encoding (slower, but safer if GPU is busy)",
     discord_layout="Optimize layout elements and statistics for Discord embeds (default: True)",
-    layout_preset="Gutter size preset (Original: 256px, A: 928px, B: 720px, C: 448px)"
+    layout_preset="Gutter size preset (default: B: Compromise 16:10)"
 )
 @app_commands.choices(layout_preset=[
     app_commands.Choice(name="Original (256px)", value="Original"),
@@ -404,7 +404,7 @@ async def render(
         if cpu_mode: cmd.append("--cpu")
         if discord_layout: cmd.append("--discord-layout")
 
-        preset_val = layout_preset.value if layout_preset else "Original"
+        preset_val = layout_preset.value if layout_preset else "B"
         if preset_val == "A": cmd.extend(["--stats-panel-width", "928"])
         elif preset_val == "B": cmd.extend(["--stats-panel-width", "720"])
         elif preset_val == "C": cmd.extend(["--stats-panel-width", "448"])
