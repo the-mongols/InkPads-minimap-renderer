@@ -2634,7 +2634,7 @@ impl RenderTarget for ImageTarget {
                 let header_row_h = (26.0 * scale_factor).round() as i32;
                 let right_x = *x + *width - padding;
 
-                let cons_size = (60.0 * scale_factor).round() as i32;
+                let cons_size = (30.0 * scale_factor).round() as i32;
                 let cons_gap = (4.0 * scale_factor).round() as i32;
                 let cols = 2;
                 let rows = if consumables.is_empty() {
@@ -2762,11 +2762,11 @@ impl RenderTarget for ImageTarget {
                             
                             if let crate::draw_command::ChargeCount::Finite(remaining) = cons.charges_remaining {
                                 let count_str = format!("{}", remaining);
-                                let count_scale = self.fonts.scale(12.0 * scale_factor);
+                                let count_scale = self.fonts.scale(10.0 * scale_factor);
                                 let (cw, ch) = text_size(count_scale, &self.fonts.primary, &count_str);
                                 
-                                let badge_w = cw as i32 + 6;
-                                let badge_h = ch as i32 + 4;
+                                let badge_w = cw as i32 + 4;
+                                let badge_h = ch as i32 + 2;
                                 let bx = cx + cons_size - badge_w;
                                 let by = cur_cy + cons_size - badge_h;
                                 draw_filled_rect(
@@ -2782,8 +2782,8 @@ impl RenderTarget for ImageTarget {
                                 draw_text_shadow(
                                     &mut self.canvas,
                                     [255, 255, 255],
-                                    bx + 3,
-                                    by + 2,
+                                    bx + 2,
+                                    by + 1,
                                     count_scale,
                                     &self.fonts.primary,
                                     &count_str,
@@ -2799,10 +2799,10 @@ impl RenderTarget for ImageTarget {
                 let inner_w = *width - padding * 2;
                 let scale = self.fonts.scale(13.0);
                 
-                // Ribbons scaled up to 3x: icon height 72, row height 82, cell width 120
-                let icon_h = 72;
-                let row_h = 82;
-                let cell_w = 120;
+                // Ribbons size and row parameters reverted to original
+                let icon_h = 24;
+                let row_h = 30;
+                let cell_w = 82;
                 let gap = 2;
 
                 let mut cur_x = inner_x;
@@ -2904,14 +2904,14 @@ impl RenderTarget for ImageTarget {
                 let inner_w = *width - padding * 2;
 
                 let msg_scale = self.fonts.scale(13.0 * sf);
-                let kill_font_size = 40.0 * sf;
+                let kill_font_size = 16.0 * sf;
                 let kill_name_scale = self.fonts.scale(kill_font_size);
-                let kill_row_h = (64.0 * sf).round() as i32;
-                let kill_icon_size = (40.0 * sf).round() as i32;
+                let kill_row_h = (28.0 * sf).round() as i32;
+                let kill_icon_size = (20.0 * sf).round() as i32;
                 let chat_header_h = (18.0 * sf).round() as i32;
                 let chat_line_h = (17.0 * sf).round() as i32;
                 let icon_size = (16.0 * sf).round() as i32;
-                let gap = (4.0 * sf).round() as i32;
+                let gap = (2.0 * sf).round() as i32;
                 let font = &self.fonts.primary;
 
                 // Fixed-size box background
@@ -2940,7 +2940,7 @@ impl RenderTarget for ImageTarget {
                 let right_w = inner_w;
 
                 // Draw horizontal divider separating Kill Feed and Chat Feed
-                let divider_y = *y + 276;
+                let divider_y = *y + 252;
                 draw_line(
                     &mut self.canvas,
                     *x as f32 + 4.0,
@@ -2958,12 +2958,12 @@ impl RenderTarget for ImageTarget {
                 let chat_entries: Vec<&ActivityFeedEntry> =
                     entries.iter().filter(|e| matches!(e.kind, ActivityFeedKind::Chat(_))).collect();
 
-                // 1. Render Kill Feed (Top region, 276px height)
+                // 1. Render Kill Feed (Top region, 252px height)
                 let mut kill_consumed = 0i32;
                 let mut kill_start_idx = kill_entries.len();
                 for i in (0..kill_entries.len()).rev() {
                     let needed = kill_consumed + kill_row_h;
-                    if needed > 276 - 8 {
+                    if needed > 252 - 8 {
                         break;
                     }
                     kill_consumed = needed;
@@ -2972,7 +2972,7 @@ impl RenderTarget for ImageTarget {
 
                 let mut ky = *y + 4;
                 for entry in kill_entries.iter().skip(kill_start_idx) {
-                    if ky + kill_row_h > *y + 276 {
+                    if ky + kill_row_h > *y + 252 {
                         break;
                     }
                     if let ActivityFeedKind::Kill(kill) = &entry.kind {
@@ -3108,7 +3108,7 @@ impl RenderTarget for ImageTarget {
                     chat_start_idx = i;
                 }
 
-                let mut cy = *y + 276 + 4;
+                let mut cy = *y + 252 + 4;
                 for entry in chat_entries.iter().skip(chat_start_idx) {
                     if cy >= *y + *height {
                         break;
