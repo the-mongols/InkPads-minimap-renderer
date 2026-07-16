@@ -2634,14 +2634,25 @@ impl RenderTarget for ImageTarget {
                 let header_row_h = (26.0 * scale_factor).round() as i32;
                 let right_x = *x + *width - padding;
 
-                let cons_size = (20.0 * scale_factor).round() as i32;
+                let cons_size = (60.0 * scale_factor).round() as i32;
                 let cons_gap = (4.0 * scale_factor).round() as i32;
-                let max_consumables_w = if !consumables.is_empty() {
-                    (consumables.len() as f32 * (cons_size as f32 + cons_gap as f32)).round() as i32
-                } else {
+                let cols = 2;
+                let rows = if consumables.is_empty() {
                     0
+                } else {
+                    (consumables.len() as f32 / cols as f32).ceil() as i32
                 };
-                let val_right_x = right_x - max_consumables_w;
+                let grid_w = if consumables.is_empty() {
+                    0
+                } else {
+                    cols * cons_size + (cols - 1) * cons_gap
+                };
+                let grid_h = if consumables.is_empty() {
+                    0
+                } else {
+                    rows * cons_size + (rows - 1) * cons_gap
+                };
+                let val_right_x = right_x - grid_w - (8.0 * scale_factor).round() as i32;
 
                 let mut cur_y = *y + (4.0 * scale_factor).round() as i32;
 
@@ -2714,12 +2725,18 @@ impl RenderTarget for ImageTarget {
                     &pot_str,
                 );
 
-                // Draw consumables in a horizontal row on the right
+                // Draw consumables in a grid on the right
                 if !consumables.is_empty() {
-                    let mut cx = right_x - (consumables.len() as i32 * (cons_size + cons_gap) - cons_gap);
-                    let cy = *y + (3 * header_row_h - cons_size) / 2;
+                    let grid_x = right_x - grid_w;
+                    let total_available_h = 185.0 * scale_factor;
+                    let cy = *y + ((total_available_h as i32 - grid_h) / 2);
                     
-                    for cons in consumables {
+                    for (i, cons) in consumables.iter().enumerate() {
+                        let row = i as i32 / cols;
+                        let col = i as i32 % cols;
+                        let cx = grid_x + col * (cons_size + cons_gap);
+                        let cur_cy = cy + row * (cons_size + cons_gap);
+                        
                         if let Some(icon) = self.consumable_icons.get(&cons.icon_key) {
                             let mut img = image::imageops::resize(
                                 icon,
@@ -2741,17 +2758,17 @@ impl RenderTarget for ImageTarget {
                                 }
                             }
                             
-                            draw_icon_at(&mut self.canvas, &img, cx, cy);
+                            draw_icon_at(&mut self.canvas, &img, cx, cur_cy);
                             
                             if let crate::draw_command::ChargeCount::Finite(remaining) = cons.charges_remaining {
                                 let count_str = format!("{}", remaining);
-                                let count_scale = self.fonts.scale(9.0 * scale_factor);
+                                let count_scale = self.fonts.scale(12.0 * scale_factor);
                                 let (cw, ch) = text_size(count_scale, &self.fonts.primary, &count_str);
                                 
-                                let badge_w = cw as i32 + 4;
-                                let badge_h = ch as i32 + 2;
+                                let badge_w = cw as i32 + 6;
+                                let badge_h = ch as i32 + 4;
                                 let bx = cx + cons_size - badge_w;
-                                let by = cy + cons_size - badge_h;
+                                let by = cur_cy + cons_size - badge_h;
                                 draw_filled_rect(
                                     &mut self.canvas,
                                     bx as f32,
@@ -2765,15 +2782,14 @@ impl RenderTarget for ImageTarget {
                                 draw_text_shadow(
                                     &mut self.canvas,
                                     [255, 255, 255],
-                                    bx + 2,
-                                    by + 1,
+                                    bx + 3,
+                                    by + 2,
                                     count_scale,
                                     &self.fonts.primary,
                                     &count_str,
                                 );
                             }
                         }
-                        cx += cons_size + cons_gap;
                     }
                 }
             }
@@ -2888,13 +2904,14 @@ impl RenderTarget for ImageTarget {
                 let inner_w = *width - padding * 2;
 
                 let msg_scale = self.fonts.scale(13.0 * sf);
-                let kill_name_scale = self.fonts.scale(16.0 * sf);
-                let kill_row_h = (28.0 * sf).round() as i32;
-                let kill_icon_size = (20.0 * sf).round() as i32;
+                let kill_font_size = 40.0 * sf;
+                let kill_name_scale = self.fonts.scale(kill_font_size);
+                let kill_row_h = (64.0 * sf).round() as i32;
+                let kill_icon_size = (40.0 * sf).round() as i32;
                 let chat_header_h = (18.0 * sf).round() as i32;
                 let chat_line_h = (17.0 * sf).round() as i32;
                 let icon_size = (16.0 * sf).round() as i32;
-                let gap = (2.0 * sf).round() as i32;
+                let gap = (4.0 * sf).round() as i32;
                 let font = &self.fonts.primary;
 
                 // Fixed-size box background
@@ -2918,9 +2935,6 @@ impl RenderTarget for ImageTarget {
                     0.6,
                     1.0,
                 );
-
-                let left_x = *x + padding;
-                let left_w = inner_w;
 
                 let right_x = *x + padding;
                 let right_w = inner_w;
@@ -2964,13 +2978,6 @@ impl RenderTarget for ImageTarget {
                     if let ActivityFeedKind::Kill(kill) = &entry.kind {
                         let (_, text_h) = text_size(kill_name_scale, font, "Ag");
                         let icon_y = ky + (text_h as i32 - kill_icon_size) / 2;
-                        let mut cx = left_x;
-
-                        // Kill prefix
-                        let prefix = " | ";
-                        draw_text_shadow(&mut self.canvas, [140, 140, 140], cx, ky, kill_name_scale, font, prefix);
-                        let (pw, _) = text_size(kill_name_scale, font, prefix);
-                        cx += pw as i32;
 
                         // Measure icons
                         let has_killer_icon = kill.killer_species.is_some()
@@ -2992,14 +2999,43 @@ impl RenderTarget for ImageTarget {
                         }
 
                         // Remaining space divided equally for names
-                        let remaining_w = (left_x + left_w - cx).saturating_sub(icons_w);
+                        let remaining_w = inner_w.saturating_sub(icons_w);
                         let name_max_w = (remaining_w / 2).max(40);
 
                         // Killer name
-                        let (kf, ks) = self.fonts.font_and_scale(&kill.killer_name, 16.0);
+                        let (kf, ks) = self.fonts.font_and_scale(&kill.killer_name, kill_font_size);
                         let killer_display = truncate_to_fit(&kill.killer_name, name_max_w as u32, ks, kf);
-                        draw_text_shadow(&mut self.canvas, kill.killer_color, cx, ky, ks, kf, &killer_display);
                         let (kw, _) = text_size(ks, kf, &killer_display);
+
+                        // Victim name
+                        let (vf, vs) = self.fonts.font_and_scale(&kill.victim_name, kill_font_size);
+                        let victim_display = truncate_to_fit(&kill.victim_name, name_max_w as u32, vs, vf);
+                        let (vw, _) = text_size(vs, vf, &victim_display);
+
+                        // Calculate total width of this line
+                        let prefix = " | ";
+                        let (pw, _) = text_size(kill_name_scale, font, prefix);
+
+                        let mut line_w = pw as i32 + (kw as i32 + gap) + (vw as i32 + gap);
+                        if has_killer_icon {
+                            line_w += kill_icon_size + gap;
+                        }
+                        if has_cause_icon {
+                            line_w += kill_icon_size + gap;
+                        }
+                        if has_victim_icon {
+                            line_w += kill_icon_size;
+                        }
+
+                        // Center the line in the feed
+                        let mut cx = *x + (*width - line_w) / 2;
+
+                        // Kill prefix
+                        draw_text_shadow(&mut self.canvas, [140, 140, 140], cx, ky, kill_name_scale, font, prefix);
+                        cx += pw as i32;
+
+                        // Killer name
+                        draw_text_shadow(&mut self.canvas, kill.killer_color, cx, ky, ks, kf, &killer_display);
                         cx += kw as i32 + gap;
 
                         // Killer ship icon
@@ -3026,10 +3062,7 @@ impl RenderTarget for ImageTarget {
                         }
 
                         // Victim name
-                        let (vf, vs) = self.fonts.font_and_scale(&kill.victim_name, 16.0);
-                        let victim_display = truncate_to_fit(&kill.victim_name, name_max_w as u32, vs, vf);
                         draw_text_shadow(&mut self.canvas, kill.victim_color, cx, ky, vs, vf, &victim_display);
-                        let (vw, _) = text_size(vs, vf, &victim_display);
                         cx += vw as i32 + gap;
 
                         // Victim ship icon
