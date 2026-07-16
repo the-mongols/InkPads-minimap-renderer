@@ -2693,26 +2693,23 @@ impl RenderTarget for ImageTarget {
                 );
             }
             DrawCommand::StatsRibbons { x, y, width, ribbons } => {
-                use crate::draw_command::STATS_RIBBON_CELL_W;
-                use crate::draw_command::STATS_RIBBON_ICON;
-                use crate::draw_command::STATS_RIBBON_ROW_H;
                 let padding = 8;
                 let inner_x = *x + padding;
                 let inner_w = *width - padding * 2;
-                let scale = self.fonts.scale(18.0);
-                let icon_h = STATS_RIBBON_ICON;
-                let cell_w = STATS_RIBBON_CELL_W;
+                let scale = self.fonts.scale(13.0);
+                
+                // Ribbons scaled up to 2.5x: icon height 48, row height 58, cell width 120
+                let icon_h = 48;
+                let row_h = 58;
+                let cell_w = 120;
                 let gap = 2;
 
                 let mut cur_x = inner_x;
-                let mut cur_y = *y;
+                let mut cur_y = *y + 4;
                 for rc in ribbons.iter() {
-                    // Fixed-width cell, wrapping by whole cells, matching the
-                    // emitter's `inner_w / cell_w` row math so the activity feed
-                    // below never overlaps a wrapped row.
                     if cur_x > inner_x && cur_x + cell_w > inner_x + inner_w {
                         cur_x = inner_x;
-                        cur_y += STATS_RIBBON_ROW_H;
+                        cur_y += row_h;
                     }
                     let sub_key = format!("sub{}", rc.icon_key);
                     let icon = if rc.is_subribbon {
@@ -2720,17 +2717,19 @@ impl RenderTarget for ImageTarget {
                     } else {
                         self.ribbon_icons.get(&rc.icon_key).or_else(|| self.subribbon_icons.get(&sub_key))
                     };
-                    let count_str = format!("x{}", rc.count);
-                    let (_, th) = text_size(scale, &self.fonts.primary, &count_str);
-
-                    // Icon at fixed height, aspect-preserved width (ribbon icons
-                    // are wide); fall back to a truncated name when missing.
-                    let lead_w = if let Some(img) = icon {
-                        let w = if img.height() > 0 {
+                    
+                    if let Some(img) = icon {
+                        let mut w = if img.height() > 0 {
                             ((icon_h as f32 * img.width() as f32 / img.height() as f32).round() as i32).max(1)
                         } else {
                             icon_h
                         };
+                        
+                        let max_w = cell_w - 6;
+                        if w > max_w {
+                            w = max_w;
+                        }
+                        
                         let resized = image::imageops::resize(
                             img,
                             w as u32,
@@ -2738,7 +2737,39 @@ impl RenderTarget for ImageTarget {
                             image::imageops::FilterType::Lanczos3,
                         );
                         draw_icon_at(&mut self.canvas, &resized, cur_x, cur_y);
-                        w
+                        
+                        let count_str = format!("x{}", rc.count);
+                        let (tw, th) = text_size(scale, &self.fonts.primary, &count_str);
+                        
+                        let pill_pad_x = 4.0f32;
+                        let pill_pad_y = 1.0f32;
+                        let pill_radius = 2.0f32;
+                        let pill_w = tw as f32 + pill_pad_x * 2.0;
+                        let pill_h = th as f32 + pill_pad_y * 2.0;
+                        
+                        let pill_x = (cur_x + w) as f32 - pill_w;
+                        let pill_y = (cur_y + icon_h) as f32 - pill_h;
+                        
+                        draw_rounded_rect(
+                            &mut self.canvas,
+                            pill_x,
+                            pill_y,
+                            pill_w,
+                            pill_h,
+                            pill_radius,
+                            [0, 0, 0],
+                            0.65,
+                        );
+                        
+                        draw_text_shadow(
+                            &mut self.canvas,
+                            [255, 255, 255],
+                            (pill_x + pill_pad_x) as i32,
+                            (pill_y + pill_pad_y) as i32,
+                            scale,
+                            &self.fonts.primary,
+                            &count_str,
+                        );
                     } else {
                         let label: String = rc.display_name.chars().take(8).collect();
                         let (lw, _) = text_size(scale, &self.fonts.primary, &label);
@@ -2751,18 +2782,18 @@ impl RenderTarget for ImageTarget {
                             &self.fonts.primary,
                             &label,
                         );
-                        lw as i32
-                    };
-                    let count_y = cur_y + (icon_h - th as i32) / 2;
-                    draw_text_shadow(
-                        &mut self.canvas,
-                        [255, 255, 255],
-                        cur_x + lead_w + gap,
-                        count_y,
-                        scale,
-                        &self.fonts.primary,
-                        &count_str,
-                    );
+                        
+                        let count_str = format!("x{}", rc.count);
+                        draw_text_shadow(
+                            &mut self.canvas,
+                            [255, 255, 255],
+                            cur_x + lw as i32 + gap,
+                            cur_y,
+                            scale,
+                            &self.fonts.primary,
+                            &count_str,
+                        );
+                    }
                     cur_x += cell_w;
                 }
             }
@@ -2801,26 +2832,24 @@ impl RenderTarget for ImageTarget {
                     1.0,
                 );
 
-                // Asymmetric division: 40% Kill Feed (left), 60% Chat Feed (right)
-                let divider_x = *x + padding + (inner_w * 4) / 10;
+                let left_x = *x + padding;
+                let left_w = inner_w;
 
-                // Draw vertical divider down the middle of the feed panel
+                let right_x = *x + padding;
+                let right_w = inner_w;
+
+                // Draw horizontal divider separating Kill Feed and Chat Feed
+                let divider_y = *y + 252;
                 draw_line(
                     &mut self.canvas,
-                    divider_x as f32,
-                    *y as f32 + 4.0,
-                    divider_x as f32,
-                    (*y + *height - 4) as f32,
+                    *x as f32 + 4.0,
+                    divider_y as f32,
+                    (*x + *width - 4) as f32,
+                    divider_y as f32,
                     [55, 60, 72],
                     0.4,
                     1.0,
                 );
-
-                let left_x = *x + padding;
-                let left_w = divider_x - left_x - 6;
-
-                let right_x = divider_x + 6;
-                let right_w = *x + *width - padding - right_x;
 
                 // Filter entries
                 let kill_entries: Vec<&ActivityFeedEntry> =
@@ -2828,12 +2857,12 @@ impl RenderTarget for ImageTarget {
                 let chat_entries: Vec<&ActivityFeedEntry> =
                     entries.iter().filter(|e| matches!(e.kind, ActivityFeedKind::Chat(_))).collect();
 
-                // 1. Render Kill Feed (Left column)
+                // 1. Render Kill Feed (Top region, 252px height)
                 let mut kill_consumed = 0i32;
                 let mut kill_start_idx = kill_entries.len();
                 for i in (0..kill_entries.len()).rev() {
                     let needed = kill_consumed + kill_row_h;
-                    if needed > *height - 8 {
+                    if needed > 252 - 8 {
                         break;
                     }
                     kill_consumed = needed;
@@ -2842,7 +2871,7 @@ impl RenderTarget for ImageTarget {
 
                 let mut ky = *y + 4;
                 for entry in kill_entries.iter().skip(kill_start_idx) {
-                    if ky >= *y + *height {
+                    if ky + kill_row_h > *y + 252 {
                         break;
                     }
                     if let ActivityFeedKind::Kill(kill) = &entry.kind {
@@ -2877,7 +2906,7 @@ impl RenderTarget for ImageTarget {
 
                         // Remaining space divided equally for names
                         let remaining_w = (left_x + left_w - cx).saturating_sub(icons_w);
-                        let name_max_w = (remaining_w / 2).max(20);
+                        let name_max_w = (remaining_w / 2).max(40);
 
                         // Killer name
                         let (kf, ks) = self.fonts.font_and_scale(&kill.killer_name, 14.0);
@@ -2934,7 +2963,7 @@ impl RenderTarget for ImageTarget {
                     }
                 }
 
-                // 2. Render Chat Feed (Right column)
+                // 2. Render Chat Feed (Bottom region, 240px height)
                 let mut chat_heights: Vec<i32> = Vec::new();
                 for entry in chat_entries.iter() {
                     if let ActivityFeedKind::Chat(chat) = &entry.kind {
@@ -2952,14 +2981,14 @@ impl RenderTarget for ImageTarget {
                 let mut chat_start_idx = chat_entries.len();
                 for i in (0..chat_entries.len()).rev() {
                     let needed = chat_consumed + chat_heights[i] + 2;
-                    if needed > *height - 8 {
+                    if needed > 240 - 8 {
                         break;
                     }
                     chat_consumed = needed;
                     chat_start_idx = i;
                 }
 
-                let mut cy = *y + 4;
+                let mut cy = *y + 252 + 4;
                 for entry in chat_entries.iter().skip(chat_start_idx) {
                     if cy >= *y + *height {
                         break;

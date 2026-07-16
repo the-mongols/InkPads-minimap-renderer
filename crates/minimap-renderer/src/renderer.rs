@@ -53,13 +53,12 @@ use crate::draw_command::DrawCommand;
 use crate::draw_command::FontHint;
 use crate::draw_command::KillFeedEntry;
 use crate::draw_command::RibbonCount;
-use crate::draw_command::STATS_RIBBON_CELL_W;
-use crate::draw_command::STATS_RIBBON_ROW_H;
+
 use crate::draw_command::ShipConfigCircleKind;
 use crate::draw_command::ShipVisibility;
 use crate::map_data;
 
-use crate::HUD_HEIGHT;
+
 use crate::MINIMAP_SIZE;
 use crate::STATS_PANEL_WIDTH;
 use crate::STATS_PANEL_WIDTH_16_9;
@@ -159,6 +158,8 @@ const HP_BAR_BG_ALPHA: f32 = 0.7;
 const UNDETECTED_OPACITY: f32 = 0.4;
 const TEAM0_COLOR: [u8; 3] = [76, 232, 170]; // Green
 const TEAM1_COLOR: [u8; 3] = [254, 77, 42]; // Red
+const CAP_GREEN_COLOR: [u8; 3] = [40, 235, 105]; // Warmer, brighter green for capture points
+const CAP_RED_COLOR: [u8; 3] = [180, 20, 20];   // Warmer, darker red for capture points
 
 /// Pure availability decision from observed facts. `Active` (while running, if
 /// alive) takes precedence; otherwise `Ready` only when a charge remains AND
@@ -2215,8 +2216,8 @@ impl<'a> MinimapRenderer<'a> {
                 })
                 .unwrap_or_default();
 
-            let silhouette_y = if self.options.aspect_ratio_16_9 { 15 } else { 2 };
-            let silhouette_h = if self.options.aspect_ratio_16_9 { 210 } else { 170 };
+            let silhouette_y = 15;
+            let silhouette_h = 270;
             commands.push(DrawCommand::StatsSilhouette {
                 x: panel_x,
                 y: silhouette_y,
@@ -2269,12 +2270,9 @@ impl<'a> MinimapRenderer<'a> {
             let damage_spotting: f64 = spotting_breakdowns.iter().map(|e| e.damage).sum();
             let damage_potential: f64 = potential_breakdowns.iter().map(|e| e.damage).sum();
 
-            let scale_factor = if self.options.large_elements { 1.8f32 } else { 1.0f32 };
-            let header_row_h = (26.0 * scale_factor).round() as i32;
-            let padding_y = (8.0 * scale_factor).round() as i32;
-            let damage_section_height = 3 * header_row_h + padding_y;
 
-            let damage_y = if self.options.aspect_ratio_16_9 { 250 } else { silhouette_y + silhouette_h + 4 };
+
+            let damage_y = 295;
 
             commands.push(DrawCommand::StatsDamage {
                 x: panel_x,
@@ -2367,8 +2365,8 @@ impl<'a> MinimapRenderer<'a> {
                 };
                 ribbons.sort_by_key(|rc| rank(rc));
             }
-            let ribbon_y = damage_y + damage_section_height;
-            let ribbon_count = ribbons.len();
+            let ribbon_y = 456;
+
             commands.push(DrawCommand::StatsRibbons { x: panel_x, y: ribbon_y, width: panel_w, ribbons });
 
             // Activity feed: merge kills + chat sorted by game clock,
@@ -2464,17 +2462,13 @@ impl<'a> MinimapRenderer<'a> {
             // Sort merged entries by game clock
             activity_entries.sort_by(|a, b| a.clock.cmp(&b.clock));
 
-            let inner_w = panel_w - 16;
-            let per_row = (inner_w / STATS_RIBBON_CELL_W).max(1);
-            let rows = ((ribbon_count as i32) + per_row - 1) / per_row;
-            let ribbon_section_height = rows * STATS_RIBBON_ROW_H + 8;
-            let feed_y = ribbon_y + ribbon_section_height;
-            let feed_height = (MINIMAP_SIZE as i32 + HUD_HEIGHT as i32) - feed_y;
+            let feed_y = 708;
+            let feed_height = 492;
             commands.push(DrawCommand::StatsActivityFeed {
                 x: panel_x,
                 y: feed_y,
                 width: panel_w,
-                height: feed_height.max(0),
+                height: feed_height,
                 entries: activity_entries,
             });
         }
@@ -2814,7 +2808,7 @@ fn format_score_timer(current_score: i64, win_score: i64, pps: f64) -> Option<St
         return Some("0:00".to_string());
     }
     if pps <= 0.0 {
-        return Some("-:--".to_string());
+        return None;
     }
     let seconds = (remaining as f64 / pps).ceil() as i64;
     let mins = seconds / 60;
@@ -2843,13 +2837,13 @@ fn cap_point_color(team_id: i64, self_team_id: Option<i64>) -> [u8; 3] {
         return [255, 255, 255]; // neutral
     }
     match self_team_id {
-        Some(self_team) if team_id == self_team => TEAM0_COLOR, // friendly
-        Some(_) => TEAM1_COLOR,                                 // enemy
+        Some(self_team) if team_id == self_team => CAP_GREEN_COLOR, // friendly
+        Some(_) => CAP_RED_COLOR,                                   // enemy
         None => {
             // Fallback before we know self_team_id: use raw mapping
             match team_id {
-                0 => TEAM0_COLOR,
-                _ => TEAM1_COLOR,
+                0 => CAP_GREEN_COLOR,
+                _ => CAP_RED_COLOR,
             }
         }
     }

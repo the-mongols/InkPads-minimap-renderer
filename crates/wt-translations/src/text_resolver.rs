@@ -62,12 +62,12 @@ const fn default_finish_type_text(ft: FinishType) -> &'static str {
         FinishType::Timeout => "Time expired",
         FinishType::Failure => "Mission failed",
         FinishType::Technical => "Technical finish",
-        FinishType::Score => "Score limit reached",
+        FinishType::Score => "Points limit reached",
         FinishType::ScoreOnTimeout => "Score lead at time limit",
         FinishType::PveMainTaskSucceeded => "Mission accomplished",
         FinishType::PveMainTaskFailed => "Mission failed",
         FinishType::ScoreZero => "Score depleted",
-        FinishType::ScoreExcess => "Score limit exceeded",
+        FinishType::ScoreExcess => "Points limit reached",
     }
 }
 

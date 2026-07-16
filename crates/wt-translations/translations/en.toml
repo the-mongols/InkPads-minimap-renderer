@@ -440,12 +440,12 @@ base_captured = "Base captured"
 timeout = "Time expired"
 failure = "Mission failed"
 technical = "Technical finish"
-score = "Score limit reached"
+score = "Points limit reached"
 score_on_timeout = "Score lead at time limit"
 pve_success = "Mission accomplished"
 pve_failed = "Mission failed"
 score_zero = "Score depleted"
-score_excess = "Score limit exceeded"
+score_excess = "Points limit reached"
 
 # -- Stats Tab --
 
