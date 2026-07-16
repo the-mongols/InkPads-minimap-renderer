@@ -371,6 +371,8 @@ pub struct MinimapRenderer<'a> {
     player_clan_tags: HashMap<EntityId, String>,
     /// Per-player clan color: entity_id -> RGB color (None = use team color)
     player_clan_colors: HashMap<EntityId, Option<[u8; 3]>>,
+    /// Per-player dog tag metadata (emblem component IDs): entity_id -> JSON Value
+    player_dog_tags: HashMap<EntityId, serde_json::Value>,
     /// Track which entities we've already resolved ability icons for
     resolved_entities: HashSet<EntityId>,
     /// Entity IDs of players in the recording player's division (excluding self).
@@ -449,6 +451,7 @@ impl<'a> MinimapRenderer<'a> {
             ship_ability_radii: HashMap::new(),
             player_clan_tags: HashMap::new(),
             player_clan_colors: HashMap::new(),
+            player_dog_tags: HashMap::new(),
             resolved_entities: HashSet::new(),
             division_mates: HashSet::new(),
             players_populated: false,
@@ -570,6 +573,7 @@ impl<'a> MinimapRenderer<'a> {
         self.ship_ability_radii.clear();
         self.player_clan_tags.clear();
         self.player_clan_colors.clear();
+        self.player_dog_tags.clear();
         self.resolved_entities.clear();
         self.division_mates.clear();
         self.players_populated = false;
@@ -625,6 +629,9 @@ impl<'a> MinimapRenderer<'a> {
                 None
             };
             self.player_clan_colors.insert(*entity_id, clan_color);
+            if let Some(dog_tag) = player.initial_state().raw_with_names().get("dogTag") {
+                self.player_dog_tags.insert(*entity_id, dog_tag.clone());
+            }
             self.ship_param_ids.insert(*entity_id, player.vehicle().id());
             if let Some(name) = self.game_params.localized_name_from_param(player.vehicle()) {
                 self.ship_display_names.insert(*entity_id, name);
@@ -2272,6 +2279,41 @@ impl<'a> MinimapRenderer<'a> {
 
 
 
+            let mut stats_consumables = Vec::new();
+            if let Some(eid) = self.self_entity_id {
+                let clock = controller.clock();
+                let active_map = controller.active_consumables();
+                let inv_map = controller.consumable_inventories();
+                
+                let self_active = active_map.get(&eid);
+                if let Some(inventories) = inv_map.get(&eid) {
+                    let mut sorted_inv = inventories.clone();
+                    sorted_inv.sort_by_key(|inv| inv.slot_index);
+                    
+                    for inv in sorted_inv {
+                        let is_active = self_active
+                            .map(|list| {
+                                list.iter()
+                                    .filter(|a| a.consumable == inv.consumable)
+                                    .last()
+                                    .map(|a| {
+                                        let now = clock.seconds();
+                                        let work_end = a.activated_at.seconds() + a.duration;
+                                        now < work_end
+                                    })
+                                    .unwrap_or(false)
+                            })
+                            .unwrap_or(false);
+                            
+                        stats_consumables.push(crate::draw_command::StatsConsumable {
+                            icon_key: inv.icon_key.clone(),
+                            active: is_active,
+                            charges_remaining: inv.charges_remaining().into(),
+                        });
+                    }
+                }
+            }
+
             let damage_y = 295;
 
             commands.push(DrawCommand::StatsDamage {
@@ -2283,6 +2325,7 @@ impl<'a> MinimapRenderer<'a> {
                 spotting_breakdowns,
                 damage_potential,
                 potential_breakdowns,
+                consumables: stats_consumables,
             });
 
             // Ribbons: stable icon-position order, resolve localized display names

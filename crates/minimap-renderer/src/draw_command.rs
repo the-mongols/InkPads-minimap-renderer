@@ -620,6 +620,7 @@ pub enum DrawCommand {
         spotting_breakdowns: Vec<DamageBreakdownEntry>,
         damage_potential: f64,
         potential_breakdowns: Vec<DamageBreakdownEntry>,
+        consumables: Vec<StatsConsumable>,
     },
     /// Compact ribbon summary in the stats panel
     StatsRibbons { x: i32, y: i32, width: i32, ribbons: Vec<RibbonCount> },
@@ -777,6 +778,14 @@ impl ChargeCount {
             Self::Finite(n) => Self::Finite(n.saturating_sub(used)),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+pub struct StatsConsumable {
+    pub icon_key: String,
+    pub active: bool,
+    pub charges_remaining: ChargeCount,
 }
 
 #[cfg(feature = "rendering")]

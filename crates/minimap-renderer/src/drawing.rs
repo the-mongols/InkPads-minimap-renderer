@@ -2424,7 +2424,19 @@ impl RenderTarget for ImageTarget {
                 let text = self.text_resolver.resolve(&TranslatableText::BattleResult(*result));
                 let subtitle = finish_type
                     .as_ref()
-                    .map(|ft| self.text_resolver.resolve(&TranslatableText::FinishType(ft.clone())).to_uppercase());
+                    .map(|ft| {
+                        if let wowsunpack::recognized::Recognized::Known(wowsunpack::game_types::FinishType::Score)
+                            | wowsunpack::recognized::Recognized::Known(wowsunpack::game_types::FinishType::ScoreExcess) = ft
+                        {
+                            match result {
+                                wowsunpack::game_types::BattleResult::Victory => "YOUR TEAM WON ON POINTS".to_string(),
+                                wowsunpack::game_types::BattleResult::Defeat => "ENEMY TEAM WON ON POINTS".to_string(),
+                                wowsunpack::game_types::BattleResult::Draw => "POINTS LIMIT REACHED".to_string(),
+                            }
+                        } else {
+                            self.text_resolver.resolve(&TranslatableText::FinishType(ft.clone())).to_uppercase()
+                        }
+                    });
                 draw_battle_result_overlay(
                     &mut self.canvas,
                     &text,
@@ -2613,6 +2625,7 @@ impl RenderTarget for ImageTarget {
                 spotting_breakdowns: _,
                 damage_potential,
                 potential_breakdowns: _,
+                consumables,
             } => {
                 let scale_factor = if self.large_elements { 1.8f32 } else { 1.0f32 };
                 let padding = (8.0 * scale_factor).round() as i32;
@@ -2620,6 +2633,15 @@ impl RenderTarget for ImageTarget {
                 let header_scale = self.fonts.scale(16.0 * scale_factor);
                 let header_row_h = (26.0 * scale_factor).round() as i32;
                 let right_x = *x + *width - padding;
+
+                let cons_size = (20.0 * scale_factor).round() as i32;
+                let cons_gap = (4.0 * scale_factor).round() as i32;
+                let max_consumables_w = if !consumables.is_empty() {
+                    (consumables.len() as f32 * (cons_size as f32 + cons_gap as f32)).round() as i32
+                } else {
+                    0
+                };
+                let val_right_x = right_x - max_consumables_w;
 
                 let mut cur_y = *y + (4.0 * scale_factor).round() as i32;
 
@@ -2639,7 +2661,7 @@ impl RenderTarget for ImageTarget {
                 draw_text_shadow(
                     &mut self.canvas,
                     [255, 220, 100],
-                    right_x - tw as i32,
+                    val_right_x - tw as i32,
                     cur_y,
                     header_scale,
                     &self.fonts.primary,
@@ -2662,7 +2684,7 @@ impl RenderTarget for ImageTarget {
                 draw_text_shadow(
                     &mut self.canvas,
                     [120, 200, 255],
-                    right_x - tw as i32,
+                    val_right_x - tw as i32,
                     cur_y,
                     header_scale,
                     &self.fonts.primary,
@@ -2685,12 +2707,75 @@ impl RenderTarget for ImageTarget {
                 draw_text_shadow(
                     &mut self.canvas,
                     [180, 180, 180],
-                    right_x - tw as i32,
+                    val_right_x - tw as i32,
                     cur_y,
                     header_scale,
                     &self.fonts.primary,
                     &pot_str,
                 );
+
+                // Draw consumables in a horizontal row on the right
+                if !consumables.is_empty() {
+                    let mut cx = right_x - (consumables.len() as i32 * (cons_size + cons_gap) - cons_gap);
+                    let cy = *y + (3 * header_row_h - cons_size) / 2;
+                    
+                    for cons in consumables {
+                        if let Some(icon) = self.consumable_icons.get(&cons.icon_key) {
+                            let mut img = image::imageops::resize(
+                                icon,
+                                cons_size as u32,
+                                cons_size as u32,
+                                image::imageops::FilterType::Triangle,
+                            );
+                            
+                            if !cons.active {
+                                for px in img.pixels_mut() {
+                                    let r = px.0[0] as f32;
+                                    let g = px.0[1] as f32;
+                                    let b = px.0[2] as f32;
+                                    let gray = (0.299 * r + 0.587 * g + 0.114 * b) as u8;
+                                    px.0[0] = (gray as f32 * 0.45) as u8;
+                                    px.0[1] = (gray as f32 * 0.45) as u8;
+                                    px.0[2] = (gray as f32 * 0.45) as u8;
+                                    px.0[3] = (px.0[3] as f32 * 0.6) as u8;
+                                }
+                            }
+                            
+                            draw_icon_at(&mut self.canvas, &img, cx, cy);
+                            
+                            if let crate::draw_command::ChargeCount::Finite(remaining) = cons.charges_remaining {
+                                let count_str = format!("{}", remaining);
+                                let count_scale = self.fonts.scale(9.0 * scale_factor);
+                                let (cw, ch) = text_size(count_scale, &self.fonts.primary, &count_str);
+                                
+                                let badge_w = cw as i32 + 4;
+                                let badge_h = ch as i32 + 2;
+                                let bx = cx + cons_size - badge_w;
+                                let by = cy + cons_size - badge_h;
+                                draw_filled_rect(
+                                    &mut self.canvas,
+                                    bx as f32,
+                                    by as f32,
+                                    badge_w as f32,
+                                    badge_h as f32,
+                                    [0, 0, 0],
+                                    0.75,
+                                );
+                                
+                                draw_text_shadow(
+                                    &mut self.canvas,
+                                    [255, 255, 255],
+                                    bx + 2,
+                                    by + 1,
+                                    count_scale,
+                                    &self.fonts.primary,
+                                    &count_str,
+                                );
+                            }
+                        }
+                        cx += cons_size + cons_gap;
+                    }
+                }
             }
             DrawCommand::StatsRibbons { x, y, width, ribbons } => {
                 let padding = 8;

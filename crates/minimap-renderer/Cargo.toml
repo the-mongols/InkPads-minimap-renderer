@@ -37,7 +37,7 @@ rendering = [
     "wowsunpack/vfs-mmap",
     "wowsunpack/parsing",
 ]
-bin = ["dep:clap", "dep:gettext", "dep:toml", "dep:indicatif", "dep:tracing-subscriber", "dep:serde_json", "dep:wows-data-mgr", "rendering", "rkyv"]
+bin = ["dep:clap", "dep:gettext", "dep:toml", "dep:indicatif", "dep:tracing-subscriber", "dep:wows-data-mgr", "rendering", "rkyv"]
 rkyv = ["dep:rkyv", "wowsunpack/rkyv", "wowsunpack/parsing"]
 vulkan = ["dep:gpu-video", "dep:wgpu", "dep:yuvutils-rs", "rendering"]
 videotoolbox = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-core-foundation", "dep:objc2-core-media", "dep:objc2-core-video", "dep:objc2-video-toolbox", "dep:yuvutils-rs", "rendering"]
@@ -59,7 +59,7 @@ ab_glyph = { version = "0.2", optional = true }
 clap = { workspace = true, optional = true }
 toml = { workspace = true, optional = true }
 serde = { workspace = true }
-serde_json = { workspace = true, optional = true }
+serde_json = { workspace = true }
 convert_case = { workspace = true, optional = true }
 gettext = { workspace = true, optional = true }
 roxmltree = { workspace = true, optional = true }
