@@ -35,9 +35,9 @@ if [ -f target/release/minimap_renderer ]; then
 elif [ -f inkpads-bot/minimap_renderer ]; then
     echo "[INFO] Found renderer in bot folder."
 else
-    echo "[WARNING] No renderer binary found. You will need to compile the project"
-    echo "          using 'cargo build --release' or place the minimap_renderer binary"
-    echo "          inside the inkpads-bot folder before running."
+    echo "[INFO] No renderer binary found. Starting compilation..."
+    chmod +x build_renderer.sh
+    ./build_renderer.sh
 fi
 
 echo ""

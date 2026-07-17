@@ -608,6 +608,9 @@ pub enum DrawCommand {
         #[cfg(feature = "rendering")]
         #[cfg_attr(feature = "rkyv", rkyv(with = rkyv::with::Skip))]
         silhouette: Option<RgbaImage>,
+        #[cfg(feature = "rendering")]
+        #[cfg_attr(feature = "rkyv", rkyv(with = rkyv::with::Skip))]
+        emblem: Option<RgbaImage>,
     },
     /// Damage breakdown numbers in the stats panel
     StatsDamage {

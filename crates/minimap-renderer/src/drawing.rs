@@ -2478,11 +2478,29 @@ impl RenderTarget for ImageTarget {
                 clan_color,
                 ship_name,
                 silhouette,
+                emblem,
             } => {
                 let scale_factor = if self.large_elements { 1.8f32 } else { 1.0f32 };
                 let padding = (8.0 * scale_factor).round() as i32;
+                
+                // Left column width is 63% of the panel width
+                let left_w = (*width * 63) / 100;
                 let inner_x = *x + padding;
-                let inner_w = *width - padding * 2;
+                let inner_w = left_w - padding * 2;
+
+                // Draw emblem (dog tag) in top-right corner
+                let emblem_size = (72.0 * scale_factor).round() as u32;
+                if let Some(emb_img) = emblem {
+                    let emblem_x = *x + *width - padding - emblem_size as i32;
+                    let emblem_y = *y + (4.0 * scale_factor).round() as i32;
+                    let resized = image::imageops::resize(
+                        emb_img,
+                        emblem_size,
+                        emblem_size,
+                        image::imageops::FilterType::Lanczos3,
+                    );
+                    draw_icon_at(&mut self.canvas, &resized, emblem_x, emblem_y);
+                }
 
                 // Draw clan tag + player name, and ship name above the silhouette
                 let mut label_y = *y + (4.0 * scale_factor).round() as i32;
@@ -2629,39 +2647,25 @@ impl RenderTarget for ImageTarget {
             } => {
                 let scale_factor = if self.large_elements { 1.8f32 } else { 1.0f32 };
                 let padding = (8.0 * scale_factor).round() as i32;
-                let inner_x = *x + padding;
+                
+                // Align to right column (starting at 63% width)
+                let left_w = (*width * 63) / 100;
+                let metric_x = *x + left_w + padding;
+                let val_right_x = *x + *width - padding;
+                
                 let header_scale = self.fonts.scale(16.0 * scale_factor);
                 let header_row_h = (26.0 * scale_factor).round() as i32;
-                let right_x = *x + *width - padding;
 
-                let cons_size = (30.0 * scale_factor).round() as i32;
-                let cons_gap = (4.0 * scale_factor).round() as i32;
-                let cols = 2;
-                let rows = if consumables.is_empty() {
-                    0
-                } else {
-                    (consumables.len() as f32 / cols as f32).ceil() as i32
-                };
-                let grid_w = if consumables.is_empty() {
-                    0
-                } else {
-                    cols * cons_size + (cols - 1) * cons_gap
-                };
-                let grid_h = if consumables.is_empty() {
-                    0
-                } else {
-                    rows * cons_size + (rows - 1) * cons_gap
-                };
-                let val_right_x = right_x - grid_w - (8.0 * scale_factor).round() as i32;
-
-                let mut cur_y = *y + (4.0 * scale_factor).round() as i32;
+                // Start below emblem
+                let emblem_size = (72.0 * scale_factor).round() as i32;
+                let mut cur_y = *y + emblem_size + (15.0 * scale_factor).round() as i32;
 
                 // Total enemy damage header (DAMAGE)
                 let total_damage: f64 = breakdowns.iter().map(|e| e.damage).sum();
                 draw_text_shadow(
                     &mut self.canvas,
                     [200, 200, 200],
-                    inner_x,
+                    metric_x,
                     cur_y,
                     header_scale,
                     &self.fonts.primary,
@@ -2684,7 +2688,7 @@ impl RenderTarget for ImageTarget {
                 draw_text_shadow(
                     &mut self.canvas,
                     [200, 200, 200],
-                    inner_x,
+                    metric_x,
                     cur_y,
                     header_scale,
                     &self.fonts.primary,
@@ -2707,7 +2711,7 @@ impl RenderTarget for ImageTarget {
                 draw_text_shadow(
                     &mut self.canvas,
                     [200, 200, 200],
-                    inner_x,
+                    metric_x,
                     cur_y,
                     header_scale,
                     &self.fonts.primary,
@@ -2725,18 +2729,19 @@ impl RenderTarget for ImageTarget {
                     &pot_str,
                 );
 
-                // Draw consumables in a grid on the right
+                // Draw active consumables in a single horizontal row below the HP figures (centered)
+                let cons_size = (30.0 * scale_factor).round() as i32;
+                let cons_gap = (4.0 * scale_factor).round() as i32;
+
                 if !consumables.is_empty() {
-                    let grid_x = right_x - grid_w;
-                    let total_available_h = 185.0 * scale_factor;
-                    let cy = *y + ((total_available_h as i32 - grid_h) / 2);
-                    
+                    let total_cons_w = consumables.len() as i32 * cons_size + (consumables.len() as i32 - 1).max(0) * cons_gap;
+                    let cons_start_x = *x + (*width - total_cons_w) / 2;
+                    let cons_y = *y + (245.0 * scale_factor).round() as i32;
+
                     for (i, cons) in consumables.iter().enumerate() {
-                        let row = i as i32 / cols;
-                        let col = i as i32 % cols;
-                        let cx = grid_x + col * (cons_size + cons_gap);
-                        let cur_cy = cy + row * (cons_size + cons_gap);
-                        
+                        let cx = cons_start_x + i as i32 * (cons_size + cons_gap);
+                        let cur_cy = cons_y;
+
                         if let Some(icon) = self.consumable_icons.get(&cons.icon_key) {
                             let mut img = image::imageops::resize(
                                 icon,
@@ -2744,7 +2749,7 @@ impl RenderTarget for ImageTarget {
                                 cons_size as u32,
                                 image::imageops::FilterType::Triangle,
                             );
-                            
+
                             if !cons.active {
                                 for px in img.pixels_mut() {
                                     let r = px.0[0] as f32;
@@ -2757,14 +2762,14 @@ impl RenderTarget for ImageTarget {
                                     px.0[3] = (px.0[3] as f32 * 0.6) as u8;
                                 }
                             }
-                            
+
                             draw_icon_at(&mut self.canvas, &img, cx, cur_cy);
-                            
+
                             if let crate::draw_command::ChargeCount::Finite(remaining) = cons.charges_remaining {
                                 let count_str = format!("{}", remaining);
                                 let count_scale = self.fonts.scale(10.0 * scale_factor);
                                 let (cw, ch) = text_size(count_scale, &self.fonts.primary, &count_str);
-                                
+
                                 let badge_w = cw as i32 + 4;
                                 let badge_h = ch as i32 + 2;
                                 let bx = cx + cons_size - badge_w;
@@ -2778,7 +2783,7 @@ impl RenderTarget for ImageTarget {
                                     [0, 0, 0],
                                     0.75,
                                 );
-                                
+
                                 draw_text_shadow(
                                     &mut self.canvas,
                                     [255, 255, 255],
@@ -2799,10 +2804,10 @@ impl RenderTarget for ImageTarget {
                 let inner_w = *width - padding * 2;
                 let scale = self.fonts.scale(13.0);
                 
-                // Ribbons size and row parameters reverted to original
-                let icon_h = 24;
-                let row_h = 30;
-                let cell_w = 82;
+                // Ribbons scaled up: icon height 72, row height 82, cell width 120
+                let icon_h = 72;
+                let row_h = 82;
+                let cell_w = 120;
                 let gap = 2;
 
                 let mut cur_x = inner_x;

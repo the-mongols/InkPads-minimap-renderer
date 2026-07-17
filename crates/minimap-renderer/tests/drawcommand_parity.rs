@@ -303,6 +303,7 @@ fn normalize(cmd: &DrawCommand) -> String {
             spotting_breakdowns,
             damage_potential,
             potential_breakdowns,
+            consumables: _,
         } => {
             let bd: Vec<_> = breakdowns.iter().map(|b| (&b.label, b.damage as i64)).collect();
             let sbd: Vec<_> = spotting_breakdowns.iter().map(|b| (&b.label, b.damage as i64)).collect();
@@ -450,3 +451,6 @@ fn drawcommand_parity_v170_pvp() {
 fn drawcommand_parity_cossack_armsrace() {
     insta::assert_snapshot!(capture_frames("20221101_004346_PBSD517-Cossack_37_Ridge.wowsreplay"));
 }
+
+
+

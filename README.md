@@ -8,6 +8,33 @@ This project is licensed under the Apache License, Version 2.0. A copy of the Li
 
 ---
 
+## Building the Renderer
+
+To build the optimized release binary of the renderer, run the build helper script from the root directory:
+
+### On Windows:
+```cmd
+build_renderer.bat
+```
+
+### On Linux:
+```bash
+chmod +x build_renderer.sh
+./build_renderer.sh
+```
+
+## Running the CLI Renderer
+
+The compiled binary will be placed at `target/release/minimap_renderer` (or `minimap_renderer.exe` on Windows). Run it with `--help` to view all available CLI arguments:
+
+```bash
+./target/release/minimap_renderer --help
+```
+
+For Discord bot integration and service hosting setup instructions, please see the [Inkpads Bot README](inkpads-bot/README.md).
+
+---
+
 ### Third-Party Licenses
 
 This project builds upon the foundation of the `wows-toolkit` crates, which were developed by Lander Brandt under the MIT License.

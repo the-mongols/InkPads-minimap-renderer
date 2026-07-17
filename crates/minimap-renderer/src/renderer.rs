@@ -393,6 +393,8 @@ pub struct MinimapRenderer<'a> {
 
     /// Ship silhouette for the self player's stats panel.
     self_silhouette: Option<RgbaImage>,
+    /// Player emblem/dogtag for the self player's stats panel.
+    self_emblem: Option<RgbaImage>,
     /// Cached self player entity ID (populated from controller state).
     self_entity_id: Option<EntityId>,
 
@@ -460,6 +462,7 @@ impl<'a> MinimapRenderer<'a> {
             fonts: None,
             flag_icons: HashMap::new(),
             self_silhouette: None,
+            self_emblem: None,
             self_entity_id: None,
             vehicle_facts: HashMap::new(),
             damage_events: HashMap::new(),
@@ -525,6 +528,11 @@ impl<'a> MinimapRenderer<'a> {
     /// Set the ship silhouette image for the self player's stats panel.
     pub fn set_self_silhouette(&mut self, silhouette: RgbaImage) {
         self.self_silhouette = Some(silhouette);
+    }
+
+    /// Set the player emblem image for the self player's stats panel.
+    pub fn set_self_emblem(&mut self, emblem: RgbaImage) {
+        self.self_emblem = Some(emblem);
     }
 
     /// Install a pre-scanned per-entity facts cache. Driven by
@@ -2224,7 +2232,7 @@ impl<'a> MinimapRenderer<'a> {
                 .unwrap_or_default();
 
             let silhouette_y = 15;
-            let silhouette_h = 270;
+            let silhouette_h = 240;
             commands.push(DrawCommand::StatsSilhouette {
                 x: panel_x,
                 y: silhouette_y,
@@ -2243,6 +2251,8 @@ impl<'a> MinimapRenderer<'a> {
                 ship_name: self_ship_name,
                 #[cfg(feature = "rendering")]
                 silhouette: self.self_silhouette.clone(),
+                #[cfg(feature = "rendering")]
+                emblem: self.self_emblem.clone(),
             });
 
             // Damage breakdown: group by weapon type for enemy, spotting, and potential
@@ -2314,7 +2324,7 @@ impl<'a> MinimapRenderer<'a> {
                 }
             }
 
-            let damage_y = 295;
+            let damage_y = 15;
 
             commands.push(DrawCommand::StatsDamage {
                 x: panel_x,
@@ -2408,7 +2418,7 @@ impl<'a> MinimapRenderer<'a> {
                 };
                 ribbons.sort_by_key(|rc| rank(rc));
             }
-            let ribbon_y = 480;
+            let ribbon_y = 315;
 
             commands.push(DrawCommand::StatsRibbons { x: panel_x, y: ribbon_y, width: panel_w, ribbons });
 
@@ -2505,8 +2515,8 @@ impl<'a> MinimapRenderer<'a> {
             // Sort merged entries by game clock
             activity_entries.sort_by(|a, b| a.clock.cmp(&b.clock));
 
-            let feed_y = 708;
-            let feed_height = 492;
+            let feed_y = 495;
+            let feed_height = 685;
             commands.push(DrawCommand::StatsActivityFeed {
                 x: panel_x,
                 y: feed_y,

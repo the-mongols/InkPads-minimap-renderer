@@ -17,31 +17,37 @@ A Discord bot to receive `.wowsreplay` files from users, and return high-quality
 
 ### 2. Configuration
 1. Copy `.env.example` to `.env`.
-2. Edit `.env` and provide your **DISCORD_TOKEN**.
-3. Update `WOWS_PATH` to point to your game asset directory (on Linux, point this to where you uploaded/mounted the extracted WoWS client game files).
+2. Edit `.env` and configure the following variables:
+   - **`DISCORD_TOKEN`**: Your Discord bot token.
+   - **`WOWS_PATH`**: Path to the World of Warships directory (for local rendering using the game assets).
+   - **`WOWS_EXTRACTED_DIR`**: Optional. Path to the pre-extracted game asset directory. Useful for VPS environments with storage constraints to avoid mounting the full game directory.
+   - **`RENDERER_FONT_PATH`**: Optional. Path to a custom `.ttf` font file to override the primary font face (e.g. `WarHeliosCondCBold.ttf`).
 
 ### 3. Installation & Run
 
 #### On Windows (Local Dev):
-1. Run `setup_bot.bat` from the root directory to install dependencies and initialize `.env`.
-2. Edit `inkpads-bot/.env`.
-3. Launch with:
-   ```bash
+1. Run `setup_bot.bat` from the root directory to initialize the environment and install dependencies.
+2. Build the renderer:
+   ```cmd
+   build_renderer.bat
+   ```
+3. Run the bot:
+   ```cmd
    python inkpads-bot/bot.py
    ```
 
 #### On Linux (VPS Deployment):
-1. Give execution permission to the setup script and run it:
+1. Initialize the setup script:
    ```bash
    chmod +x setup_bot.sh
    ./setup_bot.sh
    ```
-2. Edit `inkpads-bot/.env`.
-3. Build the release binary:
+2. Build the renderer:
    ```bash
-   cargo build --release
+   chmod +x build_renderer.sh
+   ./build_renderer.sh
    ```
-4. Run the bot directly:
+3. Run the bot:
    ```bash
    python3 inkpads-bot/bot.py
    ```

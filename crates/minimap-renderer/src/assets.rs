@@ -875,6 +875,35 @@ pub fn load_game_fonts_with_fallbacks(vfs: &VfsPath, fallbacks: &[VfsPath]) -> G
     first_available(game_fonts_from_vfs(vfs), fallbacks.iter().map(game_fonts_from_vfs), system_game_fonts)
 }
 
+/// Load game fonts, trying `vfs` first, then each `fallbacks` VFS in order, and a system font only
+/// when none carry a usable face, with an optional primary font path override.
+pub fn load_game_fonts_with_fallbacks_and_override(
+    vfs: &VfsPath,
+    fallbacks: &[VfsPath],
+    font_override: Option<&std::path::Path>,
+) -> GameFonts {
+    let mut base_fonts = load_game_fonts_with_fallbacks(vfs, fallbacks);
+    if let Some(font_path) = font_override {
+        if let Ok(mut file) = std::fs::File::open(font_path) {
+            let mut bytes = Vec::new();
+            if file.read_to_end(&mut bytes).is_ok() {
+                if let Ok(primary) = FontArc::try_from_vec(bytes.clone()) {
+                    let primary_scale_factor = compute_scale_factor(&primary);
+                    base_fonts.primary = primary;
+                    base_fonts.primary_bytes = bytes;
+                    base_fonts.primary_scale_factor = primary_scale_factor;
+                    debug!(path = ?font_path, "Overrode primary font with custom TTF");
+                } else {
+                    warn!(path = ?font_path, "Failed to parse override font TTF, keeping default");
+                }
+            }
+        } else {
+            warn!(path = ?font_path, "Failed to open override font path");
+        }
+    }
+    base_fonts
+}
+
 #[cfg(test)]
 mod font_fallback_test {
     use super::first_available;

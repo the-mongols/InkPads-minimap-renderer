@@ -17,6 +17,8 @@ TOKEN = os.getenv('DISCORD_TOKEN')
 WOWS_PATH = os.getenv('WOWS_PATH', 'C:\\Games\\World_of_Warships')
 # Default to a few likely locations for the renderer
 RENDERER_PATH = os.getenv('RENDERER_PATH')
+WOWS_EXTRACTED_DIR = os.getenv('WOWS_EXTRACTED_DIR')
+RENDERER_FONT_PATH = os.getenv('RENDERER_FONT_PATH')
 
 # Webhook Configuration (optional early handover)
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
@@ -411,7 +413,16 @@ async def render(
             guild_limit_bytes = max(interaction.guild.filesize_limit, guild_limit_bytes)
         target_size_mib = int((guild_limit_bytes * 0.95) / (1024 * 1024))
 
-        cmd = [str(RENDERER_EXE), "-g", str(GAME_DIR), "-o", str(output_path), "--max-size-mib", str(target_size_mib), "--codec", "h264", str(replay_path)]
+        cmd = [str(RENDERER_EXE)]
+        if WOWS_EXTRACTED_DIR:
+            cmd.extend(["--extracted-dir", WOWS_EXTRACTED_DIR])
+        else:
+            cmd.extend(["-g", str(GAME_DIR)])
+        cmd.extend(["-o", str(output_path), "--max-size-mib", str(target_size_mib), "--codec", "h264"])
+        if RENDERER_FONT_PATH:
+            cmd.extend(["--font", RENDERER_FONT_PATH])
+        cmd.append(str(replay_path))
+
         if red_replay:
             cmd.extend(["--red-replay", str(red_replay_path), "--no-chat", "--no-kill-feed", "--no-stats-panel"])
         if show_trails: cmd.append("--show-trails")

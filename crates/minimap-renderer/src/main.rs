@@ -24,7 +24,6 @@ use wows_minimap_renderer::assets::load_building_icons;
 use wows_minimap_renderer::assets::load_consumable_icons;
 use wows_minimap_renderer::assets::load_death_cause_icons;
 use wows_minimap_renderer::assets::load_flag_icons;
-use wows_minimap_renderer::assets::load_game_fonts;
 use wows_minimap_renderer::assets::load_map_image;
 use wows_minimap_renderer::assets::load_map_info;
 use wows_minimap_renderer::assets::load_packed_image;
@@ -189,6 +188,10 @@ struct Args {
     #[arg(long, conflicts_with = "bitrate_kbps")]
     max_size_mib: Option<u32>,
 
+    /// Path to a custom bold font file to override the primary font (CJK fallbacks are still loaded from VFS)
+    #[arg(long)]
+    font: Option<PathBuf>,
+
     /// Disable progress bar and use log output instead
     #[arg(long)]
     no_progress: bool,
@@ -316,7 +319,11 @@ fn main() -> Result<(), Report> {
     let vfs = &vfs_owned;
 
     info!("Loading fonts and icons");
-    let game_fonts = load_game_fonts(vfs);
+    let game_fonts = wows_minimap_renderer::assets::load_game_fonts_with_fallbacks_and_override(
+        vfs,
+        &[],
+        args.font.as_deref(),
+    );
     let version = Some(&replay_version);
     let ship_icons = load_ship_icons(vfs, version);
     let plane_icons = load_plane_icons(vfs, version);
@@ -438,6 +445,9 @@ fn main() -> Result<(), Report> {
         Some(img.into_rgba8())
     });
 
+    // Load default player emblem/dogtag for the stats panel
+    let default_emblem = load_packed_image("gui/dogTags/DT_Default.png", vfs).map(|img| img.into_rgba8());
+
     // Pre-scan vehicle facts + damage events so roster HP, consumable
     // inventories, and damage columns render from frame zero (the desktop
     // renderer does the same in playback.rs). Without this, team-roster mode
@@ -475,6 +485,9 @@ fn main() -> Result<(), Report> {
     renderer.set_salvo_flight_times(std::sync::Arc::new(salvo_flight_times));
     if let Some(sil) = self_silhouette {
         renderer.set_self_silhouette(sil);
+    }
+    if let Some(emb) = default_emblem {
+        renderer.set_self_emblem(emb);
     }
 
     let (cw, ch) = target.canvas_size();
