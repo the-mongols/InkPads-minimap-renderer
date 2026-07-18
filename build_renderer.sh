@@ -12,7 +12,7 @@ then
 fi
 
 echo "[1/2] Compiling Rust renderer in release mode..."
-cargo build --release --bin minimap_renderer --features bin,vfs,rendering --no-default-features
+cargo build --release --bin minimap_renderer --features bin,vfs,vulkan,cpu --no-default-features
 
 if [ $? -ne 0 ]; then
     echo "[ERROR] Compilation failed."

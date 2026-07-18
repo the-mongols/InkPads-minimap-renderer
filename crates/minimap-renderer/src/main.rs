@@ -446,7 +446,19 @@ fn main() -> Result<(), Report> {
     });
 
     // Load default player emblem/dogtag for the stats panel
-    let default_emblem = load_packed_image("gui/dogTags/DT_Default.png", vfs).map(|img| img.into_rgba8());
+    let default_emblem = load_packed_image("gui/dogTags/DT_Default.png", vfs)
+        .or_else(|| load_packed_image("gui/dog_tags/DT_Default.png", vfs))
+        .or_else(|| load_packed_image("gui/dogtags/DT_Default.png", vfs))
+        .or_else(|| load_packed_image("gui/dog_tags/dt_default.png", vfs))
+        .or_else(|| load_packed_image("gui/dogtags/dt_default.png", vfs))
+        .or_else(|| load_packed_image("gui/dogTags/default.png", vfs))
+        .or_else(|| load_packed_image("gui/dog_tags/default.png", vfs))
+        .or_else(|| load_packed_image("gui/dogtags/default.png", vfs))
+        .map(|img| img.into_rgba8());
+
+    if default_emblem.is_none() {
+        warn!("Failed to load default player emblem/dogtag from packed assets");
+    }
 
     // Pre-scan vehicle facts + damage events so roster HP, consumable
     // inventories, and damage columns render from frame zero (the desktop

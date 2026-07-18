@@ -2164,11 +2164,20 @@ impl<'a> MinimapRenderer<'a> {
         // this branch is skipped entirely so the panel doesn't double up.
         if self.options.show_stats_panel && !self.options.show_team_rosters {
             let panel_x = MINIMAP_SIZE as i32;
-            let panel_w = if self.options.aspect_ratio_16_9 {
-                self.options.stats_panel_width.unwrap_or(STATS_PANEL_WIDTH_16_9)
-            } else {
-                self.options.stats_panel_width.unwrap_or(STATS_PANEL_WIDTH)
-            } as i32;
+            let panel_w = {
+                let base_w = if self.options.aspect_ratio_16_9 {
+                    self.options.stats_panel_width.unwrap_or(STATS_PANEL_WIDTH_16_9)
+                } else {
+                    self.options.stats_panel_width.unwrap_or(STATS_PANEL_WIDTH)
+                };
+                // When no explicit width override and large_elements is on, scale the
+                // panel proportionally so elements have enough room.
+                if self.options.stats_panel_width.is_none() && self.options.large_elements {
+                    (base_w as f32 * 1.8f32).round() as i32
+                } else {
+                    base_w as i32
+                }
+            };
             // The score bar spans only the minimap width, not this side strip, so
             // the panel's top is free. Start the header near the top (a small pad
             // matching the score-bar pill inset) instead of below the HUD, which
@@ -2231,8 +2240,9 @@ impl<'a> MinimapRenderer<'a> {
                 })
                 .unwrap_or_default();
 
+            let _scale_factor = if self.options.large_elements { 1.8f32 } else { 1.0f32 };
             let silhouette_y = 15;
-            let silhouette_h = 240;
+            let silhouette_h = 461;
             commands.push(DrawCommand::StatsSilhouette {
                 x: panel_x,
                 y: silhouette_y,
@@ -2418,7 +2428,7 @@ impl<'a> MinimapRenderer<'a> {
                 };
                 ribbons.sort_by_key(|rc| rank(rc));
             }
-            let ribbon_y = 315;
+            let ribbon_y = 476;
 
             commands.push(DrawCommand::StatsRibbons { x: panel_x, y: ribbon_y, width: panel_w, ribbons });
 
@@ -2515,8 +2525,8 @@ impl<'a> MinimapRenderer<'a> {
             // Sort merged entries by game clock
             activity_entries.sort_by(|a, b| a.clock.cmp(&b.clock));
 
-            let feed_y = 495;
-            let feed_height = 685;
+            let feed_y = 704;
+            let feed_height = 496;
             commands.push(DrawCommand::StatsActivityFeed {
                 x: panel_x,
                 y: feed_y,

@@ -7,7 +7,7 @@ cargo --version >nul 2>nul
 if errorlevel 1 goto no_cargo
 
 echo [1/2] Compiling Rust renderer in release mode...
-cargo build --release --bin minimap_renderer --features bin,vfs,rendering --no-default-features
+cargo build --release --bin minimap_renderer --features bin,vfs,vulkan,cpu --no-default-features
 if errorlevel 1 goto build_failed
 
 echo [2/2] Verifying release binary...

@@ -686,7 +686,7 @@ impl ConsumableAvailability {
 
 /// Charcoal tint for the stats-panel ship silhouette base/outline. Shared so
 /// both render backends match.
-pub const SILHOUETTE_BASE_RGB: [u8; 3] = [55, 55, 60];
+pub const SILHOUETTE_BASE_RGB: [u8; 3] = [85, 85, 95];
 
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]

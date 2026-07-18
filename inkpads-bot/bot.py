@@ -106,6 +106,15 @@ async def on_ready():
     logger.info(f'Logged in as: {bot.user}')
     logger.info(f'Renderer EXE: {RENDERER_EXE}')
     logger.info(f'---------------------------------------')
+    
+    # Clear guild commands to remove legacy guild-level command registrations
+    for guild in bot.guilds:
+        try:
+            bot.tree.clear_commands(guild=guild)
+            await bot.tree.sync(guild=guild)
+            logger.info(f"Cleared guild-level slash commands for: {guild.name} ({guild.id})")
+        except Exception as e:
+            logger.warning(f"Could not clear guild commands for {guild.name} ({guild.id}): {e}")
 def parse_replay_header(file_path):
     import struct
     try:
@@ -449,7 +458,7 @@ async def render(
                 pass
                 
         prog_task = asyncio.create_task(update_progress())
-        await process.communicate()
+        stdout, stderr = await process.communicate()
         prog_task.cancel()
         try:
             await prog_task
@@ -476,6 +485,9 @@ async def render(
             embed.description = info_line
             await interaction.edit_original_response(embed=embed, attachments=[file])
         else:
+            logger.error(f"[{session_id}] Render process failed with code {process.returncode}")
+            logger.error(f"STDOUT:\n{stdout.decode('utf-8', errors='ignore')}")
+            logger.error(f"STDERR:\n{stderr.decode('utf-8', errors='ignore')}")
             embed.title = "Render Failed"
             embed.color = 0xE74C3C # Red
             embed.description = "The render process encountered an error. Please verify the replay file."
