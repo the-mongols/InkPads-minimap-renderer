@@ -12,7 +12,8 @@ from dotenv import load_dotenv
 import logging
 
 # Load configuration
-load_dotenv()
+env_path = Path(__file__).parent / '.env'
+load_dotenv(dotenv_path=env_path)
 TOKEN = os.getenv('DISCORD_TOKEN')
 WOWS_PATH = os.getenv('WOWS_PATH', 'C:\\Games\\World_of_Warships')
 # Default to a few likely locations for the renderer
@@ -427,7 +428,7 @@ async def render(
             cmd.extend(["--extracted-dir", WOWS_EXTRACTED_DIR])
         else:
             cmd.extend(["-g", str(GAME_DIR)])
-        cmd.extend(["-o", str(output_path), "--max-size-mib", str(target_size_mib), "--codec", "h264"])
+        cmd.extend(["-o", str(output_path), "--max-size-mib", str(target_size_mib), "--codec", "h265"])
         if RENDERER_FONT_PATH:
             cmd.extend(["--font", RENDERER_FONT_PATH])
         cmd.append(str(replay_path))

@@ -2849,13 +2849,33 @@ impl RenderTarget for ImageTarget {
                 let padding = 8;
                 let inner_x = *x + padding;
                 let inner_w = *width - padding * 2;
-                let scale = self.fonts.scale(13.0);
+
                 
-                // Ribbons scaled up: icon height 72, row height 82, cell width 120 (unscaled to match Commit ba6d00f)
-                let icon_h = 72;
-                let row_h = 82;
-                let cell_w = 120;
-                let gap = 2;
+                // Dynamically scale ribbons to fit the available space (approx 246px height)
+                let mut best_s: f32 = 1.0;
+                let max_h: f32 = 246.0;
+                if !ribbons.is_empty() {
+                    let mut s: f32 = 2.0;
+                    while s >= 1.0 {
+                        let cur_cell_w = (120.0 * s).round() as i32;
+                        let cur_row_h = (82.0 * s).round() as i32;
+                        
+                        let cols = (inner_w / cur_cell_w).max(1);
+                        let rows = (ribbons.len() as i32 + cols - 1) / cols;
+                        
+                        if rows * cur_row_h <= max_h as i32 {
+                            best_s = s;
+                            break;
+                        }
+                        s -= 0.05;
+                    }
+                }
+                
+                let icon_h = (72.0 * best_s).round() as i32;
+                let row_h = (82.0 * best_s).round() as i32;
+                let cell_w = (120.0 * best_s).round() as i32;
+                let gap = (2.0 * best_s).round() as i32;
+                let scale = self.fonts.scale(13.0 * best_s);
 
                 // Group ribbons into rows to calculate centered layout
                 let mut rows: Vec<Vec<&crate::draw_command::RibbonCount>> = Vec::new();
