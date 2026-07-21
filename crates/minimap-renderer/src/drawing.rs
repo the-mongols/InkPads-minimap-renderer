@@ -3113,23 +3113,12 @@ impl RenderTarget for ImageTarget {
                         let victim_display = truncate_to_fit(&kill.victim_name, name_max_w as u32, vs, vf);
                         let (vw, _) = text_size(vs, vf, &victim_display);
 
-                        // Calculate total width of this line
+                        // Calculate total width of this line (prefix only)
                         let prefix = " | ";
                         let (pw, _) = text_size(kill_name_scale, font, prefix);
 
-                        let mut line_w = pw as i32 + (kw as i32 + gap) + (vw as i32 + gap);
-                        if has_killer_icon {
-                            line_w += kill_icon_size + gap;
-                        }
-                        if has_cause_icon {
-                            line_w += kill_icon_size + gap;
-                        }
-                        if has_victim_icon {
-                            line_w += kill_icon_size;
-                        }
-
-                        // Center the line in the feed
-                        let mut cx = *x + (*width - line_w) / 2;
+                        // Align left in the feed (like the chat feed)
+                        let mut cx = right_x;
 
                         // Kill prefix
                         draw_text_shadow(&mut self.canvas, [140, 140, 140], cx, ky, kill_name_scale, font, prefix);
