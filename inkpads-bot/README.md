@@ -1,4 +1,4 @@
-# InkPads Tactical Bot
+# InkPads Minimap Renderer Discord Bot
 
 A Discord bot to receive `.wowsreplay` files from users, and return high-quality single or dual-render video outputs utilizing the renderer and analysis engine.
 
@@ -22,6 +22,7 @@ A Discord bot to receive `.wowsreplay` files from users, and return high-quality
    - **`WOWS_PATH`**: Path to the World of Warships directory (for local rendering using the game assets).
    - **`WOWS_EXTRACTED_DIR`**: Optional. Path to the pre-extracted game asset directory. Useful for VPS environments with storage constraints to avoid mounting the full game directory.
    - **`RENDERER_FONT_PATH`**: Optional. Path to a custom `.ttf` font file to override the primary font face (e.g. `WarHeliosCondCBold.ttf`).
+   - **`FORCE_CPU`**: Optional. Set to `true` to force software CPU encoding instead of GPU encoding. Essential for VPS hosts that lack a dedicated GPU.
 
 ### 3. Installation & Run
 

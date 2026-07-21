@@ -20,6 +20,7 @@ WOWS_PATH = os.getenv('WOWS_PATH', 'C:\\Games\\World_of_Warships')
 RENDERER_PATH = os.getenv('RENDERER_PATH')
 WOWS_EXTRACTED_DIR = os.getenv('WOWS_EXTRACTED_DIR')
 RENDERER_FONT_PATH = os.getenv('RENDERER_FONT_PATH')
+FORCE_CPU = os.getenv('FORCE_CPU', 'false').lower() in ('true', '1', 'yes')
 
 # Webhook Configuration (optional early handover)
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
@@ -437,7 +438,7 @@ async def render(
             cmd.extend(["--red-replay", str(red_replay_path), "--no-chat", "--no-kill-feed", "--no-stats-panel"])
         if show_trails: cmd.append("--show-trails")
         if show_config: cmd.append("--show-ship-config")
-        if cpu_mode: cmd.append("--cpu")
+        if cpu_mode or FORCE_CPU: cmd.append("--cpu")
         if discord_layout: cmd.append("--discord-layout")
 
         preset_val = layout_preset.value if layout_preset else "B"
