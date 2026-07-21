@@ -7,6 +7,7 @@ import aiohttp
 import uuid
 import requests
 import json
+import re
 from pathlib import Path
 from dotenv import load_dotenv
 import logging
@@ -110,14 +111,177 @@ async def on_ready():
     logger.info(f'Renderer EXE: {RENDERER_EXE}')
     logger.info(f'---------------------------------------')
     
-    # Clear guild commands to remove legacy guild-level command registrations
-    for guild in bot.guilds:
+    # Clear guild commands to remove legacy guild-level command registrations only if explicitly requested
+    if os.getenv('CLEAR_GUILD_COMMANDS', 'false').lower() in ('true', '1', 'yes'):
+        for guild in bot.guilds:
+            try:
+                bot.tree.clear_commands(guild=guild)
+                await bot.tree.sync(guild=guild)
+                logger.info(f"Cleared guild-level slash commands for: {guild.name} ({guild.id})")
+            except Exception as e:
+                logger.warning(f"Could not clear guild commands for {guild.name} ({guild.id}): {e}")
+
+def parse_version_string(version_str):
+    """Parses a version string like '15, 5, 0, 12668706' into a dict."""
+    if not version_str:
+        return None
+    parts = [p.strip() for p in version_str.split(",")]
+    if len(parts) < 4:
+        return None
+    try:
+        return {
+            "major": int(parts[0]),
+            "minor": int(parts[1]),
+            "patch": int(parts[2]),
+            "build": int(parts[3]),
+            "version_tuple": (int(parts[0]), int(parts[1]), int(parts[2])),
+            "version_str": f"{parts[0]}.{parts[1]}.{parts[2]}",
+        }
+    except ValueError:
+        return None
+
+def load_game_versions_toml():
+    """Reads game_versions.toml line-by-line and maps build_number -> version_string."""
+    mapping = {}
+    toml_path = Path(__file__).parent.parent / "game_versions.toml"
+    if not toml_path.exists():
+        toml_path = Path(__file__).parent / "game_versions.toml"
+    if toml_path.exists():
         try:
-            bot.tree.clear_commands(guild=guild)
-            await bot.tree.sync(guild=guild)
-            logger.info(f"Cleared guild-level slash commands for: {guild.name} ({guild.id})")
+            content = toml_path.read_text(encoding="utf-8")
+            current_build = None
+            for line in content.splitlines():
+                line = line.strip()
+                if line.startswith("[versions."):
+                    m = re.match(r'\[versions\.(\d+)\]', line)
+                    if m:
+                        current_build = int(m.group(1))
+                elif line.startswith("version") and current_build is not None:
+                    m = re.search(r'version\s*=\s*["\']([^"\']+)["\']', line)
+                    if m:
+                        mapping[current_build] = m.group(1)
+                        current_build = None
         except Exception as e:
-            logger.warning(f"Could not clear guild commands for {guild.name} ({guild.id}): {e}")
+            logger.warning(f"Could not parse game_versions.toml: {e}")
+    return mapping
+
+def get_supported_versions():
+    """Scans WOWS_EXTRACTED_DIR and WOWS_PATH/bin to list all supported versions and builds."""
+    supported = []
+    
+    # 1. Scan WOWS_EXTRACTED_DIR
+    extracted_dir = os.getenv('WOWS_EXTRACTED_DIR')
+    if extracted_dir:
+        extracted_path = Path(extracted_dir)
+        if extracted_path.exists() and extracted_path.is_dir():
+            for p in extracted_path.iterdir():
+                if p.is_dir():
+                    name = p.name
+                    parts = name.split('_')
+                    if len(parts) == 2:
+                        v_str, b_str = parts
+                        v_parts = v_str.split('.')
+                        try:
+                            v_tuple = tuple(int(x) for x in v_parts)
+                            b_num = int(b_str)
+                            supported.append({"version": v_tuple, "build": b_num})
+                            continue
+                        except ValueError:
+                            pass
+                    # Fallback: check metadata.toml
+                    meta_path = p / "metadata.toml"
+                    if meta_path.exists():
+                        try:
+                            version = None
+                            build = None
+                            with open(meta_path, "r", encoding="utf-8") as f:
+                                for line in f:
+                                    line = line.strip()
+                                    if line.startswith("version"):
+                                        m = re.search(r'version\s*=\s*["\']([^"\']+)["\']', line)
+                                        if m: version = m.group(1)
+                                    elif line.startswith("build"):
+                                        m = re.search(r'build\s*=\s*(\d+)', line)
+                                        if m: build = int(m.group(1))
+                            if version and build:
+                                v_parts = version.split('.')
+                                v_tuple = tuple(int(x) for x in v_parts)
+                                supported.append({"version": v_tuple, "build": build})
+                        except Exception:
+                            pass
+
+    # 2. Scan WOWS_PATH/bin
+    wows_path = os.getenv('WOWS_PATH', 'C:\\Games\\World_of_Warships')
+    if wows_path:
+        bin_path = Path(wows_path) / "bin"
+        if bin_path.exists() and bin_path.is_dir():
+            versions_map = load_game_versions_toml()
+            for p in bin_path.iterdir():
+                if p.is_dir() and p.name.isdigit():
+                    build_num = int(p.name)
+                    v_tuple = None
+                    if build_num in versions_map:
+                        v_str = versions_map[build_num]
+                        try:
+                            v_tuple = tuple(int(x) for x in v_str.split('.'))
+                        except ValueError:
+                            pass
+                    supported.append({"version": v_tuple, "build": build_num})
+                    
+    return supported
+
+def validate_replay_version(version_str):
+    """Checks if a replay version is supported, older, or newer.
+    Returns: (is_supported, error_message, is_newer)
+    """
+    parsed = parse_version_string(version_str)
+    if not parsed:
+        return True, None, False  # Let renderer attempt if we can't parse it
+        
+    supported = get_supported_versions()
+    if not supported:
+        return True, None, False  # No local version info to check against
+        
+    replay_build = parsed["build"]
+    replay_ver = parsed["version_tuple"]
+    
+    # Exact match by build or version tuple
+    if any(s["build"] == replay_build for s in supported):
+        return True, None, False
+        
+    if replay_ver and any(s["version"] == replay_ver for s in supported if s["version"]):
+        return True, None, False
+        
+    # Categorize mismatch
+    valid_builds = [s["build"] for s in supported]
+    valid_vers = [s["version"] for s in supported if s["version"]]
+    
+    is_newer = False
+    is_older = False
+    
+    if valid_builds:
+        if replay_build > max(valid_builds):
+            is_newer = True
+        elif replay_build < min(valid_builds):
+            is_older = True
+            
+    if not is_newer and not is_older and valid_vers and replay_ver:
+        if replay_ver > max(valid_vers):
+            is_newer = True
+        elif replay_ver < min(valid_vers):
+            is_older = True
+            
+    ver_display = parsed["version_str"]
+    if is_newer:
+        msg = f"This replay is from a newer version of World of Warships (v{ver_display}) than what the renderer currently supports. The renderer is being updated to support this new build; please check back in a few days!"
+        return False, msg, True
+    elif is_older:
+        msg = f"This replay is from an older version of World of Warships (v{ver_display}) which is no longer supported by the renderer."
+        return False, msg, False
+    else:
+        msg = f"This replay version (v{ver_display}) is not supported by the renderer."
+        return False, msg, False
+
 def parse_replay_header(file_path):
     import struct
     try:
@@ -334,12 +498,19 @@ async def render(
     discord_layout: bool = True,
     layout_preset: app_commands.Choice[str] = None
 ):
-    if not replay.filename.endswith('.wowsreplay'):
-        await interaction.response.send_message("The provided file is not a valid .wowsreplay format.", ephemeral=True)
-        return
+    # Acknowledge and defer immediately (Discord requires responses within 3 seconds)
+    try:
+        await interaction.response.defer(ephemeral=False)
+    except (discord.NotFound, discord.HTTPException) as e:
+        if getattr(e, 'code', 0) == 10062 or "10062" in str(e):
+            logger.error("Failed to defer interaction: Unknown Interaction (Error 10062). "
+                         "This is usually caused by latency, slow file upload, or your Windows system clock running out of sync with Discord's servers. "
+                         "Please ensure your system time is synchronized (Settings > Time & Language > Date & time > Sync now).")
+        raise e
 
-    # Acknowledge and defer
-    await interaction.response.defer(ephemeral=False)
+    if not replay.filename.endswith('.wowsreplay'):
+        await interaction.followup.send("The provided file is not a valid .wowsreplay format.", ephemeral=True)
+        return
     
     # Create unique session ID
     session_id = str(uuid.uuid4())[:8]
@@ -385,6 +556,18 @@ async def render(
         
         # Parse header
         header = parse_replay_header(replay_path)
+        
+        # Early Version Validation
+        version_str = header.get("clientVersionFromExe", "")
+        is_supported, err_msg, is_newer = validate_replay_version(version_str)
+        if not is_supported:
+            logger.warning(f"[{session_id}] Replay version unsupported: {version_str} - {err_msg}")
+            embed.title = "Unsupported Version"
+            embed.color = 0xE67E22 # Orange
+            embed.description = err_msg
+            await interaction.edit_original_response(embed=embed)
+            return
+
         raw_ship = header.get("playerVehicle", "")
         raw_map = header.get("mapName", "") or header.get("mapDisplayName", "")
         raw_dt = header.get("dateTime", "")
@@ -494,10 +677,41 @@ async def render(
         else:
             logger.error(f"[{session_id}] Render process failed with code {process.returncode}")
             logger.error(f"STDOUT:\n{stdout.decode('utf-8', errors='ignore')}")
-            logger.error(f"STDERR:\n{stderr.decode('utf-8', errors='ignore')}")
-            embed.title = "Render Failed"
-            embed.color = 0xE74C3C # Red
-            embed.description = "The render process encountered an error. Please verify the replay file."
+            err_text = stderr.decode('utf-8', errors='ignore')
+            logger.error(f"STDERR:\n{err_text}")
+            
+            # Check for version mismatch markers in stderr
+            if "REPLAY_VERSION_NEWER" in err_text:
+                embed.title = "Unsupported Version"
+                embed.color = 0xE67E22 # Orange
+                # Extract the formatted message from the stderr report
+                lines = [l.strip() for l in err_text.splitlines() if "REPLAY_VERSION_NEWER" in l]
+                # Strip rootcause/anyhow error wrappers if present (e.g. "Error: REPLAY_VERSION_NEWER: ...")
+                clean_msg = lines[0] if lines else ""
+                if "REPLAY_VERSION_NEWER:" in clean_msg:
+                    clean_msg = clean_msg.split("REPLAY_VERSION_NEWER:", 1)[1].strip()
+                embed.description = clean_msg or "This replay is from a newer version of World of Warships than what the renderer currently supports. The renderer is being updated to support this new build; please check back in a few days!"
+            elif "REPLAY_VERSION_OLDER" in err_text:
+                embed.title = "Unsupported Version"
+                embed.color = 0xE67E22 # Orange
+                lines = [l.strip() for l in err_text.splitlines() if "REPLAY_VERSION_OLDER" in l]
+                clean_msg = lines[0] if lines else ""
+                if "REPLAY_VERSION_OLDER:" in clean_msg:
+                    clean_msg = clean_msg.split("REPLAY_VERSION_OLDER:", 1)[1].strip()
+                embed.description = clean_msg or "This replay is from an older version of World of Warships which is no longer supported by the renderer."
+            elif "REPLAY_VERSION_UNSUPPORTED" in err_text:
+                embed.title = "Unsupported Version"
+                embed.color = 0xE67E22 # Orange
+                lines = [l.strip() for l in err_text.splitlines() if "REPLAY_VERSION_UNSUPPORTED" in l]
+                clean_msg = lines[0] if lines else ""
+                if "REPLAY_VERSION_UNSUPPORTED:" in clean_msg:
+                    clean_msg = clean_msg.split("REPLAY_VERSION_UNSUPPORTED:", 1)[1].strip()
+                embed.description = clean_msg or "This replay version is not supported by the renderer."
+            else:
+                embed.title = "Render Failed"
+                embed.color = 0xE74C3C # Red
+                embed.description = "The render process encountered an error. Please verify the replay file."
+                
             await interaction.edit_original_response(embed=embed)
 
     except Exception as e:

@@ -688,6 +688,34 @@ type LoadedGameData =
 fn load_from_game_dir(game_dir: &std::path::Path, replay_version: &Version) -> Result<LoadedGameData, Report> {
     let replay_build =
         replay_version.build_number().ok_or_else(|| report!("replay version carries no build number"))?;
+
+    // Validate the build early so we can categorize mismatches for the runner
+    if let Ok(available_builds) = wowsunpack::game_data::list_available_builds(game_dir) {
+        if !available_builds.contains(&replay_build) {
+            let is_newer = available_builds.iter().all(|&b| replay_build > b);
+            let is_older = available_builds.iter().all(|&b| replay_build < b);
+            if is_newer {
+                bail!(
+                    "REPLAY_VERSION_NEWER: Replay build {} is newer than the latest supported build ({}).",
+                    replay_build,
+                    available_builds.iter().max().unwrap_or(&0)
+                );
+            } else if is_older {
+                bail!(
+                    "REPLAY_VERSION_OLDER: Replay build {} is older than the oldest supported build ({}).",
+                    replay_build,
+                    available_builds.iter().min().unwrap_or(&0)
+                );
+            } else {
+                bail!(
+                    "REPLAY_VERSION_UNSUPPORTED: Replay build {} is not supported. Available builds: {:?}",
+                    replay_build,
+                    available_builds
+                );
+            }
+        }
+    }
+
     info!(build = replay_build, "Loading game data");
     let resources = game_data::load_game_resources(game_dir, replay_version).map_err(|e| report!("{e}"))?;
     let vfs = resources.vfs;
@@ -789,13 +817,31 @@ fn resolve_extracted_dir(path: &std::path::Path, replay_version: &Version) -> Re
         return Ok(matched.0.clone());
     }
 
+    // Check if the replay build is newer or older than all candidates
+    let is_newer = candidates.iter().all(|(_, m)| replay_build > m.build);
+    let is_older = candidates.iter().all(|(_, m)| replay_build < m.build);
     let available: Vec<String> = candidates.iter().map(|(_, m)| format!("{} (build {})", m.version, m.build)).collect();
-    bail!(
-        "No extracted data matches replay build {}. Available versions in {}: {}",
-        replay_build,
-        path.display(),
-        available.join(", ")
-    );
+
+    if is_newer {
+        bail!(
+            "REPLAY_VERSION_NEWER: Replay build {} is newer than the latest supported build ({}).",
+            replay_build,
+            candidates.iter().map(|(_, m)| m.build).max().unwrap_or(0)
+        );
+    } else if is_older {
+        bail!(
+            "REPLAY_VERSION_OLDER: Replay build {} is older than the oldest supported build ({}).",
+            replay_build,
+            candidates.iter().map(|(_, m)| m.build).min().unwrap_or(0)
+        );
+    } else {
+        bail!(
+            "REPLAY_VERSION_UNSUPPORTED: Replay build {} is not supported. Available versions in {}: {}",
+            replay_build,
+            path.display(),
+            available.join(", ")
+        );
+    }
 }
 
 /// Load game data from a pre-extracted renderer data directory.
