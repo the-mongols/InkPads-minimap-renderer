@@ -467,6 +467,7 @@ async def render(
             pass
 
         if process.returncode == 0:
+            logger.info(f"STDERR:\n{stderr.decode('utf-8', errors='ignore')}")
             # 5. Compress if needed
             if output_path.stat().st_size > int(guild_limit_bytes * 0.98):
                 compressed_path = TEMP_DIR / f"{session_id}_compressed.mp4"

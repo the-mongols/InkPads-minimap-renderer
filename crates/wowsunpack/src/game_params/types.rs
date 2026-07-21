@@ -698,6 +698,14 @@ impl Param {
         }
     }
 
+    /// Returns the DogTag data if this param is a DogTag type.
+    pub fn dog_tag(&self) -> Option<&DogTag> {
+        match &self.data {
+            ParamData::DogTag(d) => Some(d),
+            _ => None,
+        }
+    }
+
     /// Returns the Exterior data if this param is an Exterior type.
     pub fn exterior(&self) -> Option<&Exterior> {
         match &self.data {
@@ -2867,6 +2875,25 @@ impl Building {
     }
 }
 
+/// A custom player dog tag / emblem customization component.
+#[derive(Builder, Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+pub struct DogTag {
+    species: String,
+    color_hex: Option<String>,
+}
+
+impl DogTag {
+    pub fn species(&self) -> &str {
+        &self.species
+    }
+
+    pub fn color_hex(&self) -> Option<&str> {
+        self.color_hex.as_deref()
+    }
+}
+
 // Boxing the larger variants would change the rkyv archived layout (forcing a
 // FORMAT_VERSION bump and a full re-derive) and add heap indirection to every
 // param access; the size spread is inherent to the domain model.
@@ -2886,6 +2913,7 @@ pub enum ParamData {
     Projectile(Projectile),
     Drop(BuffDrop),
     Building(Building),
+    DogTag(DogTag),
 }
 
 variant_accessors!(ParamData {
@@ -2900,6 +2928,7 @@ variant_accessors!(ParamData {
     tuple Drop(BuffDrop) => drop;
     tuple Building(Building) => building;
     tuple Unit(Unit) => unit;
+    tuple DogTag(DogTag) => dog_tag;
 });
 
 pub trait GameParamProvider {

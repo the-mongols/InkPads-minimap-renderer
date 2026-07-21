@@ -223,3 +223,4 @@ pub fn build_game_vfs_for_build(game_dir: &Path, build: u32) -> Result<VfsPath, 
 
     Ok(pkg_vfs)
 }
+

@@ -535,6 +535,45 @@ impl<'a> MinimapRenderer<'a> {
         self.self_emblem = Some(emblem);
     }
 
+    /// Try to build and set a custom dog tag emblem for the self player.
+    ///
+    /// Reads the player's dog tag component IDs from the cached battle state,
+    /// resolves them against `game_params`, loads and composites the PNG layers
+    /// from the VFS, and replaces `self_emblem` with the result (if successful).
+    ///
+    /// Should be called once after `populate_players` has run and the VFS is
+    /// available.  If the dog tag is not available or any asset is missing the
+    /// current `self_emblem` (i.e. the default fallback) is preserved.
+    pub fn resolve_self_dog_tag_emblem(&mut self, vfs: &wowsunpack::vfs::VfsPath) {
+        let Some(self_eid) = self.self_entity_id else {
+            return; // self not yet known
+        };
+        let Some(dog_tag_value) = self.player_dog_tags.get(&self_eid) else {
+            return; // no dog tag for self
+        };
+
+        // The dog tag field is an array of integer component IDs.
+        let Some(arr) = dog_tag_value.as_array() else {
+            return;
+        };
+
+        let component_ids: Vec<wows_replays::types::GameParamId> = arr
+            .iter()
+            .filter_map(|v| v.as_i64().map(wows_replays::types::GameParamId::from))
+            .collect();
+
+        if component_ids.is_empty() {
+            return;
+        }
+
+        if let Some(emblem) = crate::assets::compose_dog_tag_emblem(&component_ids, self.game_params, vfs) {
+            self.self_emblem = Some(emblem);
+            tracing::info!(entity_id = %self_eid, ?component_ids, "Loaded custom dog tag emblem for self player");
+        } else {
+            tracing::warn!(entity_id = %self_eid, ?component_ids, "Failed to compose dog tag emblem for self player");
+        }
+    }
+
     /// Install a pre-scanned per-entity facts cache. Driven by
     /// `wows_replays::analyzer::battle_controller::merged::scan_vehicle_facts`
     /// once per session. Roster emission falls back to these values when the

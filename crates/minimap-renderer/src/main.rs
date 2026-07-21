@@ -626,6 +626,7 @@ fn main() -> Result<(), Report> {
 
     let mut prev_render_clock = wows_replays::types::GameClock(0.0);
     let mut arena_logged = false;
+    let mut dog_tag_resolved = false;
     while let Some(safe_clock) = session.step().map_err(|e| report!("{e}"))? {
         if !arena_logged && let Some(arena) = session.arena_id() {
             info!(arena_id = %arena, replays = session.replays().len(), "Arena IDs match");
@@ -634,6 +635,10 @@ fn main() -> Result<(), Report> {
         if safe_clock.0 > prev_render_clock.0 {
             let view = session.world_mut().view();
             renderer.populate_players(&view);
+            if !dog_tag_resolved {
+                renderer.resolve_self_dog_tag_emblem(vfs);
+                dog_tag_resolved = true;
+            }
             renderer.update_squadron_info(&view);
             renderer.update_ship_abilities(&view);
             encoder.advance_clock(prev_render_clock, &view, &mut renderer, &mut target);
@@ -645,6 +650,9 @@ fn main() -> Result<(), Report> {
     if final_clock.0 > prev_render_clock.0 {
         let view = session.world_mut().view();
         renderer.populate_players(&view);
+        if !dog_tag_resolved {
+            renderer.resolve_self_dog_tag_emblem(vfs);
+        }
         renderer.update_squadron_info(&view);
         renderer.update_ship_abilities(&view);
         encoder.advance_clock(final_clock, &view, &mut renderer, &mut target);

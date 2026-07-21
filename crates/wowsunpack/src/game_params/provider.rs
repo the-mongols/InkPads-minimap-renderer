@@ -1961,6 +1961,24 @@ impl GameMetadataProvider {
                     .unwrap_or(0.0);
                 Some(ParamData::Building(super::types::Building::builder().level(level).health(health).build()))
             }
+            ParamType::DogTag => {
+                let species = param_data
+                    .get(&pk("typeinfo"))
+                    .and_then(|v| v.dict_or_object_dict())
+                    .and_then(|d| d.inner().get(&pk("species")).and_then(|v| v.string_ref().map(|s| s.inner().to_string())))
+                    .unwrap_or_default();
+                let color_hex = param_data
+                    .get(&pk("colorHEX"))
+                    .or_else(|| param_data.get(&pk("baseColorHEX")))
+                    .and_then(|v| v.string_ref().map(|s| s.inner().to_string()))
+                    .filter(|s| !s.is_empty());
+                Some(ParamData::DogTag(
+                    super::types::DogTag::builder()
+                        .species(species)
+                        .maybe_color_hex(color_hex)
+                        .build(),
+                ))
+            }
             _ => {
                 // Some params (e.g. Drops) have typeinfo.type = "Other"
                 // but contain Drop-specific fields

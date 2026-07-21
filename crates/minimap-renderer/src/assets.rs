@@ -13,11 +13,14 @@ use wowsunpack::game_assets::GuiAssetDir;
 use wowsunpack::game_assets::PlaneMarkerKind;
 use wowsunpack::game_assets::Relation;
 use wowsunpack::game_assets::ShipIconState;
+use wowsunpack::game_types::GameParamId;
+use wowsunpack::game_params::types::GameParamProvider;
 use wowsunpack::game_params::types::Species;
 use wowsunpack::vfs::VfsPath;
 
 use crate::MINIMAP_SIZE;
 use crate::map_data;
+
 
 /// Icon size in pixels for rasterized ship icons.
 /// Scales proportionally with minimap size (18px at 768px minimap).
@@ -904,6 +907,194 @@ pub fn load_game_fonts_with_fallbacks_and_override(
     base_fonts
 }
 
+/// Parse a hex color string (e.g. "0x252525" or "#252525") into `[u8; 3]`.
+fn parse_hex_color(hex: &str) -> Option<[u8; 3]> {
+    let s = hex.trim_start_matches("0x").trim_start_matches('#');
+    if s.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+    Some([r, g, b])
+}
+
+/// Tint an RGBA image by multiplying each pixel's RGB channels by the given
+/// color factor, preserving the original alpha.
+fn tint_image(img: &mut RgbaImage, color: [u8; 3]) {
+    for px in img.pixels_mut() {
+        let [r, g, b, a] = px.0;
+        px.0 = [
+            ((r as u32 * color[0] as u32) / 255) as u8,
+            ((g as u32 * color[1] as u32) / 255) as u8,
+            ((b as u32 * color[2] as u32) / 255) as u8,
+            a,
+        ];
+    }
+}
+
+/// Composite `overlay` onto `base` using standard alpha-blending (overlay on top).
+fn composite_over(base: &mut RgbaImage, overlay: &RgbaImage) {
+    let (w, h) = (base.width().min(overlay.width()), base.height().min(overlay.height()));
+    for y in 0..h {
+        for x in 0..w {
+            let src = overlay.get_pixel(x, y);
+            let dst = base.get_pixel_mut(x, y);
+            let src_a = src[3] as f32 / 255.0;
+            let dst_a = dst[3] as f32 / 255.0;
+            let out_a = src_a + dst_a * (1.0 - src_a);
+            if out_a > 0.0 {
+                let blend = |s: u8, d: u8| -> u8 {
+                    ((s as f32 * src_a + d as f32 * dst_a * (1.0 - src_a)) / out_a).round() as u8
+                };
+                dst.0 = [
+                    blend(src[0], dst[0]),
+                    blend(src[1], dst[1]),
+                    blend(src[2], dst[2]),
+                    (out_a * 255.0).round() as u8,
+                ];
+            }
+        }
+    }
+}
+
+/// Compose a custom player dog tag / emblem from its game component IDs.
+///
+/// `component_ids` is the array of up to 5 integer IDs as decoded from the
+/// replay's `dogTag` field for a player.  Each ID is looked up in `game_params`
+/// to resolve the game asset index (e.g. `PCNA001`, `PCNB001`) and optional
+/// color values, then the corresponding PNG layers are loaded from the VFS and
+/// blended together.
+///
+/// Returns `None` if no usable layers could be loaded.
+pub fn compose_dog_tag_emblem<GP: GameParamProvider>(
+    component_ids: &[GameParamId],
+    game_params: &GP,
+    vfs: &VfsPath,
+) -> Option<RgbaImage> {
+    const SIZE: &str = "medium";
+
+    struct Layer {
+        species: String,
+        index: String,
+        color_hex: Option<String>,
+    }
+
+    // Resolve each ID to a layer descriptor
+    let layers: Vec<Layer> = component_ids
+        .iter()
+        .filter_map(|&id| {
+            let param = game_params.game_param_by_id(id)?;
+            let dog_tag = param.dog_tag()?;
+            Some(Layer {
+                species: dog_tag.species().to_string(),
+                index: param.index().to_string(),
+                color_hex: dog_tag.color_hex().map(|s| s.to_string()),
+            })
+        })
+        .collect();
+
+    if layers.is_empty() {
+        debug!("Dog tag: no resolvable layers from component IDs");
+        return None;
+    }
+
+    // Find the background shape layer — it defines the canvas size
+    let shape_layer = layers.iter().find(|l| l.species == "BackgroundShape");
+
+    let mut canvas = if let Some(sl) = shape_layer {
+        let shape_path_border = format!("gui/dogTags/{SIZE}/{}/border.png", sl.index);
+        let shape_img = load_packed_image(&shape_path_border, vfs)
+            .or_else(|| {
+                let shape_path_direct = format!("gui/dogTags/{SIZE}/{}.png", sl.index);
+                load_packed_image(&shape_path_direct, vfs)
+            })
+            .map(|i| i.into_rgba8());
+
+        match shape_img {
+            Some(img) => img,
+            None => {
+                warn!("Dog tag: failed to load BackgroundShape layer for {}", sl.index);
+                return None;
+            }
+        }
+    } else {
+        // If there is no background shape, look for a unique or premium symbol to act as the base canvas
+        let base_symbol = layers.iter().find(|l| ["Emblem", "Patch"].contains(&l.species.as_str()));
+        if let Some(bs) = base_symbol {
+            let sym_path = format!("gui/dogTags/{SIZE}/{}.png", bs.index);
+            match load_packed_image(&sym_path, vfs).map(|i| i.into_rgba8()) {
+                Some(img) => img,
+                None => {
+                    warn!("Dog tag: failed to load unique/premium base symbol {}", bs.index);
+                    return None;
+                }
+            }
+        } else {
+            // Fallback to PCNA001 border if nothing else matches
+            let shape_path_border = format!("gui/dogTags/{SIZE}/PCNA001/border.png");
+            match load_packed_image(&shape_path_border, vfs).map(|i| i.into_rgba8()) {
+                Some(img) => img,
+                None => {
+                    warn!("Dog tag: failed to load default BackgroundShape PCNA001");
+                    return None;
+                }
+            }
+        }
+    };
+
+    let shape_index = shape_layer.map(|l| l.index.as_str()).unwrap_or("PCNA001");
+
+    // Tint shape with BackgroundColor
+    if let Some(bg_color_layer) = layers.iter().find(|l| l.species == "BackgroundColor") {
+        if let Some(hex) = &bg_color_layer.color_hex {
+            if let Some(rgb) = parse_hex_color(hex) {
+                tint_image(&mut canvas, rgb);
+            }
+        }
+    }
+
+    // Overlay BackgroundTexture (tinted with its baseColorHEX)
+    if let Some(tex_layer) = layers.iter().find(|l| l.species == "BackgroundTexture") {
+        let tex_path_sub = format!("gui/dogTags/{SIZE}/{shape_index}/{}.png", tex_layer.index);
+        let tex_img = load_packed_image(&tex_path_sub, vfs)
+            .or_else(|| {
+                let tex_path_direct = format!("gui/dogTags/{SIZE}/{}.png", tex_layer.index);
+                load_packed_image(&tex_path_direct, vfs)
+            })
+            .map(|i| i.into_rgba8());
+
+        if let Some(mut tex_img) = tex_img {
+            if let Some(hex) = &tex_layer.color_hex {
+                if let Some(rgb) = parse_hex_color(hex) {
+                    tint_image(&mut tex_img, rgb);
+                }
+            }
+            composite_over(&mut canvas, &tex_img);
+        } else {
+            debug!("Dog tag: BackgroundTexture layer {} not found, skipping", tex_layer.index);
+        }
+    }
+
+    // Overlay Symbol layers (PCNB, PCNU, PCNP prefixes all represent symbols)
+    let symbol_species = ["Symbol", "Emblem", "Patch"];
+    for layer in layers.iter().filter(|l| symbol_species.contains(&l.species.as_str())) {
+        // Skip if this symbol was already used as the base canvas
+        if shape_layer.is_none() && ["Emblem", "Patch"].contains(&layer.species.as_str()) {
+            continue;
+        }
+        let sym_path = format!("gui/dogTags/{SIZE}/{}.png", layer.index);
+        if let Some(sym_img) = load_packed_image(&sym_path, vfs).map(|i| i.into_rgba8()) {
+            composite_over(&mut canvas, &sym_img);
+        } else {
+            debug!(path = %sym_path, "Dog tag: Symbol layer not found, skipping");
+        }
+    }
+
+    debug!("Dog tag: composed emblem from {} layers", layers.len());
+    Some(canvas)
+}
+
 #[cfg(test)]
 mod font_fallback_test {
     use super::first_available;
@@ -918,3 +1109,4 @@ mod font_fallback_test {
         assert_eq!(first_available::<i32>(None, [None, None], || 9), 9);
     }
 }
+
