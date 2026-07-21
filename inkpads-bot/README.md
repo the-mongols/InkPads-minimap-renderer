@@ -52,7 +52,22 @@ A Discord bot to receive `.wowsreplay` files from users, and return high-quality
    python3 inkpads-bot/bot.py
    ```
 
-### 4. Running as a Daemon (systemd on VPS)
+### 4. Updating the Bot & Renderer (VPS/Linux)
+To update the repository, rebuild the renderer (which will automatically compile and copy the new binary to the bot directory), and restart the bot service:
+1. Pull the latest changes:
+   ```bash
+   git pull
+   ```
+2. Build the renderer:
+   ```bash
+   ./build_renderer.sh
+   ```
+3. Restart the systemd service:
+   ```bash
+   sudo systemctl restart inkpads-bot.service
+   ```
+
+### 5. Running as a Daemon (systemd on VPS)
 To keep the bot running persistently on a Linux VPS, use the provided `inkpads-bot.service` template:
 1. Copy the service template to the systemd folder:
    ```bash
