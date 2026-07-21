@@ -22,8 +22,14 @@ fi
 echo "[2/2] Verifying release binary..."
 if [ -f target/release/minimap_renderer ]; then
     echo "[SUCCESS] Renderer built successfully at target/release/minimap_renderer"
+    echo "[3/3] Copying binary to inkpads-bot folder..."
+    cp -f target/release/minimap_renderer inkpads-bot/minimap_renderer
+    echo "[SUCCESS] Copied target/release/minimap_renderer to inkpads-bot/minimap_renderer"
 elif [ -f target/release/minimap_renderer.exe ]; then
     echo "[SUCCESS] Renderer built successfully at target/release/minimap_renderer.exe"
+    echo "[3/3] Copying binary to inkpads-bot folder..."
+    cp -f target/release/minimap_renderer.exe inkpads-bot/minimap_renderer.exe
+    echo "[SUCCESS] Copied target/release/minimap_renderer.exe to inkpads-bot/minimap_renderer.exe"
 else
     echo "[WARNING] Binary not found at standard release path."
 fi

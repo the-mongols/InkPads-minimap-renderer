@@ -17,10 +17,24 @@ goto no_binary
 
 :got_exe
 echo [SUCCESS] Renderer built successfully at target\release\minimap_renderer.exe
+echo [3/3] Copying binary to inkpads-bot folder...
+copy /y target\release\minimap_renderer.exe inkpads-bot\minimap_renderer.exe >nul
+if errorlevel 1 (
+    echo [WARNING] Failed to copy binary to inkpads-bot folder.
+) else (
+    echo [SUCCESS] Copied target\release\minimap_renderer.exe to inkpads-bot\minimap_renderer.exe
+)
 goto done
 
 :got_elf
 echo [SUCCESS] Renderer built successfully at target\release\minimap_renderer
+echo [3/3] Copying binary to inkpads-bot folder...
+copy /y target\release\minimap_renderer inkpads-bot\minimap_renderer >nul
+if errorlevel 1 (
+    echo [WARNING] Failed to copy binary to inkpads-bot folder.
+) else (
+    echo [SUCCESS] Copied target\release\minimap_renderer to inkpads-bot\minimap_renderer
+)
 goto done
 
 :no_cargo
