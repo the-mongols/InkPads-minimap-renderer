@@ -470,32 +470,13 @@ async def send_webhook_payload(replay_path, red_replay_path, session_id):
 
 
 
-@bot.tree.command(name="render", description="Render a WoWS replay into a tactical video")
-@app_commands.allowed_installs(guilds=True, users=True)
-@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
-@app_commands.describe(
-    replay="The primary (Green) .wowsreplay file",
-    red_replay="Optional secondary (Red) .wowsreplay file from the opposing team",
-    show_trails="Display ship movement trails (heatmap)",
-    show_config="Show detection and weapon range circles",
-    cpu_mode="Use CPU encoding (slower, but safer if GPU is busy)",
-    discord_layout="Optimize layout elements and statistics for Discord embeds (default: True)",
-    layout_preset="Gutter size preset (default: B: Compromise 16:10)"
-)
-@app_commands.choices(layout_preset=[
-    app_commands.Choice(name="Original (256px)", value="Original"),
-    app_commands.Choice(name="A: Widescreen 16:9 (928px)", value="A"),
-    app_commands.Choice(name="B: Compromise 16:10 (720px)", value="B"),
-    app_commands.Choice(name="C: Discord-Maximized (448px)", value="C")
-])
-async def render(
+async def _render_impl(
     interaction: discord.Interaction, 
     replay: discord.Attachment,
     red_replay: discord.Attachment = None,
     show_trails: bool = False,
     show_config: bool = False,
     cpu_mode: bool = False,
-    discord_layout: bool = True,
     layout_preset: app_commands.Choice[str] = None
 ):
     # Acknowledge and defer immediately (Discord requires responses within 3 seconds)
@@ -626,7 +607,7 @@ async def render(
         if show_trails: cmd.append("--show-trails")
         if show_config: cmd.append("--show-ship-config")
         if cpu_mode or FORCE_CPU: cmd.append("--cpu")
-        if discord_layout: cmd.append("--discord-layout")
+        cmd.append("--discord-layout")
 
         preset_val = layout_preset.value if layout_preset else "B"
         if preset_val == "A": cmd.extend(["--stats-panel-width", "928"])
@@ -735,6 +716,77 @@ async def render(
             # Always release the semaphore slot for the next user
             if render_semaphore:
                 render_semaphore.release()
+
+if FORCE_CPU:
+    @bot.tree.command(name="render", description="Render a WoWS replay into a tactical video")
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+    @app_commands.describe(
+        replay="The primary (Green) .wowsreplay file",
+        red_replay="(Optional) Attach a .wowsreplay file from the opposing team for a dual-render",
+        show_trails="Display ship movement trails (heatmap)",
+        show_config="Show detection and weapon range circles",
+        layout_preset="Gutter size preset (default: B: Compromise 16:10)"
+    )
+    @app_commands.choices(layout_preset=[
+        app_commands.Choice(name="Original (256px)", value="Original"),
+        app_commands.Choice(name="A: Widescreen 16:9 (928px)", value="A"),
+        app_commands.Choice(name="B: Compromise 16:10 (720px)", value="B"),
+        app_commands.Choice(name="C: Discord-Maximized (448px)", value="C")
+    ])
+    async def render(
+        interaction: discord.Interaction, 
+        replay: discord.Attachment,
+        red_replay: discord.Attachment = None,
+        show_trails: bool = False,
+        show_config: bool = False,
+        layout_preset: app_commands.Choice[str] = None
+    ):
+        await _render_impl(
+            interaction=interaction,
+            replay=replay,
+            red_replay=red_replay,
+            show_trails=show_trails,
+            show_config=show_config,
+            cpu_mode=False,
+            layout_preset=layout_preset
+        )
+else:
+    @bot.tree.command(name="render", description="Render a WoWS replay into a tactical video")
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+    @app_commands.describe(
+        replay="The primary (Green) .wowsreplay file",
+        red_replay="(Optional) Attach a .wowsreplay file from the opposing team for a dual-render",
+        show_trails="Display ship movement trails (heatmap)",
+        show_config="Show detection and weapon range circles",
+        cpu_mode="Use CPU encoding (slower, but safer if GPU is busy)",
+        layout_preset="Gutter size preset (default: B: Compromise 16:10)"
+    )
+    @app_commands.choices(layout_preset=[
+        app_commands.Choice(name="Original (256px)", value="Original"),
+        app_commands.Choice(name="A: Widescreen 16:9 (928px)", value="A"),
+        app_commands.Choice(name="B: Compromise 16:10 (720px)", value="B"),
+        app_commands.Choice(name="C: Discord-Maximized (448px)", value="C")
+    ])
+    async def render(
+        interaction: discord.Interaction, 
+        replay: discord.Attachment,
+        red_replay: discord.Attachment = None,
+        show_trails: bool = False,
+        show_config: bool = False,
+        cpu_mode: bool = False,
+        layout_preset: app_commands.Choice[str] = None
+    ):
+        await _render_impl(
+            interaction=interaction,
+            replay=replay,
+            red_replay=red_replay,
+            show_trails=show_trails,
+            show_config=show_config,
+            cpu_mode=cpu_mode,
+            layout_preset=layout_preset
+        )
 
 @bot.tree.command(name="ping", description="Check bot status")
 @app_commands.allowed_installs(guilds=True, users=True)
