@@ -679,6 +679,10 @@ pub struct GameFonts {
     pub primary_bytes: Vec<u8>,
     /// Raw TTF bytes of the fallback fonts (same order as `fallbacks`).
     pub fallback_bytes: Vec<Vec<u8>>,
+    /// CondBold font (WarHeliosCondCBold)
+    pub cond_bold: FontArc,
+    /// Scale correction factor for the cond_bold font.
+    pub cond_bold_scale_factor: f32,
 }
 
 impl GameFonts {
@@ -711,6 +715,11 @@ impl GameFonts {
     /// Use this instead of `PxScale::from()` to ensure consistent visual sizing.
     pub fn scale(&self, size: f32) -> PxScale {
         PxScale::from(size * self.primary_scale_factor)
+    }
+
+    /// Get a corrected `PxScale` for the WarHeliosCondCBold font.
+    pub fn scale_cond_bold(&self, size: f32) -> PxScale {
+        PxScale::from(size * self.cond_bold_scale_factor)
     }
 
     /// Get a corrected `PxScale` for the font indicated by a `FontHint`.
@@ -834,9 +843,13 @@ fn game_fonts_from_vfs(vfs: &VfsPath) -> Option<GameFonts> {
     let primary_scale_factor = compute_scale_factor(&primary);
     let fallback_scale_factors: Vec<f32> = fallbacks.iter().map(compute_scale_factor).collect();
 
+    let cond_bold_bytes = include_bytes!("WarHeliosCondCBold.ttf").to_vec();
+    let cond_bold = FontArc::try_from_vec(cond_bold_bytes).expect("failed to load embedded WarHeliosCondCBold.ttf");
+    let cond_bold_scale_factor = compute_scale_factor(&cond_bold);
+
     debug!(fallback_count = fallbacks.len(), primary_scale_factor, "Loaded game fonts");
 
-    Some(GameFonts { primary, fallbacks, primary_scale_factor, fallback_scale_factors, primary_bytes, fallback_bytes })
+    Some(GameFonts { primary, fallbacks, primary_scale_factor, fallback_scale_factors, primary_bytes, fallback_bytes, cond_bold, cond_bold_scale_factor })
 }
 
 /// Build a `GameFonts` from a system sans-serif face, used when no game TTF is
@@ -846,6 +859,9 @@ fn system_game_fonts() -> GameFonts {
     let (primary, primary_bytes) =
         load_system_fallback_font().expect("no usable font found in the game files or on the system");
     let primary_scale_factor = compute_scale_factor(&primary);
+    let cond_bold_bytes = include_bytes!("WarHeliosCondCBold.ttf").to_vec();
+    let cond_bold = FontArc::try_from_vec(cond_bold_bytes).expect("failed to load embedded WarHeliosCondCBold.ttf");
+    let cond_bold_scale_factor = compute_scale_factor(&cond_bold);
     GameFonts {
         primary,
         fallbacks: Vec::new(),
@@ -853,6 +869,8 @@ fn system_game_fonts() -> GameFonts {
         fallback_scale_factors: Vec::new(),
         primary_bytes,
         fallback_bytes: Vec::new(),
+        cond_bold,
+        cond_bold_scale_factor,
     }
 }
 

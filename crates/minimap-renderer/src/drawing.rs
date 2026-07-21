@@ -752,7 +752,7 @@ fn death_cause_icon_key(
 
 /// Draw rich kill feed entries in the top-right corner.
 ///
-/// Layout per line (right-aligned):
+/// Layout per line (left-aligned):
 /// `KILLER_NAME [icon] ship_name  [cause]  VICTIM_NAME [icon] ship_name`
 fn draw_kill_feed(
     pm: &mut Pixmap,
@@ -760,19 +760,17 @@ fn draw_kill_feed(
     fonts: &GameFonts,
     ship_icons: &HashMap<String, ShipIcon>,
     death_cause_icons: &HashMap<String, RgbaImage>,
-    right_edge: u32,
+    left_edge: u32,
 ) {
     let default_font = &fonts.primary;
     let default_name_scale = fonts.scale(12.0);
     let line_height = 20i32;
-    let right_margin = 4i32;
+    let left_margin = 4i32;
     let icon_size = crate::assets::ICON_SIZE as i32;
     let cause_icon_size = icon_size;
     let gap = 2i32; // gap between elements
-    // `right_edge` is the canvas x at which entries align flush right.
-    // Callers pass the minimap's right edge so the feed stays inside the map
-    // area when team rosters reserve a right-side gutter.
-    let width = right_edge as i32;
+    // `left_edge` is the canvas x at which entries align left.
+    let start_x = left_edge as i32;
 
     let (_, text_h) = text_size(default_name_scale, default_font, "Ag");
     let text_h = text_h as i32;
@@ -831,11 +829,11 @@ fn draw_kill_feed(
         }
 
         // Draw a semi-transparent background for readability
-        let bg_x = (width - total_w - right_margin * 2) as f32;
+        let bg_x = start_x as f32;
         let bg_y = y as f32 - 1.0;
-        draw_filled_rect(pm, bg_x, bg_y, (total_w + right_margin * 2) as f32, (line_height) as f32, [0, 0, 0], 0.5);
+        draw_filled_rect(pm, bg_x, bg_y, (total_w + left_margin * 2) as f32, (line_height) as f32, [0, 0, 0], 0.5);
 
-        let mut x = width - total_w - right_margin;
+        let mut x = start_x + left_margin;
 
         // Killer name (team-colored)
         draw_text_shadow(pm, entry.killer_color, x, y, killer_name_scale, killer_name_font, &entry.killer_name);
@@ -2423,7 +2421,7 @@ impl RenderTarget for ImageTarget {
                     &self.fonts,
                     &self.ship_icons,
                     &self.death_cause_icons,
-                    self.map_x_offset + self.map_width,
+                    self.map_x_offset,
                 );
             }
             DrawCommand::ChatOverlay { entries } => {
@@ -2597,8 +2595,8 @@ impl RenderTarget for ImageTarget {
                         ((fit_h as f32 * aspect) as u32, fit_h)
                     };
 
-                    // Scale up by 1.66x (7% larger than 1.55x) to make better use of space
-                    let scale_mult = 1.66f32;
+                    // Scale up by 1.743x (5% larger than 1.66x) to make better use of space
+                    let scale_mult = 1.743f32;
                     let draw_w = ((draw_w as f32 * scale_mult) as u32).min(fit_w).max(1);
                     let draw_h = ((draw_h as f32 * scale_mult) as u32).min(fit_h + 30).max(1);
 
@@ -2659,8 +2657,8 @@ impl RenderTarget for ImageTarget {
 
                 // HP text: "12,345 / 42,750"
                 let hp_text = format!("{} / {}", format_number(*hp_current as i64), format_number(*hp_max as i64));
-                let hp_scale = self.fonts.scale(14.0 * scale_factor);
-                let (tw, _) = text_size(hp_scale, &self.fonts.primary, &hp_text);
+                let hp_scale = self.fonts.scale_cond_bold(14.0 * scale_factor);
+                let (tw, _) = text_size(hp_scale, &self.fonts.cond_bold, &hp_text);
                 let hp_text_x = inner_x + (inner_w - tw as i32) / 2;
                 draw_text_shadow(
                     &mut self.canvas,
@@ -2668,7 +2666,7 @@ impl RenderTarget for ImageTarget {
                     hp_text_x,
                     hp_text_y,
                     hp_scale,
-                    &self.fonts.primary,
+                    &self.fonts.cond_bold,
                     &hp_text,
                 );
             }
@@ -2691,10 +2689,10 @@ impl RenderTarget for ImageTarget {
                 let right_w = *width - left_w;
                 let right_center_x = *x + left_w + right_w / 2;
                 
-                let label_scale = self.fonts.scale(10.0 * scale_factor);
-                let value_scale = self.fonts.scale(14.0 * scale_factor);
-                let label_row_h = (14.0 * scale_factor).round() as i32;
-                let value_row_h = (20.0 * scale_factor).round() as i32;
+                let label_scale = self.fonts.scale_cond_bold(10.0 * 1.08 * scale_factor);
+                let value_scale = self.fonts.scale_cond_bold(14.0 * 1.10 * scale_factor);
+                let label_row_h = (14.0 * 1.08 * scale_factor).round() as i32;
+                let value_row_h = (20.0 * 1.10 * scale_factor).round() as i32;
 
                 // Let's compute text_group_h to locate emblem_y and start_y exactly as in StatsSilhouette
                 let show_player = true;
@@ -2738,41 +2736,41 @@ impl RenderTarget for ImageTarget {
                 // DAMAGE
                 let total_damage: f64 = breakdowns.iter().map(|e| e.damage).sum();
                 let label = "DAMAGE";
-                let (lw, _) = text_size(label_scale, &self.fonts.primary, label);
+                let (lw, _) = text_size(label_scale, &self.fonts.cond_bold, label);
                 let lx = right_center_x - lw as i32 / 2;
-                draw_text_shadow(&mut self.canvas, [140, 140, 140], lx, cur_y, label_scale, &self.fonts.primary, label);
+                draw_text_shadow(&mut self.canvas, [140, 140, 140], lx, cur_y, label_scale, &self.fonts.cond_bold, label);
                 cur_y += label_row_h;
                 
                 let total_str = format_number(total_damage as i64);
-                let (vw, _) = text_size(value_scale, &self.fonts.primary, &total_str);
+                let (vw, _) = text_size(value_scale, &self.fonts.cond_bold, &total_str);
                 let vx = right_center_x - vw as i32 / 2;
-                draw_text_shadow(&mut self.canvas, [255, 220, 100], vx, cur_y, value_scale, &self.fonts.primary, &total_str);
+                draw_text_shadow(&mut self.canvas, [255, 220, 100], vx, cur_y, value_scale, &self.fonts.cond_bold, &total_str);
                 cur_y += value_row_h + metric_gap;
 
                 // SPOTTING
                 let label = "SPOTTING";
-                let (lw, _) = text_size(label_scale, &self.fonts.primary, label);
+                let (lw, _) = text_size(label_scale, &self.fonts.cond_bold, label);
                 let lx = right_center_x - lw as i32 / 2;
-                draw_text_shadow(&mut self.canvas, [140, 140, 140], lx, cur_y, label_scale, &self.fonts.primary, label);
+                draw_text_shadow(&mut self.canvas, [140, 140, 140], lx, cur_y, label_scale, &self.fonts.cond_bold, label);
                 cur_y += label_row_h;
                 
                 let spot_str = format_number(*damage_spotting as i64);
-                let (vw, _) = text_size(value_scale, &self.fonts.primary, &spot_str);
+                let (vw, _) = text_size(value_scale, &self.fonts.cond_bold, &spot_str);
                 let vx = right_center_x - vw as i32 / 2;
-                draw_text_shadow(&mut self.canvas, [120, 200, 255], vx, cur_y, value_scale, &self.fonts.primary, &spot_str);
+                draw_text_shadow(&mut self.canvas, [120, 200, 255], vx, cur_y, value_scale, &self.fonts.cond_bold, &spot_str);
                 cur_y += value_row_h + metric_gap;
 
                 // POTENTIAL
                 let label = "POTENTIAL";
-                let (lw, _) = text_size(label_scale, &self.fonts.primary, label);
+                let (lw, _) = text_size(label_scale, &self.fonts.cond_bold, label);
                 let lx = right_center_x - lw as i32 / 2;
-                draw_text_shadow(&mut self.canvas, [140, 140, 140], lx, cur_y, label_scale, &self.fonts.primary, label);
+                draw_text_shadow(&mut self.canvas, [140, 140, 140], lx, cur_y, label_scale, &self.fonts.cond_bold, label);
                 cur_y += label_row_h;
                 
                 let pot_str = format_number(*damage_potential as i64);
-                let (vw, _) = text_size(value_scale, &self.fonts.primary, &pot_str);
+                let (vw, _) = text_size(value_scale, &self.fonts.cond_bold, &pot_str);
                 let vx = right_center_x - vw as i32 / 2;
-                draw_text_shadow(&mut self.canvas, [180, 180, 180], vx, cur_y, value_scale, &self.fonts.primary, &pot_str);
+                draw_text_shadow(&mut self.canvas, [180, 180, 180], vx, cur_y, value_scale, &self.fonts.cond_bold, &pot_str);
 
                 // Draw active consumables centered horizontally in the left 57% column at cons_y
                 let cons_gap = (4.0 * scale_factor).round() as i32;
