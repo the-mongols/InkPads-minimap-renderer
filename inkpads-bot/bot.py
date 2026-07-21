@@ -429,7 +429,8 @@ async def render(
             cmd.extend(["--extracted-dir", WOWS_EXTRACTED_DIR])
         else:
             cmd.extend(["-g", str(GAME_DIR)])
-        cmd.extend(["-o", str(output_path), "--max-size-mib", str(target_size_mib), "--codec", "h265"])
+        codec = "h264" if (cpu_mode or FORCE_CPU) else "h265"
+        cmd.extend(["-o", str(output_path), "--max-size-mib", str(target_size_mib), "--codec", codec])
         if RENDERER_FONT_PATH:
             cmd.extend(["--font", RENDERER_FONT_PATH])
         cmd.append(str(replay_path))
