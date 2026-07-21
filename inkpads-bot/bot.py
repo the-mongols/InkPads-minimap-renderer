@@ -21,6 +21,7 @@ RENDERER_PATH = os.getenv('RENDERER_PATH')
 WOWS_EXTRACTED_DIR = os.getenv('WOWS_EXTRACTED_DIR')
 RENDERER_FONT_PATH = os.getenv('RENDERER_FONT_PATH')
 FORCE_CPU = os.getenv('FORCE_CPU', 'false').lower() in ('true', '1', 'yes')
+RENDERER_CODEC = os.getenv('RENDERER_CODEC')
 
 # Webhook Configuration (optional early handover)
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
@@ -429,7 +430,9 @@ async def render(
             cmd.extend(["--extracted-dir", WOWS_EXTRACTED_DIR])
         else:
             cmd.extend(["-g", str(GAME_DIR)])
-        codec = "h264" if (cpu_mode or FORCE_CPU) else "h265"
+        codec = RENDERER_CODEC.lower() if RENDERER_CODEC and RENDERER_CODEC.lower() in ("h264", "h265", "av1") else None
+        if not codec:
+            codec = "h264" if (cpu_mode or FORCE_CPU) else "h265"
         cmd.extend(["-o", str(output_path), "--max-size-mib", str(target_size_mib), "--codec", codec])
         if RENDERER_FONT_PATH:
             cmd.extend(["--font", RENDERER_FONT_PATH])
