@@ -409,6 +409,31 @@ def format_date_time(raw_dt):
     except Exception:
         return raw_dt
 
+def get_game_mode_display_name(match_group, game_type):
+    group = str(match_group).strip().lower() if match_group else ""
+    gtype = str(game_type).strip().lower() if game_type else ""
+    
+    if group == "pvp":
+        return "Random Battle"
+    elif group in ("cooperative", "coop"):
+        return "Co-op Battle"
+    elif group == "ranked":
+        return "Ranked Battle"
+    elif group in ("clan", "cvc", "cw"):
+        return "Clan Battle"
+    elif group == "brawl":
+        return "Brawl"
+    elif group == "pve" or "operation" in gtype or "scenario" in gtype:
+        return "Operation"
+    elif group == "event":
+        return "Event Mode"
+    elif match_group:
+        return str(match_group).strip().title()
+    elif game_type:
+        return str(game_type).strip().title()
+    return ""
+
+
 
 async def send_webhook_payload(replay_path, red_replay_path, session_id):
     if not WEBHOOK_URL:
@@ -552,19 +577,25 @@ async def _render_impl(
         raw_ship = header.get("playerVehicle", "")
         raw_map = header.get("mapName", "") or header.get("mapDisplayName", "")
         raw_dt = header.get("dateTime", "")
+        match_group = header.get("matchGroup", "")
+        game_type = header.get("gameType", "")
 
+        mode_name = get_game_mode_display_name(match_group, game_type)
         ship_name = clean_ship_name(raw_ship)
         map_name = get_map_display_name(raw_map)
         formatted_dt = format_date_time(raw_dt)
-        logger.info(f"[{session_id}] Metadata extracted: Ship={ship_name}, Map={map_name}")
+        logger.info(f"[{session_id}] Metadata extracted: Mode={mode_name}, Ship={ship_name}, Map={map_name}")
 
         # Update state to Rendering
         embed.title = "Rendering Minimap"
         embed.color = 0x3498DB # Blue
         
         details = []
+        if mode_name and map_name:
+            details.append(f"**{mode_name}:** {map_name}")
+        elif map_name:
+            details.append(f"**Map:** {map_name}")
         if ship_name: details.append(f"**Ship:** {ship_name}")
-        if map_name: details.append(f"**Map:** {map_name}")
         if formatted_dt: details.append(f"**Date:** {formatted_dt}")
         info_line = " | ".join(details)
         

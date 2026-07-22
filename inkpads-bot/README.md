@@ -87,6 +87,11 @@ To keep the bot running persistently on a Linux VPS, use the provided `inkpads-b
    journalctl -u inkpads-bot.service -f
    ```
 
+### 6. Asset Extraction & File Path Case Sensitivity (Linux VPS Note)
+When deploying pre-extracted game asset directories (`WOWS_EXTRACTED_DIR`) on Linux hosts with case-sensitive filesystems (e.g., ext4, xfs):
+- Ensure that extracted asset directory trees maintain standard Wargaming internal casing (e.g., `gui/dogTags/` or `gui/dogtags/`).
+- Player dog tag and emblem assets (`DT_Default.png`) are automatically looked up across standard path variants (`gui/dogTags/`, `gui/dog_tags/`, `gui/dogtags/`). If player emblems or dog tags fail to resolve on a Linux host, verify that the extraction tool did not alter folder or filename casing during extraction.
+
 ## How to use in Discord
 Once the bot is running and invited to your server:
 1. Type `/render`.
