@@ -1,0 +1,14 @@
+# InkPads minimap-renderer Discord bot (outbound only, no ports).
+# Deploy/update: docker compose up -d --build
+
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env                 # DISCORD_TOKEN, FORCE_CPU, RENDERER_CODEC, ... (never committed)
+    volumes:
+      # Pre-extracted game data, mounted read-only.
+      # Host layout: ./game_data/extracted/<version>_<build>/
+      - ./game_data/extracted:/data/game_data/extracted:ro
+    cpus: 2.0
+    mem_limit: 3g

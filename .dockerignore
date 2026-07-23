@@ -1,0 +1,23 @@
+# Secrets — compose provides .env at runtime
+.env
+**/.env
+!**/.env.example
+
+# Runtime-mounted game data (large, per-patch)
+game_data/
+
+# Rebuilt in-image
+target/
+
+# Windows binaries — Linux renderer is compiled in stage 1
+*.exe
+*.pdb
+
+# VCS / tests / caches / scratch
+.git/
+tests/
+**/__pycache__/
+**/*.pyc
+inkpads-bot/temp/
+*.mp4
+*.wowsreplay
