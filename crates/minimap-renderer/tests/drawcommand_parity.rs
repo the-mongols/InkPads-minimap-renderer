@@ -298,11 +298,13 @@ fn normalize(cmd: &DrawCommand) -> String {
             x,
             y,
             width,
+            height: _,
             breakdowns,
             damage_spotting,
             spotting_breakdowns,
             damage_potential,
             potential_breakdowns,
+            wpa: _,
             consumables: _,
         } => {
             let bd: Vec<_> = breakdowns.iter().map(|b| (&b.label, b.damage as i64)).collect();
@@ -319,6 +321,12 @@ fn normalize(cmd: &DrawCommand) -> String {
         }
         DrawCommand::StatsActivityFeed { x, y, width, height, entries } => {
             format!("StatsActivityFeed x={x} y={y} w={width} h={height} n={}", entries.len())
+        }
+        DrawCommand::InkpadsTeammateTable { x, y, width, height, rows } => {
+            format!("InkpadsTeammateTable x={x} y={y} w={width} h={height} rows={}", rows.len())
+        }
+        DrawCommand::InkpadsInLineFeeds { x, y, width, height, entries } => {
+            format!("InkpadsInLineFeeds x={x} y={y} w={width} h={height} n={}", entries.len())
         }
         DrawCommand::TeamRoster { side, x, y, width, height, rows } => {
             let row_ids: Vec<_> = rows.iter().map(|r| r.entity_id).collect();

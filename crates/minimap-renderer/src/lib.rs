@@ -27,7 +27,7 @@ pub const CANVAS_HEIGHT: u32 = MINIMAP_SIZE + HUD_HEIGHT;
 /// Width of the stats side panel when enabled.
 pub const STATS_PANEL_WIDTH: u32 = 256;
 /// Width of the stats side panel in 16:9 aspect ratio mode.
-pub const STATS_PANEL_WIDTH_16_9: u32 = 256;
+pub const STATS_PANEL_WIDTH_16_9: u32 = 928;
 /// Width of each team roster panel (left/right of the minimap) when enabled.
 pub const TEAM_ROSTER_WIDTH: u32 = 256;
 /// Halo thickness (in icon-pixel space) for the detected-teammate outline

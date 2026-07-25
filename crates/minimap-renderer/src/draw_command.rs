@@ -617,21 +617,44 @@ pub enum DrawCommand {
         x: i32,
         y: i32,
         width: i32,
+        height: i32,
         /// Per-weapon-group enemy damage breakdown (sorted by damage desc)
         breakdowns: Vec<DamageBreakdownEntry>,
         damage_spotting: f64,
         spotting_breakdowns: Vec<DamageBreakdownEntry>,
         damage_potential: f64,
         potential_breakdowns: Vec<DamageBreakdownEntry>,
+        wpa: f64,
         consumables: Vec<StatsConsumable>,
     },
     /// Compact ribbon summary in the stats panel
     StatsRibbons { x: i32, y: i32, width: i32, ribbons: Vec<RibbonCount> },
     /// Merged kill feed + chat activity log in the stats panel
     StatsActivityFeed { x: i32, y: i32, width: i32, height: i32, entries: Vec<ActivityFeedEntry> },
+    /// Teammate performance table in the middle section of --inkpads-layout
+    InkpadsTeammateTable { x: i32, y: i32, width: i32, height: i32, rows: Vec<TeammateTableRow> },
+    /// In-line side-by-side Kill Feed (30%) and Chat Feed (70%) in the bottom section of --inkpads-layout
+    InkpadsInLineFeeds { x: i32, y: i32, width: i32, height: i32, entries: Vec<ActivityFeedEntry> },
     /// Per-team roster panel: list of ships with HP, name, and consumable slots.
     /// Positioned in a gutter beside the map (left or right depending on `side`).
     TeamRoster { side: RosterSide, x: i32, y: i32, width: i32, height: i32, rows: Vec<RosterRow> },
+}
+
+/// Single row in the InkPads teammate performance table.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+pub struct TeammateTableRow {
+    pub player_name: String,
+    pub clan_tag: Option<String>,
+    pub ship_name: String,
+    pub ship_species: Option<String>,
+    pub wpa: f32,
+    pub damage: u32,
+    pub hp_cur: u32,
+    pub hp_max: u32,
+    pub received: u32,
+    pub kills: u32,
+    pub is_dead: bool,
 }
 
 /// Which gutter a [`DrawCommand::TeamRoster`] sits in.
@@ -820,6 +843,8 @@ impl DrawCommand {
                 | Self::StatsDamage { .. }
                 | Self::StatsRibbons { .. }
                 | Self::StatsActivityFeed { .. }
+                | Self::InkpadsTeammateTable { .. }
+                | Self::InkpadsInLineFeeds { .. }
                 | Self::TeamRoster { .. }
         )
     }
@@ -834,6 +859,8 @@ impl DrawCommand {
                 | Self::StatsDamage { .. }
                 | Self::StatsRibbons { .. }
                 | Self::StatsActivityFeed { .. }
+                | Self::InkpadsTeammateTable { .. }
+                | Self::InkpadsInLineFeeds { .. }
                 | Self::TeamRoster { .. }
         )
     }

@@ -226,6 +226,10 @@ struct Args {
     #[arg(long = "discord-layout")]
     discord_layout: bool,
 
+    /// Enable high-density webapp/VOD Vault layout (teammate performance table, 30/70 bottom feed split)
+    #[arg(long = "inkpads-layout")]
+    inkpads_layout: bool,
+
     /// Override the statistics side panel width in pixels
     #[arg(long)]
     stats_panel_width: Option<u32>,
@@ -414,6 +418,7 @@ fn main() -> Result<(), Report> {
         compact_stats: args.compact_stats,
         aspect_ratio_16_9: args.aspect_ratio_16_9,
         discord_layout: args.discord_layout,
+        inkpads_layout: args.inkpads_layout,
         stats_panel_width: args.stats_panel_width,
     });
     let include_pre_battle = config.include_pre_battle;

@@ -183,6 +183,79 @@ fn is_heal_consumable(c: &Recognized<Consumable>) -> bool {
     matches!(c.known(), Some(Consumable::RepairParty) | Some(Consumable::RegenerateHealth))
 }
 
+/// Calculate Sabermetric Win Probability Added (WPA) for a single player entity at `clock`.
+fn calculate_player_wpa(
+    entity_id: EntityId,
+    clock: GameClock,
+    _leverage_index: f32,
+    damage_events: &HashMap<EntityId, Vec<wows_replays::analyzer::battle_controller::DamageEvent>>,
+    controller: &BattleView<'_>,
+    hp_cur: f32,
+    hp_max: f32,
+    damage_dealt: u32,
+    damage_received: u32,
+    _kills: u32,
+) -> f64 {
+    let mut wpa_combat = 0.0f32;
+    if let Some(events) = damage_events.get(&entity_id) {
+        for e in events.iter().take_while(|e| e.clock <= clock) {
+            let target_max_hp = controller
+                .vehicle_props(e.victim)
+                .map(|p| p.max_health())
+                .unwrap_or(40000.0)
+                .max(1.0);
+
+            let target_weight = controller
+                .player_entities()
+                .get(&e.victim)
+                .and_then(|p| p.vehicle().species())
+                .and_then(|s| s.known())
+                .map(|spec| match spec {
+                    wowsunpack::game_params::types::Species::Destroyer => 1.50,
+                    wowsunpack::game_params::types::Species::Cruiser => 1.25,
+                    wowsunpack::game_params::types::Species::AirCarrier => 1.20,
+                    wowsunpack::game_params::types::Species::Submarine => 1.30,
+                    _ => 0.85,
+                })
+                .unwrap_or(1.00);
+
+            let event_leverage = if e.clock.seconds() <= 300.0 { 1.50 } else { 1.00 };
+
+            wpa_combat += (e.amount / target_max_hp) * target_weight * event_leverage;
+        }
+    }
+
+    let mut wpa_kills = 0.0f32;
+    for k in controller.kills().iter().filter(|k| k.killer == entity_id && k.clock <= clock) {
+        let target_weight = controller
+            .player_entities()
+            .get(&k.victim)
+            .and_then(|p| p.vehicle().species())
+            .and_then(|s| s.known())
+            .map(|spec| match spec {
+                wowsunpack::game_params::types::Species::Destroyer => 1.50,
+                wowsunpack::game_params::types::Species::Cruiser => 1.25,
+                wowsunpack::game_params::types::Species::AirCarrier => 1.20,
+                wowsunpack::game_params::types::Species::Submarine => 1.30,
+                _ => 0.85,
+            })
+            .unwrap_or(1.00);
+        let event_leverage = if k.clock.seconds() <= 300.0 { 1.50 } else { 1.00 };
+        wpa_kills += 0.25 * target_weight * event_leverage;
+    }
+
+    let wpa_efficiency = if hp_cur > 0.0 && hp_max > 0.0 {
+        let hp_ratio = (hp_cur / hp_max).clamp(0.0, 1.0);
+        let damage_ratio = damage_dealt as f32 / (damage_received as f32).max(1.0);
+        damage_ratio.min(3.0) * hp_ratio * 0.20
+    } else {
+        0.0
+    };
+
+    let wpa_score = wpa_combat + wpa_kills + wpa_efficiency;
+    (wpa_score as f64 * 100.0).round() / 100.0
+}
+
 /// HP span of the heal's bright region for an entity. While a heal is running
 /// this is the restore still owed by the current activation
 /// (`rate * work_time_left`), so the bright region's far edge (`current HP +
@@ -2279,7 +2352,6 @@ impl<'a> MinimapRenderer<'a> {
                 })
                 .unwrap_or_default();
 
-            let _scale_factor = if self.options.large_elements { 1.8f32 } else { 1.0f32 };
             let silhouette_y = 15;
             let silhouette_h = 461;
             commands.push(DrawCommand::StatsSilhouette {
@@ -2338,9 +2410,36 @@ impl<'a> MinimapRenderer<'a> {
 
 
 
+            // Calculate live Sabermetric WPA for self player
+            let self_wpa = if let Some(self_eid) = self.self_entity_id {
+                let team_advantage_result = self.calculate_team_advantage(controller);
+                let leverage_index = 1.0 + (team_advantage_result.breakdown.total.0 - team_advantage_result.breakdown.total.1).abs() / 10.0;
+                
+                let vehicle_props = controller.vehicle_props(self_eid);
+                let hp_max = vehicle_props.as_ref().map(|p| p.max_health()).unwrap_or(0.0);
+                let hp_cur = vehicle_props.as_ref().map(|p| p.health()).unwrap_or(0.0);
+                let total_damage_dealt: f64 = breakdowns.iter().map(|e| e.damage).sum();
+                let damage_received = (hp_max - hp_cur).max(0.0) as u32;
+                let kills = controller.kills().iter().filter(|k| k.killer == self_eid && k.clock <= clock).count() as u32;
+
+                calculate_player_wpa(
+                    self_eid,
+                    clock,
+                    leverage_index,
+                    &self.damage_events,
+                    controller,
+                    hp_cur,
+                    hp_max,
+                    total_damage_dealt as u32,
+                    damage_received,
+                    kills,
+                )
+            } else {
+                0.0
+            };
+
             let mut stats_consumables = Vec::new();
             if let Some(eid) = self.self_entity_id {
-                let clock = controller.clock();
                 let active_map = controller.active_consumables();
                 let inv_map = controller.consumable_inventories();
                 
@@ -2379,11 +2478,13 @@ impl<'a> MinimapRenderer<'a> {
                 x: panel_x,
                 y: damage_y,
                 width: panel_w,
+                height: silhouette_h,
                 breakdowns,
                 damage_spotting,
                 spotting_breakdowns,
                 damage_potential,
                 potential_breakdowns,
+                wpa: self_wpa,
                 consumables: stats_consumables,
             });
 
@@ -2467,10 +2568,6 @@ impl<'a> MinimapRenderer<'a> {
                 };
                 ribbons.sort_by_key(|rc| rank(rc));
             }
-            let ribbon_y = 476;
-
-            commands.push(DrawCommand::StatsRibbons { x: panel_x, y: ribbon_y, width: panel_w, ribbons });
-
             // Activity feed: merge kills + chat sorted by game clock,
             // respecting the user's individual toggle preferences.
             let mut activity_entries: Vec<ActivityFeedEntry> = Vec::new();
@@ -2564,15 +2661,163 @@ impl<'a> MinimapRenderer<'a> {
             // Sort merged entries by game clock
             activity_entries.sort_by(|a, b| a.clock.cmp(&b.clock));
 
-            let feed_y = 704;
-            let feed_height = 496;
-            commands.push(DrawCommand::StatsActivityFeed {
-                x: panel_x,
-                y: feed_y,
-                width: panel_w,
-                height: feed_height,
-                entries: activity_entries,
-            });
+            if self.options.inkpads_layout {
+                use crate::draw_command::TeammateTableRow;
+
+                struct RawTeammateData {
+                    entity_id: EntityId,
+                    player_name: String,
+                    clan_tag: Option<String>,
+                    ship_name: String,
+                    ship_species: Option<String>,
+                    hp_cur: f32,
+                    hp_max: f32,
+                    damage_dealt: u32,
+                    kills: u32,
+                    damage_received: u32,
+                    is_dead: bool,
+                }
+
+                let mut raw_teammates: Vec<RawTeammateData> = Vec::new();
+                let dead = controller.dead_ships();
+
+                for player in controller.player_entities().values() {
+                    let entity_id = player.initial_state().entity_id();
+                    let relation = player.relation();
+                    if relation.is_self() || !relation.is_ally() {
+                        continue;
+                    }
+
+                    let vehicle_props = controller.vehicle_props(entity_id);
+                    let hp_max = vehicle_props.as_ref().map(|p| p.max_health()).unwrap_or(0.0);
+                    let hp_cur = vehicle_props.as_ref().map(|p| p.health()).unwrap_or(0.0);
+                    let is_dead = dead.contains_key(&entity_id) || (hp_max > 0.0 && hp_cur <= 0.0);
+
+                    let kills = controller.kills().iter().filter(|k| k.killer == entity_id && k.clock <= clock).count() as u32;
+
+                    let damage_dealt = self
+                        .damage_events
+                        .get(&entity_id)
+                        .map(|events| events.iter().take_while(|e| e.clock <= clock).map(|e| e.amount).sum::<f32>())
+                        .unwrap_or(0.0) as u32;
+
+                    let damage_received = (hp_max - hp_cur).max(0.0) as u32;
+
+                    let player_name = player.initial_state().username().to_string();
+                    let clan_tag = if !player.initial_state().clan().is_empty() {
+                        Some(player.initial_state().clan().to_string())
+                    } else {
+                        None
+                    };
+                    let ship_name = self.game_params.localized_name_from_param(player.vehicle()).unwrap_or_default();
+                    let ship_species = player.vehicle().species().and_then(species_key).map(String::from);
+
+                    raw_teammates.push(RawTeammateData {
+                        entity_id,
+                        player_name,
+                        clan_tag,
+                        ship_name,
+                        ship_species,
+                        hp_cur,
+                        hp_max,
+                        damage_dealt,
+                        kills,
+                        damage_received,
+                        is_dead,
+                    });
+                }
+
+                // Sabermetric Win Probability Added (WPA) calculation:
+                // Leverage index Lt based on current advantage gap
+                let team_advantage_result = self.calculate_team_advantage(controller);
+                let leverage_index = 1.0 + (team_advantage_result.breakdown.total.0 - team_advantage_result.breakdown.total.1).abs() / 10.0;
+
+                let mut table_rows: Vec<TeammateTableRow> = Vec::new();
+                for t in raw_teammates {
+                    let wpa_score = calculate_player_wpa(
+                        t.entity_id,
+                        clock,
+                        leverage_index,
+                        &self.damage_events,
+                        controller,
+                        t.hp_cur,
+                        t.hp_max,
+                        t.damage_dealt,
+                        t.damage_received,
+                        t.kills,
+                    );
+
+                    table_rows.push(TeammateTableRow {
+                        player_name: t.player_name,
+                        clan_tag: t.clan_tag,
+                        ship_name: t.ship_name,
+                        ship_species: t.ship_species,
+                        wpa: wpa_score as f32,
+                        damage: t.damage_dealt,
+                        hp_cur: t.hp_cur.max(0.0) as u32,
+                        hp_max: t.hp_max.max(0.0) as u32,
+                        received: t.damage_received,
+                        kills: t.kills,
+                        is_dead: t.is_dead,
+                    });
+                }
+
+                let teammate_count = table_rows.len();
+                // Dynamically calculate table height based on exact row count:
+                // Header (40px) + (teammate_count * 38px row height)
+                // 3 rows (Brawl): 154px | 6 rows (Clan): 268px | 8 rows (Ranked): 344px | 11 rows (Random): 458px
+                let table_row_h = if teammate_count > 9 { 34 } else { 38 };
+                let table_h = 40 + (teammate_count as i32 * table_row_h);
+
+                // Hard-set boundaries:
+                // Top section ends at y = 476
+                // Bottom section starts at y = 1000 (fixed 200px height)
+                let top_boundary_y = 476;
+                let bot_boundary_y = 1000;
+                let bot_h = 200;
+
+                // Center the table + ribbons group dynamically inside the middle available region (y = 260 to 1000)
+                let ribbon_h = 50;
+                let ribbon_gap = 20; // vertical gap between table and ribbons
+                let middle_group_h = table_h + ribbon_gap + ribbon_h;
+
+                let available_middle_h = bot_boundary_y - top_boundary_y; // 740px available
+                let table_y = top_boundary_y + (available_middle_h - middle_group_h).max(0) / 2;
+
+                commands.push(DrawCommand::InkpadsTeammateTable {
+                    x: panel_x,
+                    y: table_y,
+                    width: panel_w,
+                    height: table_h,
+                    rows: table_rows,
+                });
+
+                // Ribbons strip: placed below table with ribbon_gap
+                let ribbon_y = table_y + table_h + ribbon_gap;
+                commands.push(DrawCommand::StatsRibbons { x: panel_x, y: ribbon_y, width: panel_w, ribbons });
+
+                // Bottom combat feeds: anchored at fixed y = 1000 with 200px height
+                commands.push(DrawCommand::InkpadsInLineFeeds {
+                    x: panel_x,
+                    y: bot_boundary_y,
+                    width: panel_w,
+                    height: bot_h,
+                    entries: activity_entries,
+                });
+            } else {
+                let ribbon_y = 476;
+                commands.push(DrawCommand::StatsRibbons { x: panel_x, y: ribbon_y, width: panel_w, ribbons });
+
+                let feed_y = 704;
+                let feed_height = 496;
+                commands.push(DrawCommand::StatsActivityFeed {
+                    x: panel_x,
+                    y: feed_y,
+                    width: panel_w,
+                    height: feed_height,
+                    entries: activity_entries,
+                });
+            }
         }
 
         if self.options.show_team_rosters {

@@ -199,6 +199,22 @@ fn text_size(scale: PxScale, font: &impl Font, text: &str) -> (u32, u32) {
     (w.ceil() as u32, h.ceil() as u32)
 }
 
+/// Returns the standardized tier color for a given WPA score relative to team average.
+fn wpa_color(wpa: f64, team_avg: f64) -> [u8; 3] {
+    let safe_avg = team_avg.max(0.5);
+    let mult = wpa / safe_avg;
+
+    if mult >= 2.0 && wpa >= 1.5 {
+        [180, 100, 255] // Purple (MVP / Dominant relative performance)
+    } else if mult >= 1.2 || wpa >= 1.8 {
+        [100, 220, 120] // Green (High Contribution)
+    } else if mult >= 0.6 || wpa >= 0.8 {
+        [240, 200, 80]  // Yellow (Average Contribution)
+    } else {
+        [230, 90, 90]   // Red (Below Average / Low Contribution)
+    }
+}
+
 /// Draw text with a shadow (black offset by +1,+1).
 fn draw_text_shadow(pm: &mut Pixmap, color: [u8; 3], x: i32, y: i32, scale: PxScale, font: &impl Font, text: &str) {
     draw_text(pm, [0, 0, 0], x + 1, y + 1, scale, font, text);
@@ -2472,7 +2488,7 @@ impl RenderTarget for ImageTarget {
                 x,
                 y,
                 width,
-                height: _,
+                height,
                 ship_param_id: _,
                 hp_fraction,
                 hp_current,
@@ -2502,29 +2518,27 @@ impl RenderTarget for ImageTarget {
                 let show_ship = ship_name.is_some();
                 let mut text_group_h = 0;
                 if show_player {
-                    text_group_h += (20.5 * scale_factor).round() as i32;
+                    text_group_h += (22.0 * scale_factor).round() as i32;
                 }
                 if show_ship {
-                    text_group_h += (22.0 * scale_factor).round() as i32;
+                    text_group_h += (24.0 * scale_factor).round() as i32;
                 }
 
                 // Compute total height of the left stack to center it vertically:
-                let top_section_h = 461;
+                let top_section_h = *height;
                 let emblem_size = (72.0 * scale_factor).round() as i32;
                 let gap1 = (12.0 * scale_factor).round() as i32;
-                let gap1_right = (16.0 * scale_factor).round() as i32;
-                let target_sil_h = (68.0 * scale_factor).round() as i32;
-                let gap2 = (6.0 * scale_factor).round() as i32;
+                let target_sil_h = (90.0 * scale_factor).round() as i32;
+                let gap2 = (10.0 * scale_factor).round() as i32;
                 let hp_text_h = (20.0 * scale_factor).round() as i32;
-                let gap3 = (8.0 * scale_factor).round() as i32;
-                let cons_size = (30.0 * scale_factor).round() as i32;
+                let gap3 = (14.0 * scale_factor).round() as i32;
+                let cons_size = (32.0 * scale_factor).round() as i32;
 
                 let left_total_h = text_group_h + gap1 + target_sil_h + gap2 + hp_text_h + gap3 + cons_size;
-                let _right_total_h = emblem_size + gap1_right + cons_size;
                 
-                let start_y = *y + (top_section_h - left_total_h).max(0) / 6;
+                let start_y = *y + (top_section_h - left_total_h).max(0) / 4;
 
-                // Draw emblem (dog tag) centered in right 43% starting at start_y
+                // Draw emblem (dog tag) centered in right 43% starting at emblem_y
                 let emblem_y = start_y + (4.0 * scale_factor).round() as i32;
                 if let Some(emb_img) = emblem {
                     let emblem_x = right_center_x - (emblem_size as i32) / 2;
@@ -2537,16 +2551,15 @@ impl RenderTarget for ImageTarget {
                     draw_icon_at(&mut self.canvas, &resized, emblem_x, emblem_y);
                 }
 
-                // Draw clan tag + player name, and ship name centered vertically next to emblem
-                let mut label_y = emblem_y + (emblem_size as i32 - text_group_h) / 2;
+                // Draw clan tag + player name, and ship name centered vertically in left 57%
+                let mut label_y = start_y;
 
                 if show_player {
                     let clan_prefix = clan_tag.as_ref().filter(|t| !t.is_empty()).map(|t| format!("[{t}] "));
                     let name_part = player_name.as_deref().unwrap_or("");
 
-                    let (name_font, name_font_scale) = self.fonts.font_and_scale(name_part, 15.0 * scale_factor);
+                    let (name_font, name_font_scale) = self.fonts.font_and_scale(name_part, 16.0 * scale_factor);
 
-                    // Measure total width for centering
                     let clan_w =
                         clan_prefix.as_ref().map(|cp| text_size(name_font_scale, name_font, cp).0).unwrap_or(0);
                     let name_w =
@@ -2570,22 +2583,20 @@ impl RenderTarget for ImageTarget {
                             name_part,
                         );
                     }
-                    label_y += (20.5 * scale_factor).round() as i32;
+                    label_y += (22.0 * scale_factor).round() as i32;
                 }
                 if let Some(name) = ship_name {
-                    let (ship_font, ship_font_scale) = self.fonts.font_and_scale(name, 18.0 * scale_factor);
+                    let (ship_font, ship_font_scale) = self.fonts.font_and_scale(name, 20.0 * scale_factor);
                     let (tw, _) = text_size(ship_font_scale, ship_font, name);
                     let tx = inner_x + (inner_w - tw as i32) / 2;
                     draw_text_shadow(&mut self.canvas, [180, 180, 180], tx, label_y, ship_font_scale, ship_font, name);
                 }
 
-                // Row 2 Left side elements vertical stack starts at:
-                let left_second_y = emblem_y + emblem_size as i32 + gap1_right;
-                let sil_y = left_second_y + (10.0 * scale_factor).round() as i32;
+                let left_second_y = start_y + text_group_h + gap1;
+                let sil_y = left_second_y;
                 let hp_text_y = sil_y + target_sil_h + gap2;
 
                 if let Some(sil_img) = silhouette {
-                    // Scale silhouette to fit target_sil_h while preserving aspect ratio
                     let aspect = sil_img.width() as f32 / sil_img.height() as f32;
                     let fit_w = inner_w as u32;
                     let fit_h = target_sil_h as u32;
@@ -2595,12 +2606,10 @@ impl RenderTarget for ImageTarget {
                         ((fit_h as f32 * aspect) as u32, fit_h)
                     };
 
-                    // Scale up by 1.743x (5% larger than 1.66x) to make better use of space
-                    let scale_mult = 1.743f32;
+                    let scale_mult = 1.6f32;
                     let draw_w = ((draw_w as f32 * scale_mult) as u32).min(fit_w).max(1);
-                    let draw_h = ((draw_h as f32 * scale_mult) as u32).min(fit_h + 30).max(1);
+                    let draw_h = ((draw_h as f32 * scale_mult) as u32).min(fit_h + 40).max(1);
 
-                    // Charcoal silhouette base (remainder = unhealable lost HP shows through)
                     let base_sil = tint_silhouette(sil_img, crate::draw_command::SILHOUETTE_BASE_RGB);
                     let resized_base =
                         image::imageops::resize(&base_sil, draw_w, draw_h, image::imageops::FilterType::Triangle);
@@ -2615,7 +2624,6 @@ impl RenderTarget for ImageTarget {
                         *hp_max,
                     );
 
-                    // Colored region: current HP portion
                     let hp_color = hp_bar_color_lerp(*hp_fraction);
                     let hp_sil = tint_silhouette(sil_img, hp_color);
                     let resized_hp =
@@ -2626,9 +2634,6 @@ impl RenderTarget for ImageTarget {
                         draw_icon_at(&mut self.canvas, &cropped, sil_x, sil_cy);
                     }
 
-                    // Healable region: bright = HP the next heal charge restores,
-                    // dim = the regenerable pool beyond that charge. Gray when a
-                    // heal is ready, white while healing, hidden when unavailable.
                     if let Some(color) = heal_availability.healable_rgb() {
                         let mut draw_region = |fraction_start: f32, fraction_w: f32, tint: [u8; 3]| {
                             let region_x = (draw_w as f32 * fraction_start) as u32;
@@ -2657,7 +2662,7 @@ impl RenderTarget for ImageTarget {
 
                 // HP text: "12,345 / 42,750"
                 let hp_text = format!("{} / {}", format_number(*hp_current as i64), format_number(*hp_max as i64));
-                let hp_scale = self.fonts.scale_cond_bold(14.0 * scale_factor);
+                let hp_scale = self.fonts.scale_cond_bold(16.0 * scale_factor);
                 let (tw, _) = text_size(hp_scale, &self.fonts.cond_bold, &hp_text);
                 let hp_text_x = inner_x + (inner_w - tw as i32) / 2;
                 draw_text_shadow(
@@ -2674,11 +2679,13 @@ impl RenderTarget for ImageTarget {
                 x,
                 y,
                 width,
+                height,
                 breakdowns,
                 damage_spotting,
                 spotting_breakdowns: _,
                 damage_potential,
                 potential_breakdowns: _,
+                wpa,
                 consumables,
             } => {
                 let scale_factor = if self.large_elements { 1.8f32 } else { 1.0f32 };
@@ -2689,49 +2696,48 @@ impl RenderTarget for ImageTarget {
                 let right_w = *width - left_w;
                 let right_center_x = *x + left_w + right_w / 2;
                 
-                let label_scale = self.fonts.scale_cond_bold(10.0 * 1.08 * scale_factor);
-                let value_scale = self.fonts.scale_cond_bold(14.0 * 1.10 * scale_factor);
-                let label_row_h = (14.0 * 1.08 * scale_factor).round() as i32;
-                let value_row_h = (20.0 * 1.10 * scale_factor).round() as i32;
+                let label_scale = self.fonts.scale_cond_bold(11.0 * scale_factor);
+                let value_scale = self.fonts.scale_cond_bold(15.0 * scale_factor);
+                let label_row_h = (14.0 * scale_factor).round() as i32;
+                let value_row_h = (19.0 * scale_factor).round() as i32;
 
-                // Let's compute text_group_h to locate emblem_y and start_y exactly as in StatsSilhouette
                 let show_player = true;
                 let show_ship = true;
                 let mut text_group_h = 0;
                 if show_player {
-                    text_group_h += (20.5 * scale_factor).round() as i32;
-                }
-                if show_ship {
                     text_group_h += (22.0 * scale_factor).round() as i32;
                 }
+                if show_ship {
+                    text_group_h += (24.0 * scale_factor).round() as i32;
+                }
 
-                let top_section_h = 461;
+                let top_section_h = *height;
                 let emblem_size = (72.0 * scale_factor).round() as i32;
                 let gap1 = (12.0 * scale_factor).round() as i32;
-                let gap1_right = (16.0 * scale_factor).round() as i32;
-                let target_sil_h = (68.0 * scale_factor).round() as i32;
-                let gap2 = (6.0 * scale_factor).round() as i32;
+                let target_sil_h = (90.0 * scale_factor).round() as i32;
+                let gap2 = (10.0 * scale_factor).round() as i32;
                 let hp_text_h = (20.0 * scale_factor).round() as i32;
-                let gap3 = (8.0 * scale_factor).round() as i32;
-                let cons_size = (30.0 * scale_factor).round() as i32;
+                let gap3 = (14.0 * scale_factor).round() as i32;
+                let cons_size = (32.0 * scale_factor).round() as i32;
 
                 let left_total_h = text_group_h + gap1 + target_sil_h + gap2 + hp_text_h + gap3 + cons_size;
                 
-                let start_y = *y + (top_section_h - left_total_h).max(0) / 6;
+                let start_y = *y + (top_section_h - left_total_h).max(0) / 4;
                 let emblem_y = start_y + (4.0 * scale_factor).round() as i32;
 
-                let left_second_y = emblem_y + emblem_size as i32 + gap1_right;
-                let sil_y = left_second_y + (10.0 * scale_factor).round() as i32;
+                let left_second_y = start_y + text_group_h + gap1;
+                let sil_y = left_second_y;
                 let hp_text_y = sil_y + target_sil_h + gap2;
                 let cons_y = hp_text_y + hp_text_h + gap3;
 
-                // Dynamic Metric Gaps for perfect alignment at the bottom:
-                let left_bottom = cons_y + cons_size;
-                let region_h = left_bottom - left_second_y;
-                let metrics_total_h_unspaced = 3 * label_row_h + 3 * value_row_h;
-                let metric_gap = ((region_h - metrics_total_h_unspaced) / 2).max(4);
+                // Metrics start below emblem with ample gap and fill down nicely
+                let metrics_start_y = emblem_y + emblem_size + (16.0 * scale_factor).round() as i32;
+                let metrics_end_y = cons_y + cons_size;
+                let region_h = (metrics_end_y - metrics_start_y).max(100);
+                let metrics_total_h_unspaced = 4 * label_row_h + 4 * value_row_h;
+                let metric_gap = ((region_h - metrics_total_h_unspaced) / 3).max(3);
                 
-                let mut cur_y = left_second_y + (region_h - (metrics_total_h_unspaced + 2 * metric_gap)) / 2;
+                let mut cur_y = metrics_start_y + (region_h - (metrics_total_h_unspaced + 3 * metric_gap)).max(0) / 2;
 
                 // DAMAGE
                 let total_damage: f64 = breakdowns.iter().map(|e| e.damage).sum();
@@ -2771,10 +2777,23 @@ impl RenderTarget for ImageTarget {
                 let (vw, _) = text_size(value_scale, &self.fonts.cond_bold, &pot_str);
                 let vx = right_center_x - vw as i32 / 2;
                 draw_text_shadow(&mut self.canvas, [180, 180, 180], vx, cur_y, value_scale, &self.fonts.cond_bold, &pot_str);
+                cur_y += value_row_h + metric_gap;
+
+                // WPA
+                let label = "WPA";
+                let (lw, _) = text_size(label_scale, &self.fonts.cond_bold, label);
+                let lx = right_center_x - lw as i32 / 2;
+                draw_text_shadow(&mut self.canvas, [140, 140, 140], lx, cur_y, label_scale, &self.fonts.cond_bold, label);
+                cur_y += label_row_h;
+                
+                let wpa_str = format!("{:.2}", wpa);
+                let (vw, _) = text_size(value_scale, &self.fonts.cond_bold, &wpa_str);
+                let vx = right_center_x - vw as i32 / 2;
+                draw_text_shadow(&mut self.canvas, wpa_color(*wpa, 1.0), vx, cur_y, value_scale, &self.fonts.cond_bold, &wpa_str);
 
                 // Draw active consumables centered horizontally in the left 57% column at cons_y
-                let cons_gap = (4.0 * scale_factor).round() as i32;
-                let max_cons_size = (30.0 * scale_factor).round() as i32;
+                let cons_gap = (6.0 * scale_factor).round() as i32;
+                let max_cons_size = (36.0 * scale_factor).round() as i32;
 
                 if !consumables.is_empty() {
                     let n = consumables.len() as i32;
@@ -2848,15 +2867,14 @@ impl RenderTarget for ImageTarget {
                 let inner_x = *x + padding;
                 let inner_w = *width - padding * 2;
 
-                
-                // Dynamically scale ribbons to fit the available space (approx 246px height)
-                let mut best_s: f32 = 1.0;
-                let max_h: f32 = 246.0;
+                // Dynamically scale ribbons to fit in compact single-line or multi-line spaces (e.g. 50-60px height)
+                let mut best_s: f32 = 0.5;
+                let max_h: f32 = 55.0;
                 if !ribbons.is_empty() {
-                    let mut s: f32 = 2.0;
-                    while s >= 1.0 {
-                        let cur_cell_w = (120.0 * s).round() as i32;
-                        let cur_row_h = (82.0 * s).round() as i32;
+                    let mut s: f32 = 1.0;
+                    while s >= 0.3 {
+                        let cur_cell_w = (90.0 * s).round() as i32;
+                        let cur_row_h = (45.0 * s).round() as i32;
                         
                         let cols = (inner_w / cur_cell_w).max(1);
                         let rows = (ribbons.len() as i32 + cols - 1) / cols;
@@ -2869,9 +2887,9 @@ impl RenderTarget for ImageTarget {
                     }
                 }
                 
-                let icon_h = (72.0 * best_s).round() as i32;
-                let row_h = (82.0 * best_s).round() as i32;
-                let cell_w = (120.0 * best_s).round() as i32;
+                let icon_h = (40.0 * best_s).round() as i32;
+                let row_h = (45.0 * best_s).round() as i32;
+                let cell_w = (90.0 * best_s).round() as i32;
                 let gap = (2.0 * best_s).round() as i32;
                 let scale = self.fonts.scale(13.0 * best_s);
 
@@ -3331,10 +3349,267 @@ impl RenderTarget for ImageTarget {
                     &self.death_cause_icons,
                 );
             }
+            DrawCommand::InkpadsTeammateTable { x, y, width, height, rows } => {
+                draw_inkpads_teammate_table(
+                    &mut self.canvas,
+                    *x,
+                    *y,
+                    *width,
+                    *height,
+                    rows,
+                    &self.fonts,
+                    &self.ship_icons,
+                );
+            }
+            DrawCommand::InkpadsInLineFeeds { x, y, width, height, entries } => {
+                draw_inkpads_inline_feeds(
+                    &mut self.canvas,
+                    *x,
+                    *y,
+                    *width,
+                    *height,
+                    entries,
+                    &self.fonts,
+                    &self.ship_icons,
+                    &self.death_cause_icons,
+                );
+            }
         }
     }
 
     fn end_frame(&mut self) {
         // No-op — frame is ready to read via frame()
     }
+}
+
+fn draw_inkpads_teammate_table(
+    pm: &mut Pixmap,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    rows: &[crate::draw_command::TeammateTableRow],
+    fonts: &GameFonts,
+    _ship_icons: &HashMap<String, ShipIcon>,
+) {
+    if rows.is_empty() {
+        return;
+    }
+
+    // Panel background
+    draw_filled_rect(pm, x as f32, y as f32, width as f32, height as f32, [24, 28, 36], 0.85);
+    draw_line(pm, x as f32, y as f32, (x + width) as f32, y as f32, [55, 60, 72], 0.5, 1.0);
+
+    let padding = 12i32;
+    let header_h = 32i32;
+    let row_count = rows.len() as i32;
+    let available_h = height - header_h - padding * 2;
+    let row_h = if row_count > 0 { (available_h / row_count).clamp(24, 48) } else { 32 };
+
+    let font = &fonts.primary;
+    let font_size = if row_count > 9 { 14.0f32 } else { 16.0f32 };
+    let font_scale = fonts.scale(font_size);
+
+    // Draw Column Headers: PLAYER / SHIP | WPA | DAMAGE | RECEIVED | DMG TRADE | HP | KILLS
+    let player_col_w = (width as f32 * 0.32) as i32;
+    let stat_col_w = (width - player_col_w - padding * 2) / 6;
+
+    let headers = ["PLAYER / SHIP", "WPA", "DAMAGE", "RECEIVED", "DMG TRADE", "HP", "KILLS"];
+    let mut hx = x + padding;
+
+    // Player/Ship Header
+    draw_text_shadow(pm, [160, 175, 200], hx, y + 6, font_scale, font, headers[0]);
+    hx += player_col_w;
+
+    for &h in &headers[1..] {
+        draw_text_shadow(pm, [160, 175, 200], hx, y + 6, font_scale, font, h);
+        hx += stat_col_w;
+    }
+
+    // Header divider line
+    let div_y = y + header_h;
+    draw_line(pm, x as f32 + 4.0, div_y as f32, (x + width - 4) as f32, div_y as f32, [55, 60, 72], 0.4, 1.0);
+
+    // Draw Rows
+    let team_avg = if !rows.is_empty() {
+        rows.iter().map(|r| r.wpa as f64).sum::<f64>() / rows.len() as f64
+    } else {
+        1.0
+    };
+
+    let mut ry = div_y + 4;
+    for row in rows {
+        if ry + row_h > y + height {
+            break;
+        }
+
+        let text_color = if row.is_dead { [120, 125, 135] } else { [230, 235, 245] };
+        let mut rx = x + padding;
+
+        // Player Name & Clan Tag
+        let player_label = if let Some(ref tag) = row.clan_tag {
+            if !tag.is_empty() {
+                format!("[{}] {}", tag, row.player_name)
+            } else {
+                row.player_name.clone()
+            }
+        } else {
+            row.player_name.clone()
+        };
+
+        let label_with_ship = if !row.ship_name.is_empty() {
+            format!("{} ({})", player_label, row.ship_name)
+        } else {
+            player_label
+        };
+
+        let name_display = truncate_to_fit(&label_with_ship, (player_col_w - 6) as u32, font_scale, font);
+        draw_text_shadow(pm, text_color, rx, ry + (row_h - font_size as i32) / 2, font_scale, font, &name_display);
+        rx += player_col_w;
+
+        // Stats
+        let dmg_trade_str = if row.received == 0 {
+            "-".to_string()
+        } else {
+            format!("{:.1}x", row.damage as f64 / row.received as f64)
+        };
+
+        let hp_pct = if row.is_dead || row.hp_max == 0 {
+            0
+        } else {
+            ((row.hp_cur as f64 / row.hp_max as f64 * 100.0).round() as u32).min(100)
+        };
+        let hp_str = format!("{}%", hp_pct);
+
+        let stats_formatted = [
+            format!("{:.2}", row.wpa),
+            format_number_commas(row.damage),
+            format_number_commas(row.received),
+            dmg_trade_str,
+            hp_str,
+            row.kills.to_string(),
+        ];
+
+        for (idx, val) in stats_formatted.iter().enumerate() {
+            let col_color = if idx == 0 {
+                wpa_color(row.wpa as f64, team_avg)
+            } else {
+                text_color
+            };
+
+            draw_text_shadow(pm, col_color, rx, ry + (row_h - font_size as i32) / 2, font_scale, font, val);
+            rx += stat_col_w;
+        }
+
+        ry += row_h;
+    }
+}
+
+fn draw_inkpads_inline_feeds(
+    pm: &mut Pixmap,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    entries: &[ActivityFeedEntry],
+    fonts: &GameFonts,
+    _ship_icons: &HashMap<String, ShipIcon>,
+    death_cause_icons: &HashMap<String, RgbaImage>,
+) {
+    // 40% / 60% horizontal split
+    let left_w = (width as f32 * 0.40) as i32;
+    let right_w = width - left_w;
+    let padding = 10i32;
+    let font = &fonts.primary;
+    let font_size = 18.0f32;
+    let font_scale = fonts.scale(font_size);
+
+    // Box background
+    draw_filled_rect(pm, x as f32, y as f32, width as f32, height as f32, [24, 28, 36], 0.85);
+    draw_line(pm, x as f32 + 4.0, y as f32, (x + width - 4) as f32, y as f32, [55, 60, 72], 0.5, 1.0);
+
+    // Vertical column divider (40% / 60% line)
+    let div_x = x + left_w;
+    draw_line(pm, div_x as f32, y as f32 + 4.0, div_x as f32, (y + height - 4) as f32, [55, 60, 72], 0.4, 1.0);
+
+    // Split entries
+    let kill_entries: Vec<&ActivityFeedEntry> = entries.iter().filter(|e| matches!(e.kind, ActivityFeedKind::Kill(_))).collect();
+    let chat_entries: Vec<&ActivityFeedEntry> = entries.iter().filter(|e| matches!(e.kind, ActivityFeedKind::Chat(_))).collect();
+
+    // 1. LEFT 40% COLUMN: Kill Feed (Enlarged)
+    let kill_x = x + padding;
+    let kill_row_h = 30i32;
+    let kill_icon_size = 22i32;
+
+    let mut ky = y + padding;
+    for entry in kill_entries.iter().rev() {
+        if ky + kill_row_h > y + height {
+            break;
+        }
+        if let ActivityFeedKind::Kill(kill) = &entry.kind {
+            let killer_short = truncate_to_fit(&kill.killer_name, (left_w / 2 - 16) as u32, font_scale, font);
+            let victim_short = truncate_to_fit(&kill.victim_name, (left_w / 2 - 16) as u32, font_scale, font);
+
+            let mut cx = kill_x;
+            draw_text_shadow(pm, kill.killer_color, cx, ky, font_scale, font, &killer_short);
+            let (kw, _) = text_size(font_scale, font, &killer_short);
+            cx += kw as i32 + 6;
+
+            let cause_key = death_cause_icon_key(&kill.cause);
+            if let Some(cause_icon) = death_cause_icons.get(cause_key) {
+                draw_icon(pm, cause_icon, (cx + kill_icon_size / 2) as f32, (ky + kill_icon_size / 2) as f32);
+                cx += kill_icon_size + 6;
+            }
+
+            draw_text_shadow(pm, kill.victim_color, cx, ky, font_scale, font, &victim_short);
+            ky += kill_row_h;
+        }
+    }
+
+    // 2. RIGHT 60% COLUMN: Chat Feed (Enlarged with 14px inter-block gap)
+    let chat_x = div_x + padding;
+    let chat_w = right_w - padding * 2;
+    let inter_block_gap = 14i32;
+    let line_h = 24i32;
+    let msg_scale = fonts.scale(17.0f32);
+
+    let mut cy = y + padding;
+    for entry in chat_entries.iter() {
+        if cy + line_h * 2 > y + height {
+            break;
+        }
+        if let ActivityFeedKind::Chat(chat) = &entry.kind {
+            // Header line: [Clan] Player Name
+            let header_text = if !chat.clan_tag.is_empty() {
+                format!("[{}] {}", chat.clan_tag, chat.player_name)
+            } else {
+                chat.player_name.clone()
+            };
+
+            let header_disp = truncate_to_fit(&header_text, chat_w as u32, font_scale, font);
+            draw_text_shadow(pm, chat.team_color, chat_x, cy, font_scale, font, &header_disp);
+            cy += line_h;
+
+            // Message text line
+            let msg_disp = truncate_to_fit(&chat.message, chat_w as u32, msg_scale, font);
+            draw_text_shadow(pm, chat.message_color, chat_x, cy, msg_scale, font, &msg_disp);
+            cy += line_h;
+
+            // Explicit 14px Inter-block Spacing Gap
+            cy += inter_block_gap;
+        }
+    }
+}
+
+fn format_number_commas(n: u32) -> String {
+    let s = n.to_string();
+    let mut result = String::new();
+    let len = s.len();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (len - i) % 3 == 0 {
+            result.push(',');
+        }
+        result.push(c);
+    }
+    result
 }

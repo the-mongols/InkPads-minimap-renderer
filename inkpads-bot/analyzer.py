@@ -71,7 +71,31 @@ class ReplayAnalyzer:
         except Exception as e:
             logger.warning(f"Failed to load ship_consumables.json: {e}")
 
+        # Incremental WPA Tracking
+        self.player_wpa = defaultdict(float)
+        self._last_damage = defaultdict(float)
+        self.class_weights = {
+            "DD": 1.50,
+            "SS": 1.30,
+            "CV": 1.20,
+            "CA": 1.00,
+            "CL": 1.00,
+            "BB": 0.85
+        }
+
         self._parse_replay_header()
+
+    def _get_live_leverage(self, clock: float) -> float:
+        s0, s1 = self.team_scores
+        score_diff = abs(s0 - s1)
+        max_score = max(s0, s1)
+        closeness = 1.0 - (score_diff / 1000.0)
+        urgency = 1.0 + ((max_score / 1000.0) ** 2)
+        lev = closeness * urgency
+        elapsed = self._elapsed(clock)
+        if elapsed <= 300.0:  # Early game first 5 minutes multiplier
+            lev *= 1.50
+        return max(0.20, lev)
 
     def _parse_replay_header(self):
         self.header_vehicles_by_name = {}
@@ -579,6 +603,14 @@ class ReplayAnalyzer:
 
         if eid in self.ships:
             if prop == "damageDealt":
+                old_val = self._last_damage[eid]
+                if val > old_val and eid not in self.sunk_ships:
+                    delta = val - old_val
+                    lev = self._get_live_leverage(clock)
+                    s_class = self.ships[eid].get("ship_class") or "CA"
+                    c_weight = self.class_weights.get(s_class, 1.00)
+                    self.player_wpa[eid] += (delta / 75000.0) * c_weight * lev
+                    self._last_damage[eid] = val
                 self.player_stats[eid]["damage"] = val
             elif prop == "damageSpotting":
                 self.player_stats[eid]["spotting"] = val
@@ -658,6 +690,12 @@ class ReplayAnalyzer:
             if eid not in self.sunk_ships:
                 self.sunk_ships.add(eid)
                 s = self.ships[eid]
+                killer_eid = args[8] if len(args) > 8 else None
+                if killer_eid and killer_eid in self.ships and killer_eid not in self.sunk_ships:
+                    lev = self._get_live_leverage(clock)
+                    k_class = self.ships[killer_eid].get("ship_class") or "CA"
+                    k_weight = self.class_weights.get(k_class, 1.00)
+                    self.player_wpa[killer_eid] += 0.25 * k_weight * lev
                 killer_eid = args[8] if len(args) > 8 else None
                 killer_name = self.ships.get(killer_eid, {}).get("name") if killer_eid else "Unknown"
                 
@@ -787,6 +825,24 @@ class ReplayAnalyzer:
         stats_summary = []
         for eid, s in self.ships.items():
             st = self.player_stats.get(eid, {})
+            dmg = st.get("damage", 0)
+            rcv = st.get("received", 0)
+            cur_hp = st.get("current_health", 0)
+            max_hp = s.get("max_health", 1) or 1
+            s_class = s.get("ship_class") or "CA"
+
+            # Base accrued WPA from live action-time events
+            accrued_wpa = self.player_wpa.get(eid, 0.0)
+
+            # Add survival efficiency bonus only for survivors
+            wpa_efficiency = 0.0
+            if eid not in self.sunk_ships:
+                hp_eff = (cur_hp / max_hp) if max_hp > 0 else 0.0
+                trade_ratio = (dmg / max(1.0, float(rcv)))
+                wpa_efficiency = min(0.40, trade_ratio * hp_eff * 0.15)
+            
+            total_wpa = round(accrued_wpa + wpa_efficiency, 2)
+
             stats_summary.append({
                 "account_id": s.get("spa_id"),
                 "name": s["name"],
@@ -795,13 +851,14 @@ class ReplayAnalyzer:
                 "ship_id": s.get("ship_id"),
                 "ship_name": s.get("ship_name") or "Unknown",
                 "ship_index": s.get("ship_index") or "",
-                "ship_class": s.get("ship_class") or "CA",
+                "ship_class": s_class,
                 "has_radar": s.get("has_radar", False),
                 "has_hydro": s.get("has_hydro", False),
-                "damage": st.get("damage", 0),
-                "received": st.get("received", 0),
+                "damage": dmg,
+                "received": rcv,
                 "spotting": st.get("spotting", 0),
                 "potential": st.get("potential", 0),
+                "wpa": total_wpa,
                 "survived": eid not in self.sunk_ships
             })
         

@@ -24,6 +24,8 @@ A Discord bot to receive `.wowsreplay` files from users, and return high-quality
    - **`RENDERER_FONT_PATH`**: Optional. Path to a custom `.ttf` font file to override the primary font face (e.g. `WarHeliosCondCBold.ttf`).
    - **`FORCE_CPU`**: Optional. Set to `true` to force software CPU encoding instead of GPU encoding. Essential for VPS hosts that lack a dedicated GPU. Note: Enabling this will automatically hide/disable the `cpu_mode` option in the `/render` slash command, as CPU encoding is forced globally.
    - **`RENDERER_CODEC`**: Optional. Override the video encoder codec (options: `h264`, `h265`, `av1`). Defaults to `h264` when `FORCE_CPU` is enabled, and `h265` otherwise.
+   - **`ENABLE_INKPADS_LAYOUT`**: Optional. Set to `true` to enable extended layout preset options (e.g. `C: InkPads`) in `/render` command choices. Defaults to `false`.
+
 
 ### 3. Installation & Run
 
@@ -69,7 +71,16 @@ To update the repository, rebuild the renderer (which will automatically compile
    sudo systemctl restart inkpads-bot.service
    ```
 
-### 5. Running as a Daemon (systemd on VPS)
+### 5. Docker Deployment
+As an alternative to systemd, the repository includes a multi-stage `Dockerfile` and `docker-compose.yml` for automated deployment:
+1. Ensure Docker and Docker Compose are installed on the host.
+2. Build and launch the bot container:
+   ```bash
+   docker compose up -d --build
+   ```
+
+### 6. Running as a Daemon (systemd on VPS)
+
 To keep the bot running persistently on a Linux VPS, use the provided `inkpads-bot.service` template:
 1. Copy the service template to the systemd folder:
    ```bash

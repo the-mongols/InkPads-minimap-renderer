@@ -23,6 +23,15 @@ WOWS_EXTRACTED_DIR = os.getenv('WOWS_EXTRACTED_DIR')
 RENDERER_FONT_PATH = os.getenv('RENDERER_FONT_PATH')
 FORCE_CPU = os.getenv('FORCE_CPU', 'false').lower() in ('true', '1', 'yes')
 RENDERER_CODEC = os.getenv('RENDERER_CODEC')
+ENABLE_INKPADS_LAYOUT = os.getenv('ENABLE_INKPADS_LAYOUT', 'false').lower() in ('true', '1', 'yes')
+
+LAYOUT_CHOICES = [
+    app_commands.Choice(name="A: Default (16:10)", value="A"),
+    app_commands.Choice(name="B: Widescreen (16:9)", value="B"),
+]
+if ENABLE_INKPADS_LAYOUT:
+    LAYOUT_CHOICES.append(app_commands.Choice(name="C: InkPads (Clan Battles)", value="C"))
+
 
 # Webhook Configuration (optional early handover)
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
@@ -111,15 +120,19 @@ async def on_ready():
     logger.info(f'Renderer EXE: {RENDERER_EXE}')
     logger.info(f'---------------------------------------')
     
-    # Clear guild commands to remove legacy guild-level command registrations only if explicitly requested
-    if os.getenv('CLEAR_GUILD_COMMANDS', 'false').lower() in ('true', '1', 'yes'):
-        for guild in bot.guilds:
-            try:
+    # Sync slash commands per guild for immediate availability in all joined servers
+    for guild in bot.guilds:
+        try:
+            if os.getenv('CLEAR_GUILD_COMMANDS', 'false').lower() in ('true', '1', 'yes'):
                 bot.tree.clear_commands(guild=guild)
                 await bot.tree.sync(guild=guild)
-                logger.info(f"Cleared guild-level slash commands for: {guild.name} ({guild.id})")
-            except Exception as e:
-                logger.warning(f"Could not clear guild commands for {guild.name} ({guild.id}): {e}")
+                logger.info(f"Cleared & synced guild-level slash commands for: {guild.name} ({guild.id})")
+            else:
+                bot.tree.copy_global_to(guild=guild)
+                synced = await bot.tree.sync(guild=guild)
+                logger.info(f"Synced {len(synced)} slash commands directly to guild: {guild.name} ({guild.id})")
+        except Exception as e:
+            logger.warning(f"Could not sync commands for guild {guild.name} ({guild.id}): {e}")
 
 def parse_version_string(version_str):
     """Parses a version string like '15, 5, 0, 12668706' into a dict."""
@@ -433,6 +446,62 @@ def get_game_mode_display_name(match_group, game_type):
         return str(game_type).strip().title()
     return ""
 
+def get_opponent_clan(header, min_players=4):
+    """Extracts opponent clan tag from replay header vehicles list."""
+    if not isinstance(header, dict):
+        return ""
+    vehicles = header.get("vehicles", [])
+    if not vehicles or not isinstance(vehicles, list):
+        return ""
+    
+    # 1. First try by relation == 2 (Enemy team)
+    enemy_clan_counts = {}
+    all_team_clans = {} # team_id -> Counter(clanTag)
+    
+    for v in vehicles:
+        if not isinstance(v, dict):
+            continue
+        relation = v.get("relation")
+        
+        clan = v.get("clanTag") or v.get("clanAbbrev") or v.get("clan_tag") or v.get("clan")
+        name = v.get("name", "")
+        if not clan:
+            if name.startswith("[") and "]" in name:
+                clan = name[1:name.index("]")]
+        
+        if not clan:
+            continue
+            
+        clan = str(clan).strip()
+        if not clan:
+            continue
+            
+        if relation == 2:
+            enemy_clan_counts[clan] = enemy_clan_counts.get(clan, 0) + 1
+            
+        team_id = 0 if relation in (0, 1) else 1
+        if team_id not in all_team_clans:
+            all_team_clans[team_id] = {}
+        all_team_clans[team_id][clan] = all_team_clans[team_id].get(clan, 0) + 1
+    
+    if enemy_clan_counts:
+        sorted_clans = sorted(enemy_clan_counts.items(), key=lambda x: x[1], reverse=True)
+        top_clan, count = sorted_clans[0]
+        if count >= min_players:
+            return top_clan
+        # If min_players condition fails, still return top enemy clan if at least 1 exists
+        return top_clan
+
+    # 2. Fallback: Check enemy team (team_id 1 when player is team 0)
+    enemy_team = 1
+    if enemy_team in all_team_clans and all_team_clans[enemy_team]:
+        sorted_clans = sorted(all_team_clans[enemy_team].items(), key=lambda x: x[1], reverse=True)
+        return sorted_clans[0][0]
+        
+    return ""
+
+
+
 
 
 async def send_webhook_payload(replay_path, red_replay_path, session_id):
@@ -584,7 +653,10 @@ async def _render_impl(
         ship_name = clean_ship_name(raw_ship)
         map_name = get_map_display_name(raw_map)
         formatted_dt = format_date_time(raw_dt)
-        logger.info(f"[{session_id}] Metadata extracted: Mode={mode_name}, Ship={ship_name}, Map={map_name}")
+        is_clan_battle = (mode_name == "Clan Battle") or any(x in str(match_group).lower() or x in str(game_type).lower() for x in ("clan", "cvc", "cw"))
+        opponent_clan = get_opponent_clan(header, min_players=4 if is_clan_battle else 4)
+        
+        logger.info(f"[{session_id}] Metadata extracted: Mode={mode_name}, Ship={ship_name}, Map={map_name}, Opponent={opponent_clan or 'N/A'}")
 
         # Update state to Rendering
         embed.title = "Rendering Minimap"
@@ -597,6 +669,7 @@ async def _render_impl(
             details.append(f"**Map:** {map_name}")
         if ship_name: details.append(f"**Ship:** {ship_name}")
         if formatted_dt: details.append(f"**Date:** {formatted_dt}")
+        if opponent_clan: details.append(f"**Opponent:** [{opponent_clan}]")
         info_line = " | ".join(details)
         
         embed.description = f"{info_line}\n\nStatus: [░░░░░░░░░░] 0%\nRendering..."
@@ -638,12 +711,14 @@ async def _render_impl(
         if show_trails: cmd.append("--show-trails")
         if show_config: cmd.append("--show-ship-config")
         if cpu_mode or FORCE_CPU: cmd.append("--cpu")
-        cmd.append("--discord-layout")
 
-        preset_val = layout_preset.value if layout_preset else "B"
-        if preset_val == "A": cmd.extend(["--stats-panel-width", "928"])
-        elif preset_val == "B": cmd.extend(["--stats-panel-width", "720"])
-        elif preset_val == "C": cmd.extend(["--stats-panel-width", "448"])
+        preset_val = layout_preset.value if layout_preset else "A"
+        if preset_val == "A":
+            cmd.extend(["--discord-layout", "--stats-panel-width", "720"])
+        elif preset_val == "B":
+            cmd.extend(["--discord-layout", "--aspect-ratio-16-9", "--stats-panel-width", "928"])
+        elif preset_val == "C":
+            cmd.extend(["--inkpads-layout", "--aspect-ratio-16-9", "--stats-panel-width", "928"])
 
         # 4. Render
         process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
@@ -677,7 +752,32 @@ async def _render_impl(
                     output_path.unlink()
                     output_path = compressed_path
 
-            # 6. Upload
+            # 6. Extract exact clan metadata via analyzer if Clan Battle
+            if is_clan_battle:
+                try:
+                    from analyzer import ReplayAnalyzer
+                    analyzer_inst = ReplayAnalyzer(str(replay_path))
+                    analyzer_inst.run()
+                    meta = analyzer_inst.get_metadata()
+                    enemy_clan_tag = meta.get("enemy_clan")
+                    if enemy_clan_tag and enemy_clan_tag != "Unknown":
+                        opponent_clan = enemy_clan_tag
+                        logger.info(f"[{session_id}] Extracted enemy clan from analyzer stream: [{opponent_clan}]")
+                        
+                        # Rebuild details and info_line with opponent clan
+                        details = []
+                        if mode_name and map_name:
+                            details.append(f"**{mode_name}:** {map_name}")
+                        elif map_name:
+                            details.append(f"**Map:** {map_name}")
+                        if ship_name: details.append(f"**Ship:** {ship_name}")
+                        if formatted_dt: details.append(f"**Date:** {formatted_dt}")
+                        if opponent_clan: details.append(f"**Opponent:** [{opponent_clan}]")
+                        info_line = " | ".join(details)
+                except Exception as ae:
+                    logger.warning(f"[{session_id}] Failed to extract enemy clan via analyzer: {ae}")
+
+            # 7. Upload
             embed.description = f"{info_line}\n\nStatus: Uploading..."
             await interaction.edit_original_response(embed=embed)
             
@@ -757,14 +857,9 @@ if FORCE_CPU:
         red_replay="(Optional) Attach a .wowsreplay file from the opposing team for a dual-render",
         show_trails="Display ship movement trails (heatmap)",
         show_config="Show detection and weapon range circles",
-        layout_preset="Gutter size preset (default: B: Compromise 16:10)"
+        layout_preset="Layout preset (default: A: Default 16:10)"
     )
-    @app_commands.choices(layout_preset=[
-        app_commands.Choice(name="Original (256px)", value="Original"),
-        app_commands.Choice(name="A: Widescreen 16:9 (928px)", value="A"),
-        app_commands.Choice(name="B: Compromise 16:10 (720px)", value="B"),
-        app_commands.Choice(name="C: Discord-Maximized (448px)", value="C")
-    ])
+    @app_commands.choices(layout_preset=LAYOUT_CHOICES)
     async def render(
         interaction: discord.Interaction, 
         replay: discord.Attachment,
@@ -792,14 +887,9 @@ else:
         show_trails="Display ship movement trails (heatmap)",
         show_config="Show detection and weapon range circles",
         cpu_mode="Use CPU encoding (slower, but safer if GPU is busy)",
-        layout_preset="Gutter size preset (default: B: Compromise 16:10)"
+        layout_preset="Layout preset (default: A: Default 16:10)"
     )
-    @app_commands.choices(layout_preset=[
-        app_commands.Choice(name="Original (256px)", value="Original"),
-        app_commands.Choice(name="A: Widescreen 16:9 (928px)", value="A"),
-        app_commands.Choice(name="B: Compromise 16:10 (720px)", value="B"),
-        app_commands.Choice(name="C: Discord-Maximized (448px)", value="C")
-    ])
+    @app_commands.choices(layout_preset=LAYOUT_CHOICES)
     async def render(
         interaction: discord.Interaction, 
         replay: discord.Attachment,
