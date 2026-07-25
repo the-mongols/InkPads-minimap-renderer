@@ -24,6 +24,7 @@ RENDERER_FONT_PATH = os.getenv('RENDERER_FONT_PATH')
 FORCE_CPU = os.getenv('FORCE_CPU', 'false').lower() in ('true', '1', 'yes')
 RENDERER_CODEC = os.getenv('RENDERER_CODEC')
 ENABLE_INKPADS_LAYOUT = os.getenv('ENABLE_INKPADS_LAYOUT', 'false').lower() in ('true', '1', 'yes')
+TOURNAMENT_LISTEN_CHANNEL_ID = os.getenv('TOURNAMENT_LISTEN_CHANNEL_ID')
 
 LAYOUT_CHOICES = [
     app_commands.Choice(name="A: Default (16:10)", value="A"),
@@ -31,6 +32,7 @@ LAYOUT_CHOICES = [
 ]
 if ENABLE_INKPADS_LAYOUT:
     LAYOUT_CHOICES.append(app_commands.Choice(name="C: InkPads (Clan Battles)", value="C"))
+
 
 
 # Webhook Configuration (optional early handover)
@@ -133,6 +135,185 @@ async def on_ready():
                 logger.info(f"Synced {len(synced)} slash commands directly to guild: {guild.name} ({guild.id})")
         except Exception as e:
             logger.warning(f"Could not sync commands for guild {guild.name} ({guild.id}): {e}")
+
+@bot.event
+async def on_message(message: discord.Message):
+    # Ignore messages from self or other bots
+    if message.author.bot:
+        return
+
+    # If TOURNAMENT_LISTEN_CHANNEL_ID is set, filter by channel ID
+    if TOURNAMENT_LISTEN_CHANNEL_ID:
+        try:
+            if str(message.channel.id) != str(TOURNAMENT_LISTEN_CHANNEL_ID).strip():
+                return
+        except Exception:
+            return
+
+    content = message.content.strip()
+    if not content.startswith("{") and "callbackUrl" not in content:
+        return
+
+    # Extract JSON content if inside markdown code blocks
+    json_text = content
+    if "```" in json_text:
+        match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', json_text, re.DOTALL)
+        if match:
+            json_text = match.group(1)
+
+    try:
+        data = json.loads(json_text)
+    except Exception as e:
+        logger.warning(f"Failed to parse JSON message in tournament channel: {e}")
+        return
+
+    callback_url = data.get("callbackUrl")
+    target_channel_id = data.get("targetChannelId")
+    replays = data.get("replays", [])
+
+    if not callback_url or not target_channel_id or not replays:
+        logger.warning("Tournament payload missing required fields (callbackUrl, targetChannelId, replays)")
+        return
+
+    logger.info(f"Received valid tournament render payload for target channel {target_channel_id} with {len(replays)} replays.")
+
+    # Schedule background task to process tournament render
+    task = asyncio.create_task(process_tournament_render(message, callback_url, target_channel_id, replays))
+    background_tasks.add(task)
+    task.add_done_callback(background_tasks.discard)
+
+async def process_tournament_render(message: discord.Message, callback_url: str, target_channel_id: str, replays: list):
+    session_id = str(uuid.uuid4())[:8]
+    logger.info(f"[{session_id}] Starting tournament render execution.")
+
+    target_channel = bot.get_channel(int(target_channel_id))
+    if not target_channel:
+        try:
+            target_channel = await bot.fetch_channel(int(target_channel_id))
+        except Exception as e:
+            logger.error(f"[{session_id}] Could not resolve target channel {target_channel_id}: {e}")
+            return
+
+    green_path = None
+    red_path = None
+    output_path = TEMP_DIR / f"{session_id}.mp4"
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            for idx, rdata in enumerate(replays):
+                url = rdata.get("replay")
+                tag = rdata.get("tag", "").upper()
+                if not url:
+                    continue
+                
+                dest_path = TEMP_DIR / f"{session_id}_{'green' if idx == 0 else 'red'}.wowsreplay"
+                logger.info(f"[{session_id}] Downloading replay [{tag}] from {url}...")
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=120)) as resp:
+                    if resp.status == 200:
+                        content = await resp.read()
+                        dest_path.write_bytes(content)
+                        if idx == 0:
+                            green_path = dest_path
+                        else:
+                            red_path = dest_path
+                    else:
+                        logger.error(f"[{session_id}] Failed to download replay from {url}: status {resp.status}")
+
+        if not green_path or not green_path.exists():
+            logger.error(f"[{session_id}] Primary replay download failed or empty.")
+            return
+
+        # Acquire semaphore for rendering
+        await render_semaphore.acquire()
+        try:
+            # Build CLI command
+            cmd = [str(RENDERER_EXE)]
+            if WOWS_EXTRACTED_DIR:
+                cmd.extend(["--extracted-dir", WOWS_EXTRACTED_DIR])
+            else:
+                cmd.extend(["-g", str(GAME_DIR)])
+
+            codec = RENDERER_CODEC.lower() if RENDERER_CODEC and RENDERER_CODEC.lower() in ("h264", "h265", "av1") else ("h264" if FORCE_CPU else "h265")
+            cmd.extend(["-o", str(output_path), "--max-size-mib", "24", "--codec", codec])
+            if RENDERER_FONT_PATH:
+                cmd.extend(["--font", RENDERER_FONT_PATH])
+            cmd.append(str(green_path))
+
+            if red_path and red_path.exists():
+                cmd.extend(["--red-replay", str(red_path), "--no-chat", "--no-kill-feed", "--no-stats-panel"])
+            if FORCE_CPU:
+                cmd.append("--cpu")
+
+            # Default layout preset C (InkPads) or B for tournament presentation
+            if ENABLE_INKPADS_LAYOUT:
+                cmd.extend(["--inkpads-layout", "--aspect-ratio-16-9", "--stats-panel-width", "928"])
+            else:
+                cmd.extend(["--discord-layout", "--aspect-ratio-16-9", "--stats-panel-width", "928"])
+
+            logger.info(f"[{session_id}] Executing renderer CLI command...")
+            process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            stdout, stderr = await process.communicate()
+
+            if process.returncode != 0:
+                logger.error(f"[{session_id}] Tournament render failed with code {process.returncode}: {stderr.decode('utf-8', errors='ignore')}")
+                return
+
+            # Extract header info for embed formatting
+            header = parse_replay_header(green_path)
+            raw_ship = header.get("playerVehicle", "")
+            raw_map = header.get("mapName", "") or header.get("mapDisplayName", "")
+            raw_dt = header.get("dateTime", "")
+            match_group = header.get("matchGroup", "")
+            game_type = header.get("gameType", "")
+
+            mode_name = get_game_mode_display_name(match_group, game_type)
+            ship_name = clean_ship_name(raw_ship)
+            map_name = get_map_display_name(raw_map)
+            formatted_dt = format_date_time(raw_dt)
+            opponent_clan = get_opponent_clan(header, min_players=4)
+
+            details = []
+            if mode_name and map_name: details.append(f"**{mode_name}:** {map_name}")
+            elif map_name: details.append(f"**Map:** {map_name}")
+            if ship_name: details.append(f"**Ship:** {ship_name}")
+            if formatted_dt: details.append(f"**Date:** {formatted_dt}")
+            if opponent_clan: details.append(f"**Opponent:** [{opponent_clan}]")
+            info_line = " | ".join(details)
+
+            embed = discord.Embed(
+                title="Tournament Match Render Complete",
+                description=info_line,
+                color=0x2ECC71
+            )
+
+            file = discord.File(output_path, filename=f"tactical_match_{session_id}.mp4")
+            posted_msg = await target_channel.send(embed=embed, file=file)
+            logger.info(f"[{session_id}] Posted rendered match to target channel {target_channel_id}, message ID: {posted_msg.id}")
+
+            # Send callback back to wows-tournaments.com
+            async with aiohttp.ClientSession() as session:
+                payload = {
+                    "messageId": str(posted_msg.id),
+                    "channelId": str(target_channel_id)
+                }
+                logger.info(f"[{session_id}] Sending callback to {callback_url} with payload {payload}")
+                async with session.post(callback_url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as cb_resp:
+                    logger.info(f"[{session_id}] Callback HTTP response status: {cb_resp.status}")
+
+        finally:
+            render_semaphore.release()
+
+    except Exception as e:
+        logger.exception(f"[{session_id}] Exception in tournament render pipeline: {e}")
+    finally:
+        # Temp files cleanup
+        for p in (green_path, red_path, output_path):
+            if p and p.exists():
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
+
 
 def parse_version_string(version_str):
     """Parses a version string like '15, 5, 0, 12668706' into a dict."""
