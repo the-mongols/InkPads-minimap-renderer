@@ -73,7 +73,7 @@ const KILL_FEED_DURATION: f32 = 10.0;
 
 /// Gaps larger than this between consecutive samples imply a spotting break /
 /// AOI exit, so we snap (hold nearest) instead of interpolating across them.
-const MAX_SAMPLE_GAP: f32 = 2.0;
+const MAX_SAMPLE_GAP: f32 = 15.0;
 
 /// Interpolate one sorted (clock, value) track at `clock`. Lerps the bracketing
 /// pair when within `MAX_SAMPLE_GAP`; returns `None` outside the track's range,
@@ -83,9 +83,22 @@ fn interp_track<T: Copy>(samples: &[(GameClock, T)], clock: GameClock, lerp: imp
     if samples.is_empty() {
         return None;
     }
-    if clock.0 < samples[0].0.0 || clock.0 > samples[samples.len() - 1].0.0 {
+    let first_clock = samples[0].0.0;
+    let last_clock = samples[samples.len() - 1].0.0;
+
+    if clock.0 < first_clock {
+        if first_clock - clock.0 <= MAX_SAMPLE_GAP {
+            return Some(samples[0].1);
+        }
         return None;
     }
+    if clock.0 >= last_clock {
+        if clock.0 - last_clock <= MAX_SAMPLE_GAP {
+            return Some(samples[samples.len() - 1].1);
+        }
+        return None;
+    }
+
     let hi = samples.partition_point(|s| s.0.0 <= clock.0);
     if hi == 0 {
         return Some(samples[0].1);
@@ -1859,13 +1872,10 @@ impl<'a> MinimapRenderer<'a> {
                 if !visible {
                     continue;
                 }
-                // Get ship position (prefer world position, fall back to minimap)
-                let pos = if let Some(t) = ship_positions.get(entity_id) {
-                    Some(map_info.world_to_minimap(t.pos, MINIMAP_SIZE))
-                } else {
-                    minimap_positions.get(entity_id).map(|mm| map_info.normalized_to_minimap(&mm.pos, MINIMAP_SIZE))
+                // Get ship position (use smooth sub-frame interpolated position)
+                let Some(pos) = self.resolve_ship_px(*entity_id, &map_info, &ship_positions, &minimap_positions) else {
+                    continue;
                 };
-                let Some(pos) = pos else { continue };
 
                 let relation = self.player_relations.get(entity_id).copied().unwrap_or(Relation::new(2));
                 let is_friendly = relation.is_self() || relation.is_ally();
@@ -1879,9 +1889,11 @@ impl<'a> MinimapRenderer<'a> {
                     let still_active = clock.seconds() < active.activated_at.seconds() + active.duration;
                     let past_start = clock.seconds() >= active.activated_at.seconds();
                     if still_active && past_start {
-                        // Collect icon key
+                        // Collect icon key (avoid duplicate icons in merged replays)
                         if let Some(icon_key) = self.consumable_icon_key(*entity_id, active.consumable.clone()) {
-                            icon_keys.push(icon_key);
+                            if !icon_keys.contains(&icon_key) {
+                                icon_keys.push(icon_key);
+                            }
                         }
 
                         // Emit radius for detection consumables (radar, hydro, hydrophone)
@@ -1932,12 +1944,8 @@ impl<'a> MinimapRenderer<'a> {
                     continue;
                 }
 
-                // Get ship position
-                let pos = if let Some(t) = ship_positions.get(entity_id) {
-                    map_info.world_to_minimap(t.pos, MINIMAP_SIZE)
-                } else if let Some(mm) = minimap_positions.get(entity_id) {
-                    map_info.normalized_to_minimap(&mm.pos, MINIMAP_SIZE)
-                } else {
+                // Get ship position (use smooth sub-frame interpolated position)
+                let Some(pos) = self.resolve_ship_px(*entity_id, &map_info, &ship_positions, &minimap_positions) else {
                     continue;
                 };
 
@@ -2258,17 +2266,32 @@ impl<'a> MinimapRenderer<'a> {
 
         // 11. Battle result overlay (shown as soon as winner is known)
         if let Some(wt) = controller.winning_team() {
-            let (result, color) = match (self.self_team_id, wt) {
-                (Some(self_t), wt) if wt >= 0 && wt == self_t as i8 => {
-                    (BattleResult::Victory, [76, 232, 170]) // green
+            let (result, color, custom_subtitle) = if self.has_merged_perspectives {
+                match wt {
+                    0 => (BattleResult::Victory, [76, 232, 170], Some("ALPHA TEAM WON".to_string())),
+                    1 => (BattleResult::Victory, [254, 77, 42], Some("BRAVO TEAM WON".to_string())),
+                    _ => (BattleResult::Draw, [255, 165, 0], Some("MATCH DRAW".to_string())),
                 }
-                (Some(_), wt) if wt >= 0 => {
-                    (BattleResult::Defeat, [254, 77, 42]) // red
-                }
-                _ => (BattleResult::Draw, [255, 165, 0]), // orange
+            } else {
+                let (res, col) = match (self.self_team_id, wt) {
+                    (Some(self_t), wt) if wt >= 0 && wt == self_t as i8 => {
+                        (BattleResult::Victory, [76, 232, 170]) // green
+                    }
+                    (Some(_), wt) if wt >= 0 => {
+                        (BattleResult::Defeat, [254, 77, 42]) // red
+                    }
+                    _ => (BattleResult::Draw, [255, 165, 0]), // orange
+                };
+                (res, col, None)
             };
             let finish_type = controller.finish_type().cloned();
-            commands.push(DrawCommand::BattleResultOverlay { result, finish_type, color, subtitle_above: false });
+            commands.push(DrawCommand::BattleResultOverlay {
+                result,
+                finish_type,
+                color,
+                subtitle_above: false,
+                custom_subtitle,
+            });
         }
 
         // 12. Stats panel (right side panel with ship HP, damage, ribbons, activity).
@@ -2422,7 +2445,7 @@ impl<'a> MinimapRenderer<'a> {
                 let damage_received = (hp_max - hp_cur).max(0.0) as u32;
                 let kills = controller.kills().iter().filter(|k| k.killer == self_eid && k.clock <= clock).count() as u32;
 
-                calculate_player_wpa(
+                let base_wpa = calculate_player_wpa(
                     self_eid,
                     clock,
                     leverage_index,
@@ -2433,7 +2456,11 @@ impl<'a> MinimapRenderer<'a> {
                     total_damage_dealt as u32,
                     damage_received,
                     kills,
-                )
+                );
+
+                let spotting_wpa = (damage_spotting as f64 / 75000.0) * 0.50 * (leverage_index as f64);
+                let potential_wpa = (damage_potential as f64 / hp_max.max(1.0) as f64) * 0.20 * (leverage_index as f64);
+                base_wpa + spotting_wpa + potential_wpa
             } else {
                 0.0
             };

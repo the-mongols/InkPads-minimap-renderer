@@ -71,9 +71,12 @@ class ReplayAnalyzer:
         except Exception as e:
             logger.warning(f"Failed to load ship_consumables.json: {e}")
 
-        # Incremental WPA Tracking
+        # Incremental WPA & uWPA Tracking
         self.player_wpa = defaultdict(float)
+        self.player_uwpa_extra = defaultdict(float)
         self._last_damage = defaultdict(float)
+        self._last_spotting = defaultdict(float)
+        self._last_potential = defaultdict(float)
         self.class_weights = {
             "DD": 1.50,
             "SS": 1.30,
@@ -613,8 +616,23 @@ class ReplayAnalyzer:
                     self._last_damage[eid] = val
                 self.player_stats[eid]["damage"] = val
             elif prop == "damageSpotting":
+                old_spot = self._last_spotting[eid]
+                if val > old_spot and eid not in self.sunk_ships:
+                    delta_spot = val - old_spot
+                    lev = self._get_live_leverage(clock)
+                    s_class = self.ships[eid].get("ship_class") or "CA"
+                    c_weight = self.class_weights.get(s_class, 1.00)
+                    self.player_uwpa_extra[eid] += (delta_spot / 75000.0) * c_weight * 0.50 * lev
+                    self._last_spotting[eid] = val
                 self.player_stats[eid]["spotting"] = val
             elif prop == "damagePotential":
+                old_pot = self._last_potential[eid]
+                if val > old_pot and eid not in self.sunk_ships:
+                    delta_pot = val - old_pot
+                    lev = self._get_live_leverage(clock)
+                    max_h = max(1.0, float(self.ships[eid].get("max_health", 50000)))
+                    self.player_uwpa_extra[eid] += (delta_pot / max_h) * 0.20 * lev
+                    self._last_potential[eid] = val
                 self.player_stats[eid]["potential"] = val
             elif prop == "health":
                 prev_h = self.player_stats[eid].get("current_health", val)
@@ -842,6 +860,8 @@ class ReplayAnalyzer:
                 wpa_efficiency = min(0.40, trade_ratio * hp_eff * 0.15)
             
             total_wpa = round(accrued_wpa + wpa_efficiency, 2)
+            extra_uwpa = self.player_uwpa_extra.get(eid, 0.0)
+            total_uwpa = round(accrued_wpa + wpa_efficiency + extra_uwpa, 2)
 
             stats_summary.append({
                 "account_id": s.get("spa_id"),
@@ -859,6 +879,7 @@ class ReplayAnalyzer:
                 "spotting": st.get("spotting", 0),
                 "potential": st.get("potential", 0),
                 "wpa": total_wpa,
+                "uwpa": total_uwpa,
                 "survived": eid not in self.sunk_ships
             })
         

@@ -577,6 +577,8 @@ pub enum DrawCommand {
         color: [u8; 3],
         /// If true, subtitle is drawn above the main text; otherwise below.
         subtitle_above: bool,
+        /// Custom subtitle override for dual render (e.g. "ALPHA TEAM WON")
+        custom_subtitle: Option<String>,
     },
     /// Stats panel background
     StatsPanel { x: i32, width: i32 },

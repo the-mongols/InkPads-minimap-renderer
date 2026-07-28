@@ -31,7 +31,7 @@ The compiled binary will be placed at `target/release/minimap_renderer` (or `min
 ./target/release/minimap_renderer --help
 ```
 
-For Discord bot integration and service hosting setup instructions, please see the [Inkpads Bot README](inkpads-bot/README.md).
+For Discord bot integration, automated WoWs-Tournaments website rendering workflow, and service hosting setup instructions, please see the [Inkpads Bot README](inkpads-bot/README.md).
 
 ---
 

@@ -25,6 +25,60 @@ A Discord bot to receive `.wowsreplay` files from users, and return high-quality
    - **`FORCE_CPU`**: Optional. Set to `true` to force software CPU encoding instead of GPU encoding. Essential for VPS hosts that lack a dedicated GPU. Note: Enabling this will automatically hide/disable the `cpu_mode` option in the `/render` slash command, as CPU encoding is forced globally.
    - **`RENDERER_CODEC`**: Optional. Override the video encoder codec (options: `h264`, `h265`, `av1`). Defaults to `h264` when `FORCE_CPU` is enabled, and `h265` otherwise.
    - **`ENABLE_INKPADS_LAYOUT`**: Optional. Set to `true` to enable extended layout preset options (e.g. `C: InkPads`) in `/render` command choices. Defaults to `false`.
+   - **`TOURNAMENT_LISTEN_CHANNEL_ID`**: Optional. Discord Channel ID of the restricted hidden channel where `wows-tournaments.com` posts match render request payloads.
+
+## WoWs-Tournaments Integration Workflow
+
+The bot features automated integration with `wows-tournaments.com` for processing automated match replay render requests.
+
+### Architecture Overview
+
+```
+ ┌──────────────────────┐          ┌──────────────────────┐          ┌──────────────────────┐
+ │ wows-tournaments.com │ ───────> │  Hidden Discord Ch.  │ ───────> │  InkPads Render Bot  │
+ └──────────────────────┘          └──────────────────────┘          └──────────┬───────────┘
+            ▲                                                                   │
+            │                         HTTP Callback                             │ Post Video
+            └───────────────────────────────────────────────────────────────────┤ to Target Channel
+                                     { messageId, channelId }                   ▼
+                                                                     ┌──────────────────────┐
+                                                                     │ Public Discord Ch.   │
+                                                                     └──────────────────────┘
+```
+
+### 1. Payload Format
+The website posts a JSON payload (either formatted raw, enclosed in backticks, or uploaded as a `.json` file attachment) into the configured `TOURNAMENT_LISTEN_CHANNEL_ID`:
+
+```json
+{
+  "callbackUrl": "https://wows-tournaments.com/api/matches/set-render-message?secret=<SECRET>",
+  "targetChannelId": "1095389535510208512",
+  "replays": [
+    {
+      "tag": "TA",
+      "replay": "https://wows-tournaments.com/api/matches/report/replay?id=7"
+    },
+    {
+      "tag": "TB",
+      "replay": "https://wows-tournaments.com/api/matches/report/replay?id=8"
+    }
+  ]
+}
+```
+
+### 2. Processing Pipeline
+1. **Listener & Ingestion**: The `on_message` handler in `bot.py` filters messages targeting `TOURNAMENT_LISTEN_CHANNEL_ID`, cleans formatting wrappers, and extracts the payload.
+2. **Replay Acquisition**: Downloads primary (`TA` / Green) and secondary (`TB` / Red) team replays asynchronously to temporary workspace storage.
+3. **Rendering**: Invokes the `minimap_renderer` CLI binary with dual-replay flags (`--red-replay`) to produce a unified match MP4 video.
+4. **Discord Publication**: Uploads the resulting MP4 video along with match metadata (map, game mode, date/time, opponent clan) to `targetChannelId`.
+5. **Callback Acknowledgment**: Performs an HTTP `POST` request to `callbackUrl` returning the published Discord message details:
+   ```json
+   {
+     "messageId": "<DISCORD_MESSAGE_ID>",
+     "channelId": "<TARGET_CHANNEL_ID>"
+   }
+   ```
+
 
 
 ### 3. Installation & Run

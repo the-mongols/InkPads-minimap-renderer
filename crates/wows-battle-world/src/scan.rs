@@ -66,10 +66,38 @@ pub fn merge_position_timelines(parts: Vec<PositionTimeline>) -> PositionTimelin
     for track in out.values_mut() {
         track.world.sort_by(|a, b| a.0.0.total_cmp(&b.0.0));
         track.world.dedup_by(|a, b| a.0.0 == b.0.0);
+        smooth_world_track(&mut track.world);
         track.minimap.sort_by(|a, b| a.0.0.total_cmp(&b.0.0));
         track.minimap.dedup_by(|a, b| a.0.0 == b.0.0);
     }
     out
+}
+
+/// Smooth high-frequency spatial micro-jitter caused by interleaving position
+/// packets from multiple replay perspectives (e.g. Green client view vs Red client view).
+fn smooth_world_track(samples: &mut Vec<(GameClock, WorldPos)>) {
+    if samples.len() < 3 {
+        return;
+    }
+    let len = samples.len();
+    let mut smoothed = samples.clone();
+
+    for i in 1..(len - 1) {
+        let (c_prev, p_prev) = samples[i - 1];
+        let (c_curr, p_curr) = samples[i];
+        let (c_next, p_next) = samples[i + 1];
+
+        let dt1 = c_curr.0 - c_prev.0;
+        let dt2 = c_next.0 - c_curr.0;
+
+        if dt1 > 0.0 && dt2 > 0.0 && dt1 < 0.5 && dt2 < 0.5 {
+            let sx = 0.25 * p_prev.x + 0.5 * p_curr.x + 0.25 * p_next.x;
+            let sy = 0.25 * p_prev.y + 0.5 * p_curr.y + 0.25 * p_next.y;
+            let sz = 0.25 * p_prev.z + 0.5 * p_curr.z + 0.25 * p_next.z;
+            smoothed[i].1 = WorldPos::new(sx, sy, sz);
+        }
+    }
+    *samples = smoothed;
 }
 
 /// Observes each packet of a single replay during one [`scan_replay`] pass.

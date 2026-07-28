@@ -138,8 +138,8 @@ async def on_ready():
 
 @bot.event
 async def on_message(message: discord.Message):
-    # Ignore messages from self or other bots
-    if message.author.bot:
+    # Ignore messages from self
+    if message.author == bot.user:
         return
 
     # If TOURNAMENT_LISTEN_CHANNEL_ID is set, filter by channel ID
@@ -151,20 +151,38 @@ async def on_message(message: discord.Message):
             return
 
     content = message.content.strip()
-    if not content.startswith("{") and "callbackUrl" not in content:
+
+    # Also check if JSON is attached as a file
+    json_text = content
+    if not json_text and message.attachments:
+        for att in message.attachments:
+            if att.filename.endswith('.json') or att.content_type == 'application/json':
+                try:
+                    json_bytes = await att.read()
+                    json_text = json_bytes.decode('utf-8', errors='ignore')
+                    break
+                except Exception:
+                    pass
+
+    if not json_text:
         return
 
-    # Extract JSON content if inside markdown code blocks
-    json_text = content
+    # 1. Check code blocks first
     if "```" in json_text:
-        match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', json_text, re.DOTALL)
+        match = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', json_text)
+        if match:
+            json_text = match.group(1)
+
+    # 2. If it doesn't start with '{', search for embedded JSON object {...}
+    if not json_text.startswith("{"):
+        match = re.search(r'(\{[\s\S]*\})', json_text)
         if match:
             json_text = match.group(1)
 
     try:
         data = json.loads(json_text)
     except Exception as e:
-        logger.warning(f"Failed to parse JSON message in tournament channel: {e}")
+        logger.warning(f"Failed to parse JSON message in tournament channel: {e}. Raw content: {repr(message.content)}")
         return
 
     callback_url = data.get("callbackUrl")
@@ -244,13 +262,14 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
             if FORCE_CPU:
                 cmd.append("--cpu")
 
-            # Default layout preset C (InkPads) or B for tournament presentation
-            if ENABLE_INKPADS_LAYOUT:
+            # Optional layout selection from payload or environment
+            layout_opt = str(data.get("layout") or data.get("preset") or ("C" if ENABLE_INKPADS_LAYOUT else "A")).upper()
+            if layout_opt in ("C", "INKPADS"):
                 cmd.extend(["--inkpads-layout", "--aspect-ratio-16-9", "--stats-panel-width", "928"])
-            else:
+            elif layout_opt in ("B", "WIDESCREEN"):
                 cmd.extend(["--discord-layout", "--aspect-ratio-16-9", "--stats-panel-width", "928"])
 
-            logger.info(f"[{session_id}] Executing renderer CLI command...")
+            logger.info(f"[{session_id}] Executing renderer CLI command (layout: {layout_opt})...")
             process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             stdout, stderr = await process.communicate()
 
@@ -895,7 +914,8 @@ async def _render_impl(
 
         preset_val = layout_preset.value if layout_preset else "A"
         if preset_val == "A":
-            cmd.extend(["--discord-layout", "--stats-panel-width", "720"])
+            # Option A: Standard Default (16:10) - no layout flags
+            pass
         elif preset_val == "B":
             cmd.extend(["--discord-layout", "--aspect-ratio-16-9", "--stats-panel-width", "928"])
         elif preset_val == "C":

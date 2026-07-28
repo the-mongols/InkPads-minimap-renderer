@@ -391,10 +391,11 @@ fn main() -> Result<(), Report> {
             _ => RendererConfig::default(),
         }
     };
-    // Merged replays automatically swap to the team-roster layout for this
-    // run (mirrors the desktop renderer). The user can still override either
-    // way with the explicit CLI flags below.
+    // Merged/dual replays default to a clean 1:1 map layout without stats panel sidebars
     let merge_mode = !args.merge.is_empty() || args.red_replay.is_some();
+    if merge_mode && !args.stats_panel {
+        config.show_stats_panel = false;
+    }
     config.apply_cli_overrides(&wows_minimap_renderer::config::CliOverrides {
         show_player_names: args.show_player_names,
         no_player_names: args.no_player_names,
@@ -409,7 +410,7 @@ fn main() -> Result<(), Report> {
         no_dead_trails: args.no_dead_trails,
         show_speed_trails: args.show_speed_trails,
         show_ship_config: args.show_ship_config,
-        team_rosters: args.team_rosters || (merge_mode && !args.no_team_rosters),
+        team_rosters: args.team_rosters,
         no_team_rosters: args.no_team_rosters,
         stats_panel: args.stats_panel,
         no_stats_panel: args.no_stats_panel,
@@ -595,6 +596,7 @@ fn main() -> Result<(), Report> {
         &merge_replays,
     )
     .map_err(|e| report!("{e}"))?;
+    renderer.set_position_timeline(session.position_timeline());
     wows_replay_insights::build::seed_consumable_inventories_from_facts(
         session.world_mut(),
         &vehicle_facts,

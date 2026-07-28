@@ -587,39 +587,39 @@ fn draw_score_bar(
 ) {
     let width = map_width as f32;
     let sf = scale_factor;
-    let bg_height = 64.0 * sf;
-    let progress_y = 0.0 * sf;
-    let progress_h = 36.0 * sf;
+    let progress_h = (60.0 * sf).round();
+    let bg_height = progress_h;
     let half = width / 2.0;
-    let center_gap = 2.0f32 * sf; // small gap between the two bars
+    let center_gap = 2.0f32 * sf;
+    let bar_max_w = half - center_gap;
 
-    // Dark background for the entire bar area - faint overlay to keep map visible & prevent chroma artifacts
-    draw_filled_rect(pm, 0.0, 0.0, width, bg_height, [30, 30, 30], 0.25);
+    // Dark neutral background overlay across full top bar width
+    draw_filled_rect(pm, 0.0, 0.0, width, bg_height, [20, 24, 32], 0.35);
 
-    // Team 0 progress: grows from left edge toward center
+    // Team 0 progress (grows dynamically from left edge toward center based on points, with 15% transparency)
     let t0_frac = (team0_score as f32 / max_score as f32).clamp(0.0, 1.0);
-    let t0_width = t0_frac * (half - center_gap);
+    let t0_width = t0_frac * bar_max_w;
     if t0_width > 0.0 {
-        draw_filled_rect(pm, 0.0, progress_y, t0_width, progress_h, team0_color, 1.0);
+        draw_filled_rect(pm, 0.0, 0.0, t0_width, progress_h, team0_color, 0.85);
     }
 
-    // Team 1 progress: grows from right edge toward center
+    // Team 1 progress (grows dynamically from right edge toward center based on points, with 15% transparency)
     let t1_frac = (team1_score as f32 / max_score as f32).clamp(0.0, 1.0);
-    let t1_width = t1_frac * (half - center_gap);
+    let t1_width = t1_frac * bar_max_w;
     if t1_width > 0.0 {
-        draw_filled_rect(pm, width - t1_width, progress_y, t1_width, progress_h, team1_color, 1.0);
+        draw_filled_rect(pm, width - t1_width, 0.0, t1_width, progress_h, team1_color, 0.85);
     }
 
     let font = &fonts.primary;
     let timer_color: [u8; 3] = [200, 200, 200];
-    let pill_pad_x = 4.0f32 * sf;
-    let pill_pad_y = 1.0f32 * sf;
-    let pill_radius = 3.0f32 * sf;
-    let pill_color: [u8; 3] = [0, 0, 0];
-    let pill_alpha = 0.55f32;
+    let pill_pad_x = 6.0f32 * sf;
+    let pill_pad_y = 3.0f32 * sf;
+    let pill_radius = 4.0f32 * sf;
+    let pill_color: [u8; 3] = [10, 12, 16];
+    let pill_alpha = 0.70f32;
 
-    let score_scale = fonts.scale(21.0 * sf);
-    let timer_scale = fonts.scale(18.0 * sf);
+    let score_scale = fonts.scale(30.0 * sf);
+    let timer_scale = fonts.scale(24.0 * sf);
 
     let t0 = format!("{}", team0_score);
     let t1 = format!("{}", team1_score);
@@ -627,9 +627,8 @@ fn draw_score_bar(
     let (t1w, _) = text_size(score_scale, font, &t1);
 
     let pill_h = t0h as f32 + pill_pad_y * 2.0;
-    // Shift points value / expected time-to-win pill up vertically to fit within constraints of progress_h
     let pill_y = (progress_h - pill_h) / 2.0;
-    let text_y = pill_y as i32 + pill_pad_y as i32;
+    let text_y = (pill_y + pill_pad_y).round() as i32;
 
     // ── Measure team 0 pill width ──
     let mut t0_total_w = t0w as f32;
@@ -667,7 +666,7 @@ fn draw_score_bar(
     }
 
     // ── Draw team 1 pill background + text ──
-    let t1_pill_x = width - 8.0 * sf - t1_total_w - pill_pad_x;
+    let t1_pill_x = width - 8.0 * sf - t1_total_w - pill_pad_x * 2.0;
     draw_rounded_rect(
         pm,
         t1_pill_x,
@@ -680,7 +679,7 @@ fn draw_score_bar(
     );
 
     // Team 1 draws right-to-left: [timer] [score]
-    let mut t1_cursor = (width - 8.0 * sf) as i32; // right edge of score
+    let mut t1_cursor = (width - 8.0 * sf - pill_pad_x) as i32; // right edge of score
     // Score (rightmost)
     let t1_x = t1_cursor - t1w as i32;
     draw_text(pm, [255, 255, 255], t1_x, text_y, score_scale, font, &t1);
@@ -688,7 +687,7 @@ fn draw_score_bar(
     // Timer (left of score)
     if let Some(timer) = team1_timer {
         let (tw, _) = text_size(timer_scale, font, timer);
-        t1_cursor -= (4.0 * sf) as i32;
+        t1_cursor -= (6.0 * sf) as i32;
         let tx = t1_cursor - tw as i32;
         draw_text(pm, timer_color, tx, text_y + (1.0 * sf) as i32, timer_scale, font, timer);
     }
@@ -2443,11 +2442,10 @@ impl RenderTarget for ImageTarget {
             DrawCommand::ChatOverlay { entries } => {
                 draw_chat_overlay(&mut self.canvas, entries, &self.fonts, &self.ship_icons, 64, self.map_x_offset);
             }
-            DrawCommand::BattleResultOverlay { result, finish_type, color, subtitle_above } => {
+            DrawCommand::BattleResultOverlay { result, finish_type, color, subtitle_above, custom_subtitle } => {
                 let text = self.text_resolver.resolve(&TranslatableText::BattleResult(*result));
-                let subtitle = finish_type
-                    .as_ref()
-                    .map(|ft| {
+                let subtitle = custom_subtitle.clone().or_else(|| {
+                    finish_type.as_ref().map(|ft| {
                         if let wowsunpack::recognized::Recognized::Known(wowsunpack::game_types::FinishType::Score)
                             | wowsunpack::recognized::Recognized::Known(wowsunpack::game_types::FinishType::ScoreExcess) = ft
                         {
@@ -2459,7 +2457,8 @@ impl RenderTarget for ImageTarget {
                         } else {
                             self.text_resolver.resolve(&TranslatableText::FinishType(ft.clone())).to_uppercase()
                         }
-                    });
+                    })
+                });
                 draw_battle_result_overlay(
                     &mut self.canvas,
                     &text,
@@ -2779,8 +2778,8 @@ impl RenderTarget for ImageTarget {
                 draw_text_shadow(&mut self.canvas, [180, 180, 180], vx, cur_y, value_scale, &self.fonts.cond_bold, &pot_str);
                 cur_y += value_row_h + metric_gap;
 
-                // WPA
-                let label = "WPA";
+                // uWPA
+                let label = "uWPA";
                 let (lw, _) = text_size(label_scale, &self.fonts.cond_bold, label);
                 let lx = right_center_x - lw as i32 / 2;
                 draw_text_shadow(&mut self.canvas, [140, 140, 140], lx, cur_y, label_scale, &self.fonts.cond_bold, label);
