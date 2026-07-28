@@ -1,6 +1,7 @@
 # Security and Temp
 .env
 *.log
+minimap_renderer.exe
 inkpads-bot/temp/
 temp/
 *.mp4
