@@ -442,6 +442,7 @@ fn main() -> Result<(), Report> {
         options.aspect_ratio_16_9,
         options.stats_panel_width,
     );
+    target.inkpads_layout = options.inkpads_layout;
 
     // Load self player's ship silhouette for the stats panel
     let self_silhouette = replay_file.meta.vehicles.iter().find(|v| v.relation == 0).and_then(|v| {

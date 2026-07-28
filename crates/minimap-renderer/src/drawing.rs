@@ -1803,6 +1803,7 @@ pub struct ImageTarget {
     text_resolver: Arc<dyn TextResolver>,
     pub large_elements: bool,
     pub aspect_ratio_16_9: bool,
+    pub inkpads_layout: bool,
 }
 
 impl ImageTarget {
@@ -1942,6 +1943,7 @@ impl ImageTarget {
             text_resolver: Arc::new(DefaultTextResolver),
             large_elements,
             aspect_ratio_16_9,
+            inkpads_layout: false,
         }
     }
 
@@ -2730,13 +2732,15 @@ impl RenderTarget for ImageTarget {
                 let cons_y = hp_text_y + hp_text_h + gap3;
 
                 // Metrics start below emblem with ample gap and fill down nicely
+                let show_uwpa = self.inkpads_layout;
+                let num_metrics = if show_uwpa { 4 } else { 3 };
                 let metrics_start_y = emblem_y + emblem_size + (16.0 * scale_factor).round() as i32;
                 let metrics_end_y = cons_y + cons_size;
                 let region_h = (metrics_end_y - metrics_start_y).max(100);
-                let metrics_total_h_unspaced = 4 * label_row_h + 4 * value_row_h;
-                let metric_gap = ((region_h - metrics_total_h_unspaced) / 3).max(3);
+                let metrics_total_h_unspaced = num_metrics * label_row_h + num_metrics * value_row_h;
+                let metric_gap = ((region_h - metrics_total_h_unspaced) / (num_metrics - 1)).max(3);
                 
-                let mut cur_y = metrics_start_y + (region_h - (metrics_total_h_unspaced + 3 * metric_gap)).max(0) / 2;
+                let mut cur_y = metrics_start_y + (region_h - (metrics_total_h_unspaced + (num_metrics - 1) * metric_gap)).max(0) / 2;
 
                 // DAMAGE
                 let total_damage: f64 = breakdowns.iter().map(|e| e.damage).sum();
@@ -2778,17 +2782,19 @@ impl RenderTarget for ImageTarget {
                 draw_text_shadow(&mut self.canvas, [180, 180, 180], vx, cur_y, value_scale, &self.fonts.cond_bold, &pot_str);
                 cur_y += value_row_h + metric_gap;
 
-                // uWPA
-                let label = "uWPA";
-                let (lw, _) = text_size(label_scale, &self.fonts.cond_bold, label);
-                let lx = right_center_x - lw as i32 / 2;
-                draw_text_shadow(&mut self.canvas, [140, 140, 140], lx, cur_y, label_scale, &self.fonts.cond_bold, label);
-                cur_y += label_row_h;
-                
-                let wpa_str = format!("{:.2}", wpa);
-                let (vw, _) = text_size(value_scale, &self.fonts.cond_bold, &wpa_str);
-                let vx = right_center_x - vw as i32 / 2;
-                draw_text_shadow(&mut self.canvas, wpa_color(*wpa, 1.0), vx, cur_y, value_scale, &self.fonts.cond_bold, &wpa_str);
+                if show_uwpa {
+                    // uWPA
+                    let label = "uWPA";
+                    let (lw, _) = text_size(label_scale, &self.fonts.cond_bold, label);
+                    let lx = right_center_x - lw as i32 / 2;
+                    draw_text_shadow(&mut self.canvas, [140, 140, 140], lx, cur_y, label_scale, &self.fonts.cond_bold, label);
+                    cur_y += label_row_h;
+                    
+                    let wpa_str = format!("{:.2}", wpa);
+                    let (vw, _) = text_size(value_scale, &self.fonts.cond_bold, &wpa_str);
+                    let vx = right_center_x - vw as i32 / 2;
+                    draw_text_shadow(&mut self.canvas, wpa_color(*wpa, 1.0), vx, cur_y, value_scale, &self.fonts.cond_bold, &wpa_str);
+                }
 
                 // Draw active consumables centered horizontally in the left 57% column at cons_y
                 let cons_gap = (6.0 * scale_factor).round() as i32;
