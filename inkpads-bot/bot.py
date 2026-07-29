@@ -9,6 +9,7 @@ import requests
 import json
 import re
 from pathlib import Path
+from collections import Counter
 from dotenv import load_dotenv
 import logging
 
