@@ -299,6 +299,17 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
 
             err_text = stderr.decode('utf-8', errors='ignore') if stderr else ""
             winner_name = extract_winning_team(err_text)
+            f_clan, e_clan = get_team_clans(header)
+
+            embed_color = 0x2ECC71
+            if winner_name == "Alpha Team":
+                embed_color = 0x2ECC71
+            elif winner_name == "Bravo Team":
+                embed_color = 0xE74C3C
+            elif winner_name == "Draw":
+                embed_color = 0xF1C40F
+
+            embed_title = f"[{f_clan}] vs [{e_clan}]" if (f_clan and e_clan) else "Tournament Match Render Complete"
 
             details = []
             if mode_name and map_name: details.append(f"**{mode_name}:** {map_name}")
@@ -312,13 +323,12 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
                     details.append(f"**Ship:** {ship_name}")
 
             if formatted_dt: details.append(f"**Date:** {formatted_dt}")
-            if opponent_clan: details.append(f"**Opponent:** [{opponent_clan}]")
             info_line = " | ".join(details)
 
             embed = discord.Embed(
-                title="Tournament Match Render Complete",
+                title=embed_title,
                 description=info_line,
-                color=0x2ECC71
+                color=embed_color
             )
 
             file = discord.File(output_path, filename=f"tactical_match_{session_id}.mp4")
@@ -645,6 +655,64 @@ def extract_winning_team(stderr_text: str) -> str:
     if m:
         return m.group(1).strip()
     return ""
+
+def get_battle_type_title(match_group, game_type):
+    group = str(match_group).strip().lower() if match_group else ""
+    gtype = str(game_type).strip().lower() if game_type else ""
+    if group == "pvp":
+        return "Random Battle"
+    elif group == "ranked":
+        return "Ranked Battle"
+    elif group in ("clan", "cvc", "cw"):
+        return "Clan Battle"
+    elif group in ("cooperative", "coop"):
+        return "Co-op Battle"
+    elif group == "brawl":
+        return "Brawl"
+    elif group == "pve" or "operation" in gtype or "scenario" in gtype:
+        return "Operation"
+    elif group in ("training", "trainingroom", "training_room", "custom"):
+        return "Training Battle"
+    elif match_group:
+        return str(match_group).strip().title()
+    elif game_type:
+        return str(game_type).strip().title()
+    return "Battle"
+
+def get_team_clans(header):
+    """
+    Extracts majority clan tag for Team 0 (friendly) and Team 1 (enemy).
+    Returns (friendly_clan, enemy_clan).
+    """
+    if not isinstance(header, dict):
+        return "", ""
+    vehicles = header.get("vehicles", [])
+    if not vehicles or not isinstance(vehicles, list):
+        return "", ""
+
+    team_clans = {0: Counter(), 1: Counter()}
+
+    for v in vehicles:
+        if not isinstance(v, dict):
+            continue
+        relation = v.get("relation")
+        clan = v.get("clanTag") or v.get("clanAbbrev") or v.get("clan_tag") or v.get("clan")
+        name = v.get("name", "")
+        if not clan and name.startswith("[") and "]" in name:
+            clan = name[1:name.index("]")]
+        if not clan:
+            continue
+        clan = str(clan).strip()
+        if not clan:
+            continue
+
+        team_id = 0 if relation in (0, 1) else 1
+        team_clans[team_id][clan] += 1
+
+    f_clan = team_clans[0].most_common(1)[0][0] if team_clans[0] else ""
+    e_clan = team_clans[1].most_common(1)[0][0] if team_clans[1] else ""
+
+    return f_clan, e_clan
 
 def get_game_mode_display_name(match_group, game_type, scenario="", logic=""):
     group = str(match_group).strip().lower() if match_group else ""
@@ -1022,20 +1090,61 @@ async def _render_impl(
 
             err_text = stderr.decode('utf-8', errors='ignore') if stderr else ""
             winner_name = extract_winning_team(err_text)
+            f_clan, e_clan = get_team_clans(header)
+
+            # Determine dynamic color for all matches (Victory = Green, Defeat = Red, Draw = Gold)
+            if winner_name == "Alpha Team":
+                embed_color = 0x2ECC71  # Green
+            elif winner_name == "Bravo Team":
+                embed_color = 0xE74C3C  # Red
+            elif winner_name == "Draw":
+                embed_color = 0xF1C40F  # Gold
+            else:
+                embed_color = 0x2ECC71  # Default Green
 
             details = []
-            if mode_name and map_name:
-                details.append(f"**{mode_name}:** {map_name}")
-            elif map_name:
-                details.append(f"**Map:** {map_name}")
-            if is_dual:
-                if winner_name:
-                    details.append(f"**Victory:** {winner_name}")
+            if is_clan_battle or (f_clan and e_clan):
+                # Title format for Clan Battles: [CLAN1] vs [CLAN2]
+                if f_clan and e_clan:
+                    embed_title = f"[{f_clan}] vs [{e_clan}]"
+                elif e_clan:
+                    embed_title = f"Clan Battle vs [{e_clan}]"
+                else:
+                    embed_title = "Clan Battle Render Complete"
+
+                # Subtext for Clan Battles: **Victory / Defeat:** map | **Ship:** ship | **Date:** date
+                if not is_dual:
+                    if winner_name == "Alpha Team":
+                        result_label = "Victory"
+                    elif winner_name == "Bravo Team":
+                        result_label = "Defeat"
+                    elif winner_name == "Draw":
+                        result_label = "Draw"
+                    else:
+                        result_label = "Clan Battle"
+                    details.append(f"**{result_label}:** {map_name}")
+                else:
+                    if mode_name and map_name: details.append(f"**{mode_name}:** {map_name}")
+                    elif map_name: details.append(f"**Map:** {map_name}")
+                    if winner_name: details.append(f"**Victory:** {winner_name}")
             else:
-                if ship_name:
-                    details.append(f"**Ship:** {ship_name}")
-            if formatted_dt: details.append(f"**Date:** {formatted_dt}")
-            if opponent_clan: details.append(f"**Opponent:** [{opponent_clan}]")
+                # Title format for General Renders: <Battle Type> Render Complete (e.g. Random Battle Render Complete)
+                battle_type_title = get_battle_type_title(match_group, game_type)
+                embed_title = f"{battle_type_title} Render Complete"
+
+                # Subtext for General Renders: **<Battle Mode>:** map | **Ship:** ship | **Date:** date
+                if mode_name and map_name:
+                    details.append(f"**{mode_name}:** {map_name}")
+                elif map_name:
+                    details.append(f"**Map:** {map_name}")
+                if is_dual and winner_name:
+                    details.append(f"**Victory:** {winner_name}")
+
+            if not is_dual and ship_name:
+                details.append(f"**Ship:** {ship_name}")
+            if formatted_dt:
+                details.append(f"**Date:** {formatted_dt}")
+
             info_line = " | ".join(details)
 
             # 7. Upload
@@ -1043,8 +1152,8 @@ async def _render_impl(
             await interaction.edit_original_response(embed=embed)
             
             file = discord.File(output_path, filename=f"tactical_{replay.filename.replace('.wowsreplay', '.mp4')}")
-            embed.title = "Render Complete"
-            embed.color = 0x2ECC71 # Green
+            embed.title = embed_title
+            embed.color = embed_color
             embed.description = info_line
             await interaction.edit_original_response(embed=embed, attachments=[file])
         else:
