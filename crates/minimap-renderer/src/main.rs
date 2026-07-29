@@ -667,6 +667,14 @@ fn main() -> Result<(), Report> {
     }
 
     session.finish();
+    if let Some(wt) = session.world_mut().view().winning_team() {
+        let winner_str = match wt {
+            0 => "Alpha Team",
+            1 => "Bravo Team",
+            _ => "Draw",
+        };
+        info!("WINNING_TEAM: {}", winner_str);
+    }
     {
         let view = session.world_mut().view();
         encoder.finish(&view, &mut renderer, &mut target)?;
