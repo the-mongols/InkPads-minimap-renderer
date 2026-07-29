@@ -284,17 +284,33 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
             raw_dt = header.get("dateTime", "")
             match_group = header.get("matchGroup", "")
             game_type = header.get("gameType", "")
+            scenario = header.get("scenario", "")
+            logic = header.get("logic", "") or header.get("gameLogic", "")
 
-            mode_name = get_game_mode_display_name(match_group, game_type)
+            is_dual = bool(red_path and red_path.exists())
+            mode_name = get_game_mode_display_name(match_group, game_type, scenario, logic)
+            if not mode_name:
+                mode_name = "Training Battle"
+
             ship_name = clean_ship_name(raw_ship)
             map_name = get_map_display_name(raw_map)
             formatted_dt = format_date_time(raw_dt)
             opponent_clan = get_opponent_clan(header, min_players=4)
 
+            err_text = stderr.decode('utf-8', errors='ignore') if stderr else ""
+            winner_name = extract_winning_team(err_text)
+
             details = []
             if mode_name and map_name: details.append(f"**{mode_name}:** {map_name}")
             elif map_name: details.append(f"**Map:** {map_name}")
-            if ship_name: details.append(f"**Ship:** {ship_name}")
+
+            if is_dual:
+                if winner_name:
+                    details.append(f"**Victory:** {winner_name}")
+            else:
+                if ship_name:
+                    details.append(f"**Ship:** {ship_name}")
+
             if formatted_dt: details.append(f"**Date:** {formatted_dt}")
             if opponent_clan: details.append(f"**Opponent:** [{opponent_clan}]")
             info_line = " | ".join(details)
@@ -622,10 +638,41 @@ def format_date_time(raw_dt):
     except Exception:
         return raw_dt
 
-def get_game_mode_display_name(match_group, game_type):
+def extract_winning_team(stderr_text: str) -> str:
+    if not stderr_text:
+        return ""
+    m = re.search(r'WINNING_TEAM:\s*([A-Za-z0-9 ]+)', stderr_text)
+    if m:
+        return m.group(1).strip()
+    return ""
+
+def get_game_mode_display_name(match_group, game_type, scenario="", logic=""):
     group = str(match_group).strip().lower() if match_group else ""
     gtype = str(game_type).strip().lower() if game_type else ""
-    
+    scen = str(scenario).strip().lower() if scenario else ""
+    log = str(logic).strip().lower() if logic else ""
+
+    combined = f"{gtype} {scen} {log}"
+
+    # Specific match mode / rule set detection from replay metadata
+    if "clandomination" in combined or "clan_domination" in combined or "clan domination" in combined:
+        return "ClanDomination"
+    elif "domination" in combined:
+        return "Domination"
+    elif "armsrace" in combined or "arms_race" in combined or "arms race" in combined:
+        return "Arms Race"
+    elif "epicenter" in combined:
+        return "Epicenter"
+    elif "airship" in combined or "escort" in combined:
+        return "Airship Escort"
+    elif "convoy" in combined:
+        return "Convoy"
+    elif "asymmetric" in combined:
+        return "Asymmetric Battle"
+    elif "standard" in combined:
+        return "Standard Battle"
+
+    # Match group fallbacks
     if group == "pvp":
         return "Random Battle"
     elif group in ("cooperative", "coop"):
@@ -636,14 +683,16 @@ def get_game_mode_display_name(match_group, game_type):
         return "Clan Battle"
     elif group == "brawl":
         return "Brawl"
+    elif group in ("training", "trainingroom", "training_room", "custom"):
+        return "Training Battle"
     elif group == "pve" or "operation" in gtype or "scenario" in gtype:
         return "Operation"
     elif group == "event":
         return "Event Mode"
-    elif match_group:
-        return str(match_group).strip().title()
     elif game_type:
         return str(game_type).strip().title()
+    elif match_group:
+        return str(match_group).strip().title()
     return ""
 
 def get_opponent_clan(header, min_players=4):
@@ -848,8 +897,10 @@ async def _render_impl(
         raw_dt = header.get("dateTime", "")
         match_group = header.get("matchGroup", "")
         game_type = header.get("gameType", "")
+        scenario = header.get("scenario", "")
+        logic = header.get("logic", "") or header.get("gameLogic", "")
 
-        mode_name = get_game_mode_display_name(match_group, game_type)
+        mode_name = get_game_mode_display_name(match_group, game_type, scenario, logic)
         ship_name = clean_ship_name(raw_ship)
         map_name = get_map_display_name(raw_map)
         formatted_dt = format_date_time(raw_dt)
@@ -862,12 +913,14 @@ async def _render_impl(
         embed.title = "Rendering Minimap"
         embed.color = 0x3498DB # Blue
         
+        is_dual = bool(red_replay)
         details = []
         if mode_name and map_name:
             details.append(f"**{mode_name}:** {map_name}")
         elif map_name:
             details.append(f"**Map:** {map_name}")
-        if ship_name: details.append(f"**Ship:** {ship_name}")
+        if not is_dual and ship_name:
+            details.append(f"**Ship:** {ship_name}")
         if formatted_dt: details.append(f"**Date:** {formatted_dt}")
         if opponent_clan: details.append(f"**Opponent:** [{opponent_clan}]")
         info_line = " | ".join(details)
@@ -964,19 +1017,26 @@ async def _render_impl(
                     if enemy_clan_tag and enemy_clan_tag != "Unknown":
                         opponent_clan = enemy_clan_tag
                         logger.info(f"[{session_id}] Extracted enemy clan from analyzer stream: [{opponent_clan}]")
-                        
-                        # Rebuild details and info_line with opponent clan
-                        details = []
-                        if mode_name and map_name:
-                            details.append(f"**{mode_name}:** {map_name}")
-                        elif map_name:
-                            details.append(f"**Map:** {map_name}")
-                        if ship_name: details.append(f"**Ship:** {ship_name}")
-                        if formatted_dt: details.append(f"**Date:** {formatted_dt}")
-                        if opponent_clan: details.append(f"**Opponent:** [{opponent_clan}]")
-                        info_line = " | ".join(details)
                 except Exception as ae:
                     logger.warning(f"[{session_id}] Failed to extract enemy clan via analyzer: {ae}")
+
+            err_text = stderr.decode('utf-8', errors='ignore') if stderr else ""
+            winner_name = extract_winning_team(err_text)
+
+            details = []
+            if mode_name and map_name:
+                details.append(f"**{mode_name}:** {map_name}")
+            elif map_name:
+                details.append(f"**Map:** {map_name}")
+            if is_dual:
+                if winner_name:
+                    details.append(f"**Victory:** {winner_name}")
+            else:
+                if ship_name:
+                    details.append(f"**Ship:** {ship_name}")
+            if formatted_dt: details.append(f"**Date:** {formatted_dt}")
+            if opponent_clan: details.append(f"**Opponent:** [{opponent_clan}]")
+            info_line = " | ".join(details)
 
             # 7. Upload
             embed.description = f"{info_line}\n\nStatus: Uploading..."
