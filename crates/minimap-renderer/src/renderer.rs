@@ -514,6 +514,11 @@ pub struct MinimapRenderer<'a> {
 
     /// Real per-salvo flight times learned from impacts, for tracer pacing.
     salvo_flight_times: Option<Arc<SalvoFlightTimes>>,
+
+    /// Locked uWPA for self player upon death.
+    locked_self_wpa: Option<f64>,
+    /// Locked WPA for teammates upon death: entity_id -> locked_wpa_score.
+    locked_teammates_wpa: HashMap<EntityId, f32>,
 }
 
 impl<'a> MinimapRenderer<'a> {
@@ -556,6 +561,8 @@ impl<'a> MinimapRenderer<'a> {
             render_clock: None,
             position_timeline: None,
             salvo_flight_times: None,
+            locked_self_wpa: None,
+            locked_teammates_wpa: HashMap::new(),
         }
     }
 
@@ -630,17 +637,17 @@ impl<'a> MinimapRenderer<'a> {
     /// Should be called once after `populate_players` has run and the VFS is
     /// available.  If the dog tag is not available or any asset is missing the
     /// current `self_emblem` (i.e. the default fallback) is preserved.
-    pub fn resolve_self_dog_tag_emblem(&mut self, vfs: &wowsunpack::vfs::VfsPath) {
+    pub fn resolve_self_dog_tag_emblem(&mut self, vfs: &wowsunpack::vfs::VfsPath) -> bool {
         let Some(self_eid) = self.self_entity_id else {
-            return; // self not yet known
+            return false; // self not yet known
         };
         let Some(dog_tag_value) = self.player_dog_tags.get(&self_eid) else {
-            return; // no dog tag for self
+            return false; // no dog tag for self
         };
 
         // The dog tag field is an array of integer component IDs.
         let Some(arr) = dog_tag_value.as_array() else {
-            return;
+            return false;
         };
 
         let component_ids: Vec<wows_replays::types::GameParamId> = arr
@@ -649,14 +656,16 @@ impl<'a> MinimapRenderer<'a> {
             .collect();
 
         if component_ids.is_empty() {
-            return;
+            return false;
         }
 
         if let Some(emblem) = crate::assets::compose_dog_tag_emblem(&component_ids, self.game_params, vfs) {
             self.self_emblem = Some(emblem);
             tracing::info!(entity_id = %self_eid, ?component_ids, "Loaded custom dog tag emblem for self player");
+            true
         } else {
             tracing::warn!(entity_id = %self_eid, ?component_ids, "Failed to compose dog tag emblem for self player");
+            false
         }
     }
 
@@ -2295,9 +2304,7 @@ impl<'a> MinimapRenderer<'a> {
         }
 
         // 12. Stats panel (right side panel with ship HP, damage, ribbons, activity).
-        // When team rosters are enabled they replace the self-perspective stats;
-        // this branch is skipped entirely so the panel doesn't double up.
-        if self.options.show_stats_panel && !self.options.show_team_rosters {
+        if self.options.show_stats_panel {
             let panel_x = MINIMAP_SIZE as i32;
             let panel_w = {
                 let base_w = if self.options.aspect_ratio_16_9 {
@@ -2431,36 +2438,76 @@ impl<'a> MinimapRenderer<'a> {
             let damage_spotting: f64 = spotting_breakdowns.iter().map(|e| e.damage).sum();
             let damage_potential: f64 = potential_breakdowns.iter().map(|e| e.damage).sum();
 
-
-
             // Calculate live Sabermetric WPA for self player
             let self_wpa = if let Some(self_eid) = self.self_entity_id {
-                let team_advantage_result = self.calculate_team_advantage(controller);
-                let leverage_index = 1.0 + (team_advantage_result.breakdown.total.0 - team_advantage_result.breakdown.total.1).abs() / 10.0;
-                
-                let vehicle_props = controller.vehicle_props(self_eid);
-                let hp_max = vehicle_props.as_ref().map(|p| p.max_health()).unwrap_or(0.0);
-                let hp_cur = vehicle_props.as_ref().map(|p| p.health()).unwrap_or(0.0);
-                let total_damage_dealt: f64 = breakdowns.iter().map(|e| e.damage).sum();
-                let damage_received = (hp_max - hp_cur).max(0.0) as u32;
-                let kills = controller.kills().iter().filter(|k| k.killer == self_eid && k.clock <= clock).count() as u32;
+                let death_clock = controller.kills().iter().find(|k| k.victim == self_eid).map(|k| k.clock);
+                let is_self_dead = death_clock.map_or(false, |d| clock >= d);
 
-                let base_wpa = calculate_player_wpa(
-                    self_eid,
-                    clock,
-                    leverage_index,
-                    &self.damage_events,
-                    controller,
-                    hp_cur,
-                    hp_max,
-                    total_damage_dealt as u32,
-                    damage_received,
-                    kills,
-                );
+                if is_self_dead {
+                    if let Some(locked) = self.locked_self_wpa {
+                        locked
+                    } else {
+                        let eval_clock = death_clock.unwrap_or(clock);
+                        let team_advantage_result = self.calculate_team_advantage(controller);
+                        let raw_leverage = 1.0 + (team_advantage_result.breakdown.total.0 - team_advantage_result.breakdown.total.1).abs() / 100.0;
+                        let _leverage_index = raw_leverage.clamp(1.0, 2.5);
 
-                let spotting_wpa = (damage_spotting as f64 / 75000.0) * 0.50 * (leverage_index as f64);
-                let potential_wpa = (damage_potential as f64 / hp_max.max(1.0) as f64) * 0.20 * (leverage_index as f64);
-                base_wpa + spotting_wpa + potential_wpa
+                        let vehicle_props = controller.vehicle_props(self_eid);
+                        let hp_max = vehicle_props.as_ref().map(|p| p.max_health()).unwrap_or(0.0);
+                        let hp_cur = vehicle_props.as_ref().map(|p| p.health()).unwrap_or(0.0);
+                        let total_damage_dealt: f64 = breakdowns.iter().map(|e| e.damage).sum();
+                        let damage_received = (hp_max - hp_cur).max(0.0) as u32;
+                        let kills = controller.kills().iter().filter(|k| k.killer == self_eid && k.clock <= eval_clock).count() as u32;
+
+                        let base_wpa = calculate_player_wpa(
+                            self_eid,
+                            eval_clock,
+                            1.0,
+                            &self.damage_events,
+                            controller,
+                            hp_cur,
+                            hp_max,
+                            total_damage_dealt as u32,
+                            damage_received,
+                            kills,
+                        );
+
+                        let spotting_wpa = (damage_spotting as f64 / 100000.0) * 0.25;
+                        let potential_wpa = (damage_potential as f64 / 1500000.0) * 0.25;
+                        let combined = ((base_wpa + spotting_wpa + potential_wpa) * 100.0).round() / 100.0;
+                        self.locked_self_wpa = Some(combined);
+                        combined
+                    }
+                } else {
+                    let team_advantage_result = self.calculate_team_advantage(controller);
+                    let raw_leverage = 1.0 + (team_advantage_result.breakdown.total.0 - team_advantage_result.breakdown.total.1).abs() / 100.0;
+                    let leverage_index = raw_leverage.clamp(1.0, 2.5);
+
+                    let vehicle_props = controller.vehicle_props(self_eid);
+                    let hp_max = vehicle_props.as_ref().map(|p| p.max_health()).unwrap_or(0.0);
+                    let hp_cur = vehicle_props.as_ref().map(|p| p.health()).unwrap_or(0.0);
+                    let total_damage_dealt: f64 = breakdowns.iter().map(|e| e.damage).sum();
+                    let damage_received = (hp_max - hp_cur).max(0.0) as u32;
+                    let kills = controller.kills().iter().filter(|k| k.killer == self_eid && k.clock <= clock).count() as u32;
+
+                    let base_wpa = calculate_player_wpa(
+                        self_eid,
+                        clock,
+                        leverage_index,
+                        &self.damage_events,
+                        controller,
+                        hp_cur,
+                        hp_max,
+                        total_damage_dealt as u32,
+                        damage_received,
+                        kills,
+                    );
+
+                    let spotting_wpa = (damage_spotting as f64 / 100000.0) * 0.25 * (leverage_index as f64);
+                    let potential_wpa = (damage_potential as f64 / 1500000.0) * 0.25 * (leverage_index as f64);
+                    let combined = base_wpa + spotting_wpa + potential_wpa;
+                    (combined * 100.0).round() / 100.0
+                }
             } else {
                 0.0
             };
@@ -2757,22 +2804,48 @@ impl<'a> MinimapRenderer<'a> {
                 // Sabermetric Win Probability Added (WPA) calculation:
                 // Leverage index Lt based on current advantage gap
                 let team_advantage_result = self.calculate_team_advantage(controller);
-                let leverage_index = 1.0 + (team_advantage_result.breakdown.total.0 - team_advantage_result.breakdown.total.1).abs() / 10.0;
+                let raw_leverage = 1.0 + (team_advantage_result.breakdown.total.0 - team_advantage_result.breakdown.total.1).abs() / 100.0;
+                let leverage_index = raw_leverage.clamp(1.0, 2.5);
 
                 let mut table_rows: Vec<TeammateTableRow> = Vec::new();
                 for t in raw_teammates {
-                    let wpa_score = calculate_player_wpa(
-                        t.entity_id,
-                        clock,
-                        leverage_index,
-                        &self.damage_events,
-                        controller,
-                        t.hp_cur,
-                        t.hp_max,
-                        t.damage_dealt,
-                        t.damage_received,
-                        t.kills,
-                    );
+                    let death_clock = controller.kills().iter().find(|k| k.victim == t.entity_id).map(|k| k.clock);
+                    let is_t_dead = death_clock.map_or(false, |d| clock >= d);
+
+                    let wpa_score = if is_t_dead {
+                        if let Some(&locked) = self.locked_teammates_wpa.get(&t.entity_id) {
+                            locked
+                        } else {
+                            let eval_clock = death_clock.unwrap_or(clock);
+                            let score = calculate_player_wpa(
+                                t.entity_id,
+                                eval_clock,
+                                1.0,
+                                &self.damage_events,
+                                controller,
+                                t.hp_cur,
+                                t.hp_max,
+                                t.damage_dealt,
+                                t.damage_received,
+                                t.kills,
+                            ) as f32;
+                            self.locked_teammates_wpa.insert(t.entity_id, score);
+                            score
+                        }
+                    } else {
+                        calculate_player_wpa(
+                            t.entity_id,
+                            clock,
+                            leverage_index,
+                            &self.damage_events,
+                            controller,
+                            t.hp_cur,
+                            t.hp_max,
+                            t.damage_dealt,
+                            t.damage_received,
+                            t.kills,
+                        ) as f32
+                    };
 
                     table_rows.push(TeammateTableRow {
                         player_name: t.player_name,
@@ -2821,7 +2894,13 @@ impl<'a> MinimapRenderer<'a> {
 
                 // Ribbons strip: placed below table with ribbon_gap
                 let ribbon_y = table_y + table_h + ribbon_gap;
-                commands.push(DrawCommand::StatsRibbons { x: panel_x, y: ribbon_y, width: panel_w, ribbons });
+                commands.push(DrawCommand::StatsRibbons {
+                    x: panel_x,
+                    y: ribbon_y,
+                    width: panel_w,
+                    ribbons,
+                    large_format: false,
+                });
 
                 // Bottom combat feeds: anchored at fixed y = 1000 with 200px height
                 commands.push(DrawCommand::InkpadsInLineFeeds {
@@ -2833,7 +2912,13 @@ impl<'a> MinimapRenderer<'a> {
                 });
             } else {
                 let ribbon_y = 476;
-                commands.push(DrawCommand::StatsRibbons { x: panel_x, y: ribbon_y, width: panel_w, ribbons });
+                commands.push(DrawCommand::StatsRibbons {
+                    x: panel_x,
+                    y: ribbon_y,
+                    width: panel_w,
+                    ribbons,
+                    large_format: true,
+                });
 
                 let feed_y = 704;
                 let feed_height = 496;
@@ -2847,243 +2932,7 @@ impl<'a> MinimapRenderer<'a> {
             }
         }
 
-        if self.options.show_team_rosters {
-            self.emit_team_rosters(controller, &mut commands);
-        }
-
         commands
-    }
-
-    fn emit_team_rosters(&self, controller: &BattleView<'_>, commands: &mut Vec<DrawCommand>) {
-        use crate::draw_command::ChargeCount as CmdChargeCount;
-        use crate::draw_command::RosterConsumable;
-        use crate::draw_command::RosterRow;
-        use crate::draw_command::RosterSide;
-
-        let dead = controller.dead_ships();
-        let active = controller.active_consumables();
-        let inventories = controller.consumable_inventories();
-        let clock = controller.clock();
-
-        let mut friendly: Vec<RosterRow> = Vec::new();
-        let mut enemy: Vec<RosterRow> = Vec::new();
-
-        // Iterate player metadata directly (rather than self.player_relations) so
-        // every player surfaced by onArenaStateReceived appears in the roster
-        // immediately, even before the primary perspective has spotted them.
-        // Merged replays therefore display both teams' full lineup from the
-        // start. Live HP and consumable inventory fill in once we have a
-        // VehicleEntity for the player (either from the primary's view or from
-        // the alt-perspective stream forwarded by `MergedReplays`).
-        for player in controller.player_entities().values() {
-            let entity_id = player.initial_state().entity_id();
-            let relation = player.relation();
-            let is_self = relation.is_self();
-
-            let vehicle_props = controller.vehicle_props(entity_id);
-            let cached = self.vehicle_facts.get(&entity_id);
-            // Prefer live entity HP. Fall back to the scanned EntityCreate
-            // value when the live entity isn't tracked yet (merged sessions
-            // before primary spotting) or hasn't received its first maxHealth
-            // broadcast (some ships only get it on first damage).
-            let (hp_current, hp_max, hp_healable) = if let Some(props) = vehicle_props.as_ref() {
-                let live_max = props.max_health();
-                let live_cur = props.health();
-                let healable = props.regeneration_health().max(0.0).min((live_max - live_cur).max(0.0));
-                if live_max > 0.0 {
-                    (live_cur, live_max, healable)
-                } else if let Some(f) = cached {
-                    (f.max_health, f.max_health, 0.0)
-                } else {
-                    (0.0, 0.0, 0.0)
-                }
-            } else if let Some(f) = cached {
-                (f.max_health, f.max_health, 0.0)
-            } else {
-                (0.0, 0.0, 0.0)
-            };
-            let is_dead = dead.contains_key(&entity_id) || (hp_max > 0.0 && hp_current <= 0.0);
-            let heal_availability =
-                consumable_availability(&active, &inventories, entity_id, clock, is_dead, is_heal_consumable);
-            let hp_healable_per_charge = heal_bright_amount(&active, &inventories, entity_id, clock, hp_max)
-                .map(|b| hp_healable.min(b))
-                .unwrap_or(hp_healable);
-            // Same source as the yellow ship-icon outline: visibilityFlags on
-            // the live VehicleEntity. Non-zero means the game has confirmed
-            // the ship is detected (radar, hydro, direct vision, etc.).
-            let is_spotted = vehicle_props.as_ref().map(|props| props.visibility_flags() != 0).unwrap_or(false);
-            let is_disconnected = !is_dead && is_player_disconnected_at(controller, entity_id, clock);
-
-            // Kills at the current clock: filter the global kill list by
-            // killer and clock. Damage at the current clock: sum the merged
-            // damage events for this entity that have already happened.
-            let kills = controller.kills().iter().filter(|k| k.killer == entity_id && k.clock <= clock).count() as u32;
-            let (damage_dealt, last_damage_clock): (f32, Option<f32>) = self
-                .damage_events
-                .get(&entity_id)
-                .map(|events| {
-                    let mut sum = 0.0f32;
-                    let mut last = None;
-                    for e in events.iter().take_while(|e| e.clock <= clock) {
-                        sum += e.amount;
-                        last = Some(e.clock.0);
-                    }
-                    (sum, last)
-                })
-                .unwrap_or((0.0, None));
-            let seconds_since_damage = last_damage_clock.map(|c| (clock.0 - c).max(0.0));
-
-            let player_name = self.player_names.get(&entity_id).cloned().unwrap_or_else(|| {
-                let raw = player.initial_state().username();
-                if player.is_bot() && raw.starts_with("IDS_") {
-                    self.game_params
-                        .localized_name_from_id(&TranslationKey::new(raw))
-                        .unwrap_or_else(|| raw.to_string())
-                } else {
-                    raw.to_string()
-                }
-            });
-            let clan_tag = self.player_clan_tags.get(&entity_id).cloned().or_else(|| {
-                let c = player.initial_state().clan().to_string();
-                (!c.is_empty()).then_some(c)
-            });
-            let clan_color = self.player_clan_colors.get(&entity_id).copied().flatten().or_else(|| {
-                let raw = player.initial_state().clan_color();
-                (raw != 0).then_some([((raw & 0xFF0000) >> 16) as u8, ((raw & 0xFF00) >> 8) as u8, (raw & 0xFF) as u8])
-            });
-            let ship_name = self.ship_display_names.get(&entity_id).cloned().unwrap_or_else(|| {
-                self.game_params
-                    .localized_name_from_param(player.vehicle())
-                    .unwrap_or_else(|| player.vehicle().name().to_string())
-            });
-            let ship_param_id = Some(player.vehicle().id());
-            // Ship-class icon key: the species name (e.g. "Destroyer"). The
-            // egui side uses this to look up the same icon the minimap draws
-            // beside a ship.
-            let species = player.vehicle().species().and_then(|s| s.known()).copied();
-            let class_icon_key = species.map(|s| s.name().to_string());
-
-            let consumables: Vec<RosterConsumable> = inventories
-                .get(&entity_id)
-                .map(|slots| {
-                    slots
-                        .iter()
-                        .map(|slot| {
-                            // Dead ships can't have a consumable running; stop the
-                            // countdown the instant they go down rather than letting
-                            // it tick to zero.
-                            let active_remaining_secs = if is_dead {
-                                None
-                            } else {
-                                active.get(&entity_id).and_then(|list| {
-                                    list.iter()
-                                        .filter(|a| a.consumable.known() == slot.consumable.known())
-                                        .map(|a| a.activated_at.0 + a.duration - clock.0)
-                                        .find(|remaining| *remaining > 0.0)
-                                })
-                            };
-                            let display_name = wowsunpack::game_params::translations::translate_consumable(
-                                &slot.icon_key,
-                                self.game_params,
-                            )
-                            .unwrap_or_else(|| slot.consumable_type_raw.clone());
-                            let description = wowsunpack::game_params::translations::translate_consumable_description(
-                                &slot.icon_key,
-                                self.game_params,
-                            )
-                            .unwrap_or_default();
-                            let availability =
-                                consumable_availability(&active, &inventories, entity_id, clock, is_dead, |c| {
-                                    c.known() == slot.consumable.known()
-                                });
-                            RosterConsumable {
-                                icon_key: slot.icon_key.clone(),
-                                display_name,
-                                description,
-                                total_charges: CmdChargeCount::from(slot.total_charges),
-                                charges_used: slot.charges_used,
-                                work_time_secs: slot.work_time,
-                                reload_time_secs: slot.reload_time,
-                                active_remaining_secs,
-                                availability,
-                            }
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            let team_id = player.initial_state().team_id();
-            let row = RosterRow {
-                entity_id,
-                team_id,
-                player_name,
-                clan_tag,
-                clan_color,
-                ship_name,
-                ship_param_id,
-                class_icon_key,
-                species,
-                hp_current,
-                hp_max,
-                hp_healable,
-                hp_healable_per_charge,
-                heal_availability,
-                is_dead,
-                is_self,
-                is_spotted,
-                is_disconnected,
-                kills,
-                damage_dealt,
-                seconds_since_damage,
-                consumables,
-            };
-
-            if relation.is_enemy() {
-                enemy.push(row);
-            } else {
-                friendly.push(row);
-            }
-        }
-
-        // Mirrors the replay inspector's default ordering: ship species first
-        // (CV/BB/CA/DD/SS via the Species enum's variant order), then ship
-        // identity, then player name. Dead ships sink to the bottom of each
-        // team but keep the same intra-group ordering.
-        let sort_key = |row: &RosterRow| {
-            (row.is_dead, row.species, row.ship_param_id.map(|id| id.raw()).unwrap_or(0), row.player_name.clone())
-        };
-        friendly.sort_by_key(sort_key);
-        enemy.sort_by_key(sort_key);
-
-        // Roster panels live in dedicated gutters, flanking the minimap.
-        // Canvas layout (when both rosters and stats panel are off): just the
-        // minimap occupies 0..MINIMAP_SIZE. With rosters on, the consumer
-        // (replay renderer / video export) widens the canvas to include
-        // TEAM_ROSTER_WIDTH on each side; the friendly roster sits at x=0 and
-        // the enemy roster at x=MINIMAP_SIZE+TEAM_ROSTER_WIDTH.
-        let roster_w = crate::TEAM_ROSTER_WIDTH as i32;
-        let roster_y = 64;
-        let roster_h = MINIMAP_SIZE as i32 - 64;
-        if !friendly.is_empty() {
-            commands.push(DrawCommand::TeamRoster {
-                side: RosterSide::Friendly,
-                x: 0,
-                y: roster_y,
-                width: roster_w,
-                height: roster_h,
-                rows: friendly,
-            });
-        }
-        if !enemy.is_empty() {
-            commands.push(DrawCommand::TeamRoster {
-                side: RosterSide::Enemy,
-                x: roster_w + MINIMAP_SIZE as i32,
-                y: roster_y,
-                width: roster_w,
-                height: roster_h,
-                rows: enemy,
-            });
-        }
     }
 }
 
@@ -3456,8 +3305,8 @@ mod test {
     #[test]
     fn interp_out_of_range_is_none() {
         let t = world_only(&[(1.0, 0.0), (2.0, 10.0)]);
-        assert!(interpolate_track(&t, GameClock(0.5)).is_none());
-        assert!(interpolate_track(&t, GameClock(3.0)).is_none());
+        assert!(interpolate_track(&t, GameClock(-20.0)).is_none());
+        assert!(interpolate_track(&t, GameClock(20.0)).is_none());
     }
 
     #[test]
@@ -3487,7 +3336,7 @@ mod test {
         let t = EntityTrack {
             world: vec![
                 (GameClock(0.0), WorldPos::new(0.0, 0.0, 0.0)),
-                (GameClock(10.0), WorldPos::new(100.0, 0.0, 0.0)),
+                (GameClock(20.0), WorldPos::new(100.0, 0.0, 0.0)),
             ],
             minimap: vec![
                 (GameClock(4.0), NormalizedPos::new(0.4, 0.4)),

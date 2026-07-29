@@ -263,12 +263,13 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
             if FORCE_CPU:
                 cmd.append("--cpu")
 
-            # Optional layout selection from payload or environment
             layout_opt = str(data.get("layout") or data.get("preset") or ("C" if ENABLE_INKPADS_LAYOUT else "A")).upper()
             if layout_opt in ("C", "INKPADS"):
                 cmd.extend(["--inkpads-layout", "--aspect-ratio-16-9", "--stats-panel-width", "928"])
             elif layout_opt in ("B", "WIDESCREEN"):
                 cmd.extend(["--discord-layout", "--aspect-ratio-16-9", "--stats-panel-width", "928"])
+            else:
+                cmd.extend(["--discord-layout", "--stats-panel-width", "720"])
 
             logger.info(f"[{session_id}] Executing renderer CLI command (layout: {layout_opt})...")
             process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
@@ -301,6 +302,8 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
             err_text = stderr.decode('utf-8', errors='ignore') if stderr else ""
             winner_name = extract_winning_team(err_text)
             f_clan, e_clan = get_team_clans(header)
+            if not e_clan and opponent_clan and opponent_clan != "N/A":
+                e_clan = opponent_clan
 
             embed_color = 0x2ECC71
             if winner_name == "Alpha Team":
@@ -1036,11 +1039,13 @@ async def _render_impl(
 
         preset_val = layout_preset.value if layout_preset else "A"
         if preset_val == "A":
-            # Option A: Standard Default (16:10) - no layout flags
-            pass
+            # Option A: Standard Default (16:10 side stats panel layout)
+            cmd.extend(["--discord-layout", "--stats-panel-width", "720"])
         elif preset_val == "B":
+            # Option B: Widescreen (16:9 side stats panel layout)
             cmd.extend(["--discord-layout", "--aspect-ratio-16-9", "--stats-panel-width", "928"])
         elif preset_val == "C":
+            # Option C: InkPads (16:9 Clan Battles high-density layout)
             cmd.extend(["--inkpads-layout", "--aspect-ratio-16-9", "--stats-panel-width", "928"])
 
         # 4. Render
@@ -1051,8 +1056,11 @@ async def _render_impl(
                 for i in range(1, 10):
                     await asyncio.sleep(12) # Roughly 120s total render time, updated less frequently
                     bar = '█' * i + '░' * (10 - i)
-                    embed.description = f"{info_line}\n\nStatus: [{bar}] {i*10}%\nRendering..."
-                    await asyncio.shield(interaction.edit_original_response(embed=embed))
+                    embed.description = f"{info_line}\n\nStatus: [{bar}] {i * 10}%\nRendering..."
+                    try:
+                        await asyncio.shield(interaction.edit_original_response(embed=embed))
+                    except Exception as exc:
+                        logger.warning(f"[{session_id}] Transient error during progress embed update (ignored): {exc}")
             except asyncio.CancelledError:
                 pass
                 
@@ -1092,6 +1100,8 @@ async def _render_impl(
             err_text = stderr.decode('utf-8', errors='ignore') if stderr else ""
             winner_name = extract_winning_team(err_text)
             f_clan, e_clan = get_team_clans(header)
+            if not e_clan and opponent_clan and opponent_clan != "N/A":
+                e_clan = opponent_clan
 
             # Determine dynamic color for all matches (Victory = Green, Defeat = Red, Draw = Gold)
             if winner_name == "Alpha Team":

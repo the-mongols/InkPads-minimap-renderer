@@ -24,12 +24,10 @@ pub const MINIMAP_SIZE: u32 = 1200;
 pub const HUD_HEIGHT: u32 = 0;
 /// Total canvas height: minimap + HUD.
 pub const CANVAS_HEIGHT: u32 = MINIMAP_SIZE + HUD_HEIGHT;
-/// Width of the stats side panel when enabled.
-pub const STATS_PANEL_WIDTH: u32 = 256;
+/// Width of the stats side panel when enabled (16:10 default layout).
+pub const STATS_PANEL_WIDTH: u32 = 720;
 /// Width of the stats side panel in 16:9 aspect ratio mode.
 pub const STATS_PANEL_WIDTH_16_9: u32 = 928;
-/// Width of each team roster panel (left/right of the minimap) when enabled.
-pub const TEAM_ROSTER_WIDTH: u32 = 256;
 /// Halo thickness (in icon-pixel space) for the detected-teammate outline
 /// drawn around ship icons. Both renderers pad the outline texture by this
 /// amount on each side so the halo wraps fully around the icon's silhouette

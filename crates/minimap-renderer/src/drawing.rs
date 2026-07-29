@@ -1418,343 +1418,26 @@ fn damage_label_color_rgb(label: &str) -> [u8; 3] {
     }
 }
 
-// ── Team roster rendering ──────────────────────────────────────────────────
-
-#[allow(clippy::too_many_arguments)]
-fn draw_team_roster(
-    pm: &mut Pixmap,
-    side: crate::draw_command::RosterSide,
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-    rows: &[crate::draw_command::RosterRow],
-    fonts: &GameFonts,
-    ship_icons: &HashMap<String, ShipIcon>,
-    consumable_icons: &HashMap<String, RgbaImage>,
-    death_cause_icons: &HashMap<String, RgbaImage>,
-) {
-    use crate::draw_command::ChargeCount as RosterCharge;
-    use crate::draw_command::RosterSide;
-
-    let panel_x = x as f32;
-    let panel_y = y as f32;
-    let panel_w = width as f32;
-    let panel_h = height as f32;
-
-    use crate::panel_math::darken;
-    use crate::panel_math::team_hp_fraction;
-
-    // Panel background.
-    draw_filled_rect(pm, panel_x, panel_y, panel_w, panel_h, [20, 24, 32], 0.78);
-    let accent: [u8; 3] = match side {
-        RosterSide::Friendly => [80, 200, 120],
-        RosterSide::Enemy => [220, 90, 90],
-    };
-
-    // Team HP bar replaces the old 1px accent line.
-    let bar_h: f32 = 14.0;
-    draw_filled_rect(pm, panel_x, panel_y, panel_w, bar_h, darken(accent, 0.4), 0.95);
-    if let Some(frac) = team_hp_fraction(rows.iter().map(|r| (r.hp_current, r.hp_max))) {
-        draw_filled_rect(pm, panel_x, panel_y, panel_w * frac, bar_h, accent, 1.0);
-    }
-    let total_cur: f32 = rows.iter().map(|r| r.hp_current.max(0.0)).sum();
-    let total_max: f32 = rows.iter().map(|r| r.hp_max).sum();
-    let hp_bar_text = format!("{} / {}", format_number(total_cur as i64), format_number(total_max as i64));
-    let bar_text_scale = fonts.scale(10.0);
-    let (btw_u, bth_u) = text_size(bar_text_scale, &fonts.primary, &hp_bar_text);
-    let btw = btw_u as f32;
-    let bth = bth_u as f32;
-    let bt_margin: f32 = 4.0;
-    let bt_x = panel_x + panel_w - btw - bt_margin;
-    let bt_y = panel_y + (bar_h - bth) * 0.5;
-    draw_text(pm, [0, 0, 0], (bt_x + 1.0) as i32, (bt_y + 1.0) as i32, bar_text_scale, &fonts.primary, &hp_bar_text);
-    draw_text(pm, [255, 255, 255], bt_x as i32, bt_y as i32, bar_text_scale, &fonts.primary, &hp_bar_text);
-
-    let row_height: f32 = 64.0;
-    let row_padding: f32 = 4.0;
-    let inner_x = panel_x + row_padding;
-    let inner_w = panel_w - row_padding * 2.0;
-    let name_scale = fonts.scale(15.0);
-    let ship_scale = fonts.scale(13.0);
-    let hp_scale = fonts.scale(11.0);
-
-    // Friendly icons point right (toward the map), enemy icons point left —
-    // mirrors the egui layout's "facing the action" convention.
-    let icon_yaw: f32 = match side {
-        RosterSide::Friendly => 0.0,
-        RosterSide::Enemy => std::f32::consts::PI,
-    };
-
-    const MAX_CONSUMABLE_SLOTS: usize = 6;
-    let icon_size: f32 = 20.0;
-    let icon_gap: f32 = 2.0;
-    let consumables_strip_w = MAX_CONSUMABLE_SLOTS as f32 * icon_size + (MAX_CONSUMABLE_SLOTS as f32 - 1.0) * icon_gap;
-    let strip_gap: f32 = 6.0;
-    let hp_bar_w = (inner_w - consumables_strip_w - strip_gap).max(40.0);
-
-    for (idx, row) in rows.iter().enumerate() {
-        let row_top = panel_y + bar_h + idx as f32 * row_height + row_padding;
-        if row_top + row_height > panel_y + panel_h {
-            break;
-        }
-        let row_rect_w = inner_w;
-        let row_rect_h = row_height - row_padding;
-
-        // Zebra stripe + dead overlay.
-        if idx % 2 == 1 {
-            draw_filled_rect(pm, inner_x, row_top, row_rect_w, row_rect_h, [255, 255, 255], 0.03);
-        }
-        if row.is_dead {
-            draw_filled_rect(pm, inner_x, row_top, row_rect_w, row_rect_h, [0, 0, 0], 0.32);
-        }
-
-        // ── Header line: clan/player name on the left, damage + frag count
-        // ── on the right ────────────────────────────────────────────────
-        let header_text = match &row.clan_tag {
-            Some(tag) => format!("[{tag}] {}", row.player_name),
-            None => row.player_name.clone(),
-        };
-        let header_color = if row.is_dead {
-            [180, 180, 180]
-        } else if row.is_spotted {
-            [255, 220, 80]
-        } else {
-            accent
-        };
-        let (name_font, name_text_scale) = fonts.font_and_scale(&header_text, 15.0);
-        draw_text(pm, header_color, inner_x as i32, row_top as i32, name_text_scale, name_font, &header_text);
-
-        let stats_color = if row.is_dead { [180, 180, 180] } else { [230, 230, 230] };
-        let damage_text = format_number(row.damage_dealt.round() as i64);
-        let (damage_w_u, _) = text_size(name_scale, &fonts.primary, &damage_text);
-        let damage_w = damage_w_u as f32;
-
-        let frag_icon = death_cause_icons.get("frags");
-        let frag_icon_size = name_scale.y;
-        let frag_gap: f32 = 4.0;
-        let inter_gap: f32 = 8.0;
-        let kills_text = (row.kills > 0).then(|| row.kills.to_string());
-        let kills_w = kills_text.as_ref().map(|t| text_size(name_scale, &fonts.primary, t).0 as f32).unwrap_or(0.0);
-        let kills_block_w = if kills_text.is_some() {
-            if frag_icon.is_some() { frag_icon_size + frag_gap + kills_w } else { kills_w }
-        } else {
-            0.0
-        };
-        let total_w = damage_w + if kills_block_w > 0.0 { inter_gap + kills_block_w } else { 0.0 };
-        let block_x = inner_x + inner_w - total_w;
-        draw_text(pm, stats_color, block_x as i32, row_top as i32, name_scale, &fonts.primary, &damage_text);
-
-        if let Some(kt) = kills_text {
-            let mut cx = block_x + damage_w + inter_gap;
-            if let Some(icon) = frag_icon {
-                let icon_y_top = row_top + (name_scale.y - frag_icon_size) * 0.5;
-                let resized = image::imageops::resize(
-                    icon,
-                    frag_icon_size.round() as u32,
-                    frag_icon_size.round() as u32,
-                    image::imageops::FilterType::Lanczos3,
-                );
-                let tinted = if row.is_dead {
-                    let mut img = resized.clone();
-                    for px in img.pixels_mut() {
-                        px.0[3] = (px.0[3] as f32 * 0.7) as u8;
-                    }
-                    img
-                } else {
-                    resized
-                };
-                let cx_center = cx + frag_icon_size * 0.5;
-                let cy_center = icon_y_top + frag_icon_size * 0.5;
-                draw_icon(pm, &tinted, cx_center, cy_center);
-                cx += frag_icon_size + frag_gap;
-            }
-            draw_text(pm, stats_color, cx as i32, row_top as i32, name_scale, &fonts.primary, &kt);
-        }
-
-        // ── Ship row: rotated class icon + ship name ───────────────────
-        let class_icon_size: f32 = 18.0;
-        let class_icon_padding: f32 = 4.0;
-        let ship_row_y = row_top + name_scale.y + 4.0;
-        let ship_text_x = if let Some(ref class_key) = row.class_icon_key {
-            if let Some(class_icon) = ship_icons.get(class_key) {
-                // Pre-resize then route through the icon helper so the rotation
-                // path matches the in-map ship glyphs.
-                let resized = image::imageops::resize(
-                    class_icon,
-                    class_icon_size.round() as u32,
-                    class_icon_size.round() as u32,
-                    image::imageops::FilterType::Lanczos3,
-                );
-                let tint = if row.is_dead { Some([180u8, 180, 180]) } else { Some(accent) };
-                let opacity = if row.is_dead { 0.55 } else { 1.0 };
-                let cx = inner_x + class_icon_size * 0.5;
-                let cy = ship_row_y + ship_scale.y * 0.5;
-                draw_ship_icon(pm, &resized, cx, cy, icon_yaw, tint, opacity, 1.0);
-                inner_x + class_icon_size + class_icon_padding
-            } else {
-                inner_x
-            }
-        } else {
-            inner_x
-        };
-        let (ship_name_font, ship_text_scale) = fonts.font_and_scale(&row.ship_name, 13.0);
-        draw_text(
-            pm,
-            [210, 210, 210],
-            ship_text_x as i32,
-            ship_row_y as i32,
-            ship_text_scale,
-            ship_name_font,
-            &row.ship_name,
-        );
-
-        // ── HP bar + consumables row ───────────────────────────────────
-        let hp_bar_y = row_top + name_scale.y + ship_scale.y + 6.0;
-        let hp_bar_h: f32 = 18.0;
-        draw_filled_rect(pm, inner_x, hp_bar_y, hp_bar_w, hp_bar_h, [40, 40, 40], 0.86);
-        if row.hp_max > 0.0 && !row.is_dead {
-            let fill_ratio = (row.hp_current / row.hp_max).clamp(0.0, 1.0);
-            let fill_w = hp_bar_w * fill_ratio;
-            let fill_color = hp_bar_color_lerp(fill_ratio);
-            draw_filled_rect(pm, inner_x, hp_bar_y, fill_w, hp_bar_h, fill_color, 1.0);
-            if let Some(color) = row.heal_availability.healable_rgb()
-                && row.hp_healable > 0.0
-            {
-                // Bright = HP the next heal charge restores; dim = the regenerable
-                // pool beyond that charge.
-                let bright_w = (hp_bar_w * (row.hp_healable_per_charge.min(row.hp_healable) / row.hp_max))
-                    .clamp(0.0, hp_bar_w - fill_w);
-                if bright_w > 0.0 {
-                    draw_filled_rect(pm, inner_x + fill_w, hp_bar_y, bright_w, hp_bar_h, color, 0.85);
-                }
-                let dim_total = (hp_bar_w * (row.hp_healable / row.hp_max)).min(hp_bar_w - fill_w);
-                let dim_w = (dim_total - bright_w).max(0.0);
-                if dim_w > 0.0 {
-                    draw_filled_rect(
-                        pm,
-                        inner_x + fill_w + bright_w,
-                        hp_bar_y,
-                        dim_w,
-                        hp_bar_h,
-                        darken(color, 0.5),
-                        0.85,
-                    );
-                }
-            }
-        }
-
-        let hp_text =
-            format!("{} / {}", format_number(row.hp_current.max(0.0) as i64), format_number(row.hp_max as i64),);
-        let hp_text_color = if row.is_dead { [220, 220, 220] } else { [255, 255, 255] };
-        let (hp_text_w_u, hp_text_h_u) = text_size(hp_scale, &fonts.primary, &hp_text);
-        let hp_text_w = hp_text_w_u as f32;
-        let hp_text_h = hp_text_h_u as f32;
-        let hp_text_y = hp_bar_y + (hp_bar_h - hp_text_h) * 0.5;
-        let hp_text_x = inner_x + hp_bar_w - hp_text_w - 4.0;
-        // Strong drop shadow rather than a backing pill. A pill at this size
-        // covered most of the HP fill (the bar is only ~18px tall and the
-        // text is ~12 of those), so the colored portion got drowned out.
-        // Doubling up the shadow keeps the white legible against any fill.
-        draw_text(
-            pm,
-            [0, 0, 0],
-            (hp_text_x + 1.0) as i32,
-            (hp_text_y + 1.0) as i32,
-            hp_scale,
-            &fonts.primary,
-            &hp_text,
-        );
-        draw_text(pm, [0, 0, 0], (hp_text_x + 1.0) as i32, hp_text_y as i32, hp_scale, &fonts.primary, &hp_text);
-        draw_text(pm, hp_text_color, hp_text_x as i32, hp_text_y as i32, hp_scale, &fonts.primary, &hp_text);
-
-        // Consumable strip: 6 fixed slots aligned to the right of the row.
-        let strip_y = hp_bar_y + (hp_bar_h - icon_size) * 0.5;
-        let strip_x = inner_x + inner_w - consumables_strip_w;
-        if row.consumables.is_empty() {
-            // Faint asterisk marker so missing inventory data is visible
-            // without shouting.
-            draw_text(
-                pm,
-                [180, 180, 180],
-                strip_x as i32,
-                (strip_y + 4.0) as i32,
-                fonts.scale(11.0),
-                &fonts.primary,
-                "*",
-            );
-        } else {
-            for (i, cons) in row.consumables.iter().enumerate() {
-                let icon_x = strip_x + i as f32 * (icon_size + icon_gap);
-                let charges_remaining = cons.total_charges.remaining(cons.charges_used);
-                let is_exhausted = matches!(charges_remaining, RosterCharge::Finite(0));
-
-                if let Some(icon) = consumable_icons.get(&cons.icon_key) {
-                    let resized = image::imageops::resize(
-                        icon,
-                        icon_size as u32,
-                        icon_size as u32,
-                        image::imageops::FilterType::Lanczos3,
-                    );
-                    let mut img = resized;
-                    let dim = if row.is_dead || is_exhausted { 0.4 } else { 0.86 };
-                    for px in img.pixels_mut() {
-                        px.0[3] = (px.0[3] as f32 * dim) as u8;
-                    }
-                    draw_icon(pm, &img, icon_x + icon_size * 0.5, strip_y + icon_size * 0.5);
-                } else {
-                    draw_filled_rect(pm, icon_x, strip_y, icon_size, icon_size, [60, 60, 60], 0.7);
-                }
-
-                // Charge/timer overlay. Unlimited consumables stay blank; the
-                // absence of a number signals "no cap."
-                let label = match (cons.active_remaining_secs, &charges_remaining, &cons.total_charges) {
-                    (Some(sec), _, _) if !row.is_dead => format!("{:.0}s", sec.max(0.0)),
-                    (_, RosterCharge::Unlimited, _) | (_, _, RosterCharge::Unlimited) => String::new(),
-                    (_, RosterCharge::Finite(n), RosterCharge::Finite(t)) => format!("{n}/{t}"),
-                };
-                if label.is_empty() {
-                    continue;
-                }
-                let label_color = cons.availability.charge_count_rgb();
-                let charges_scale = fonts.scale(9.0);
-                let (lw_u, lh_u) = text_size(charges_scale, &fonts.primary, &label);
-                let lx = icon_x + icon_size - lw_u as f32 - 1.0;
-                let ly = strip_y + icon_size - lh_u as f32;
-                draw_text(pm, [0, 0, 0], (lx + 1.0) as i32, (ly + 1.0) as i32, charges_scale, &fonts.primary, &label);
-                draw_text(pm, label_color, lx as i32, ly as i32, charges_scale, &fonts.primary, &label);
-            }
-        }
-    }
-}
-
 // ── ImageTarget (RenderTarget implementation) ──────────────────────────────
 
 use crate::CANVAS_HEIGHT;
 use crate::HUD_HEIGHT;
 use crate::MINIMAP_SIZE;
-use crate::TEAM_ROSTER_WIDTH;
 
 use crate::config::RenderOptions;
 
-/// Which side panel the CLI canvas should reserve space for. Mirrors the
-/// runtime decision the desktop renderer makes from
-/// `RenderOptions.{show_stats_panel,show_team_rosters}`.
+/// Which side panel the CLI canvas should reserve space for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SidePanelLayout {
     /// Just the minimap.
     None,
     /// Self-perspective stats panel on the right.
     StatsPanel,
-    /// Team rosters in gutters on both sides of the minimap.
-    TeamRosters,
 }
 
 impl SidePanelLayout {
     pub fn from_options(opts: &RenderOptions) -> Self {
-        if opts.show_team_rosters {
-            Self::TeamRosters
-        } else if opts.show_stats_panel {
+        if opts.show_stats_panel {
             Self::StatsPanel
         } else {
             Self::None
@@ -1902,10 +1585,6 @@ impl ImageTarget {
         let (canvas_width, map_x_offset, hud_width) = match layout {
             SidePanelLayout::None => (MINIMAP_SIZE, 0, MINIMAP_SIZE),
             SidePanelLayout::StatsPanel => (MINIMAP_SIZE + panel_width, 0, MINIMAP_SIZE),
-            SidePanelLayout::TeamRosters => {
-                let cw = MINIMAP_SIZE + TEAM_ROSTER_WIDTH * 2;
-                (cw, TEAM_ROSTER_WIDTH, cw)
-            }
         };
 
         // Pre-build the base canvas: dark background + map + grid
@@ -2867,19 +2546,26 @@ impl RenderTarget for ImageTarget {
                     }
                 }
             }
-            DrawCommand::StatsRibbons { x, y, width, ribbons } => {
+            DrawCommand::StatsRibbons { x, y, width, ribbons, large_format } => {
                 let padding = 8;
                 let inner_x = *x + padding;
                 let inner_w = *width - padding * 2;
 
-                // Dynamically scale ribbons to fit in compact single-line or multi-line spaces (e.g. 50-60px height)
+                // Base dimensions according to layout format:
+                // Options A & B (large_format = true) use 2x base dimensions to fill the 228px stats panel slot.
+                // Option C (--inkpads-layout / large_format = false) retains compact scale for placement under table.
+                let (base_cell_w, base_row_h, base_icon_h, base_font_pt, max_h) = if *large_format {
+                    (180.0, 90.0, 80.0, 26.0, 220.0)
+                } else {
+                    (90.0, 45.0, 40.0, 13.0, 55.0)
+                };
+
                 let mut best_s: f32 = 0.5;
-                let max_h: f32 = 55.0;
                 if !ribbons.is_empty() {
                     let mut s: f32 = 1.0;
                     while s >= 0.3 {
-                        let cur_cell_w = (90.0 * s).round() as i32;
-                        let cur_row_h = (45.0 * s).round() as i32;
+                        let cur_cell_w = (base_cell_w * s).round() as i32;
+                        let cur_row_h = (base_row_h * s).round() as i32;
                         
                         let cols = (inner_w / cur_cell_w).max(1);
                         let rows = (ribbons.len() as i32 + cols - 1) / cols;
@@ -2892,11 +2578,14 @@ impl RenderTarget for ImageTarget {
                     }
                 }
                 
-                let icon_h = (40.0 * best_s).round() as i32;
-                let row_h = (45.0 * best_s).round() as i32;
-                let cell_w = (90.0 * best_s).round() as i32;
+                let icon_h = (base_icon_h * best_s).round() as i32;
+                let row_h = (base_row_h * best_s).round() as i32;
+                let cell_w = (base_cell_w * best_s).round() as i32;
                 let gap = (2.0 * best_s).round() as i32;
-                let scale = self.fonts.scale(13.0 * best_s);
+                let scale = self.fonts.scale(base_font_pt * best_s);
+                let pill_pad_x = (4.0 * if *large_format { 2.0 * best_s } else { best_s }).max(2.0);
+                let pill_pad_y = (1.0 * if *large_format { 2.0 * best_s } else { best_s }).max(1.0);
+                let pill_radius = (2.0 * if *large_format { 2.0 * best_s } else { best_s }).max(1.0);
 
                 // Group ribbons into rows to calculate centered layout
                 let mut rows: Vec<Vec<&crate::draw_command::RibbonCount>> = Vec::new();
@@ -2935,7 +2624,7 @@ impl RenderTarget for ImageTarget {
                                 icon_h
                             };
                             
-                            let max_w = cell_w - 6;
+                            let max_w = cell_w - (6.0 * if *large_format { 2.0 * best_s } else { 1.0 }).round() as i32;
                             if w > max_w {
                                 let ratio = max_w as f32 / w as f32;
                                 w = max_w;
@@ -2957,9 +2646,6 @@ impl RenderTarget for ImageTarget {
                             let count_str = format!("x{}", rc.count);
                             let (tw, th) = text_size(scale, &self.fonts.primary, &count_str);
                             
-                            let pill_pad_x = 4.0f32;
-                            let pill_pad_y = 1.0f32;
-                            let pill_radius = 2.0f32;
                             let pill_w = tw as f32 + pill_pad_x * 2.0;
                             let pill_h = th as f32 + pill_pad_y * 2.0;
                             
@@ -2993,7 +2679,7 @@ impl RenderTarget for ImageTarget {
                             
                             // Center text cell
                             let tx = cur_x + (cell_w - lw as i32) / 2;
-                            let ty = cur_y + (row_h - 13) / 2;
+                            let ty = cur_y + (row_h - (base_font_pt * best_s) as i32) / 2;
                             draw_text_shadow(
                                 &mut self.canvas,
                                 [180, 180, 180],
@@ -3339,21 +3025,7 @@ impl RenderTarget for ImageTarget {
                     }
                 }
             }
-            DrawCommand::TeamRoster { side, x, y, width, height, rows } => {
-                draw_team_roster(
-                    &mut self.canvas,
-                    *side,
-                    *x,
-                    *y,
-                    *width,
-                    *height,
-                    rows,
-                    &self.fonts,
-                    &self.ship_icons,
-                    &self.consumable_icons,
-                    &self.death_cause_icons,
-                );
-            }
+
             DrawCommand::InkpadsTeammateTable { x, y, width, height, rows } => {
                 draw_inkpads_teammate_table(
                     &mut self.canvas,

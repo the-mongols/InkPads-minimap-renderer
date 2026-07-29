@@ -266,7 +266,7 @@ fn normalize(cmd: &DrawCommand) -> String {
             let msgs: Vec<_> = entries.iter().map(|e| (&e.player_name, &e.message)).collect();
             format!("ChatOverlay {msgs:?}")
         }
-        DrawCommand::BattleResultOverlay { result, finish_type, color, subtitle_above } => {
+        DrawCommand::BattleResultOverlay { result, finish_type, color, subtitle_above, .. } => {
             format!("BattleResultOverlay result={result:?} ft={finish_type:?} color={color:?} sa={subtitle_above}")
         }
         DrawCommand::StatsPanel { x, width } => {
@@ -315,7 +315,7 @@ fn normalize(cmd: &DrawCommand) -> String {
                 damage_spotting, damage_spotting, damage_potential
             )
         }
-        DrawCommand::StatsRibbons { x, y, width, ribbons } => {
+        DrawCommand::StatsRibbons { x, y, width, ribbons, .. } => {
             let rs: Vec<_> = ribbons.iter().map(|r| (&r.ribbon, r.count)).collect();
             format!("StatsRibbons x={x} y={y} w={width} {rs:?}")
         }
@@ -327,10 +327,6 @@ fn normalize(cmd: &DrawCommand) -> String {
         }
         DrawCommand::InkpadsInLineFeeds { x, y, width, height, entries } => {
             format!("InkpadsInLineFeeds x={x} y={y} w={width} h={height} n={}", entries.len())
-        }
-        DrawCommand::TeamRoster { side, x, y, width, height, rows } => {
-            let row_ids: Vec<_> = rows.iter().map(|r| r.entity_id).collect();
-            format!("TeamRoster side={side:?} x={x} y={y} w={width} h={height} eids={row_ids:?}")
         }
     }
 }

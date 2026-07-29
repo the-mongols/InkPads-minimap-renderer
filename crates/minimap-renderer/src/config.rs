@@ -33,7 +33,6 @@ pub struct RenderOptions {
     pub show_advantage: bool,
     pub show_score_timer: bool,
     pub show_stats_panel: bool,
-    pub show_team_rosters: bool,
     pub large_elements: bool,
     pub compact_stats: bool,
     pub aspect_ratio_16_9: bool,
@@ -74,7 +73,6 @@ impl Default for RenderOptions {
             show_advantage: true,
             show_score_timer: true,
             show_stats_panel: true,
-            show_team_rosters: true,
             large_elements: false,
             compact_stats: false,
             aspect_ratio_16_9: false,
@@ -94,7 +92,7 @@ impl RenderOptions {
     /// hide themselves. Use this method for any "is the panel really showing"
     /// decision.
     pub fn stats_panel_visible(&self) -> bool {
-        self.show_stats_panel && !self.show_team_rosters
+        self.show_stats_panel
     }
 }
 
@@ -118,8 +116,6 @@ pub struct CliOverrides {
     pub no_dead_trails: bool,
     pub show_speed_trails: bool,
     pub show_ship_config: bool,
-    pub team_rosters: bool,
-    pub no_team_rosters: bool,
     pub stats_panel: bool,
     pub no_stats_panel: bool,
     pub include_pre_battle: bool,
@@ -163,7 +159,6 @@ pub struct RendererConfig {
     pub show_advantage: bool,
     pub show_score_timer: bool,
     pub show_stats_panel: bool,
-    pub show_team_rosters: bool,
     pub large_elements: bool,
     pub compact_stats: bool,
     pub aspect_ratio_16_9: bool,
@@ -203,7 +198,6 @@ impl Default for RendererConfig {
             show_advantage: true,
             show_score_timer: true,
             show_stats_panel: true,
-            show_team_rosters: false,
             large_elements: false,
             compact_stats: false,
             aspect_ratio_16_9: false,
@@ -228,8 +222,7 @@ impl RendererConfig {
     pub fn into_render_options(self) -> RenderOptions {
         // Stats panel and team rosters share the same gutter, so if a config
         // file enables both the rosters win (matching the desktop behavior).
-        let show_team_rosters = self.show_team_rosters;
-        let show_stats_panel = self.show_stats_panel && !show_team_rosters;
+        let show_stats_panel = self.show_stats_panel;
         RenderOptions {
             show_player_names: self.show_player_names,
             show_ship_names: self.show_ship_names,
@@ -258,7 +251,6 @@ impl RendererConfig {
             show_advantage: true,
             show_score_timer: true,
             show_stats_panel,
-            show_team_rosters,
             large_elements: self.large_elements,
             compact_stats: self.compact_stats,
             aspect_ratio_16_9: self.aspect_ratio_16_9,
@@ -336,13 +328,8 @@ show_speed_trails = false
 # Show ship config range circles (detection, main battery, secondary, etc.)
 show_ship_config = false
 
-# Show the self-perspective stats panel on the right side of the canvas. Hidden
-# automatically when team rosters are enabled.
+# Show the self-perspective stats panel on the right side of the canvas.
 show_stats_panel = true
-
-# Show team roster panels on either side of the minimap (HP, frags, damage,
-# consumables). Mutually exclusive with the stats panel.
-show_team_rosters = false
 
 # Include the pre-battle phase (spawn and countdown) at the start of the video.
 # When false, rendering begins at battle start.
@@ -393,18 +380,7 @@ include_pre_battle = false
         if overrides.no_chat {
             self.show_chat = false;
         }
-        // Team rosters vs stats panel: enforcing exclusivity here keeps the
-        // CLI behavior aligned with the egui checkboxes. When both arrive
-        // enabled (e.g. team_rosters via CLI plus stats_panel from a config
-        // file), team rosters win.
-        if overrides.team_rosters {
-            self.show_team_rosters = true;
-            self.show_stats_panel = false;
-        }
-        if overrides.no_team_rosters {
-            self.show_team_rosters = false;
-        }
-        if overrides.stats_panel && !self.show_team_rosters {
+        if overrides.stats_panel {
             self.show_stats_panel = true;
         }
         if overrides.no_stats_panel {

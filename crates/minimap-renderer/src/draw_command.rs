@@ -629,17 +629,14 @@ pub enum DrawCommand {
         wpa: f64,
         consumables: Vec<StatsConsumable>,
     },
-    /// Compact ribbon summary in the stats panel
-    StatsRibbons { x: i32, y: i32, width: i32, ribbons: Vec<RibbonCount> },
+    /// Ribbon summary in the stats panel
+    StatsRibbons { x: i32, y: i32, width: i32, ribbons: Vec<RibbonCount>, large_format: bool },
     /// Merged kill feed + chat activity log in the stats panel
     StatsActivityFeed { x: i32, y: i32, width: i32, height: i32, entries: Vec<ActivityFeedEntry> },
     /// Teammate performance table in the middle section of --inkpads-layout
     InkpadsTeammateTable { x: i32, y: i32, width: i32, height: i32, rows: Vec<TeammateTableRow> },
     /// In-line side-by-side Kill Feed (30%) and Chat Feed (70%) in the bottom section of --inkpads-layout
     InkpadsInLineFeeds { x: i32, y: i32, width: i32, height: i32, entries: Vec<ActivityFeedEntry> },
-    /// Per-team roster panel: list of ships with HP, name, and consumable slots.
-    /// Positioned in a gutter beside the map (left or right depending on `side`).
-    TeamRoster { side: RosterSide, x: i32, y: i32, width: i32, height: i32, rows: Vec<RosterRow> },
 }
 
 /// Single row in the InkPads teammate performance table.
@@ -847,7 +844,6 @@ impl DrawCommand {
                 | Self::StatsActivityFeed { .. }
                 | Self::InkpadsTeammateTable { .. }
                 | Self::InkpadsInLineFeeds { .. }
-                | Self::TeamRoster { .. }
         )
     }
 
@@ -863,7 +859,6 @@ impl DrawCommand {
                 | Self::StatsActivityFeed { .. }
                 | Self::InkpadsTeammateTable { .. }
                 | Self::InkpadsInLineFeeds { .. }
-                | Self::TeamRoster { .. }
         )
     }
 }

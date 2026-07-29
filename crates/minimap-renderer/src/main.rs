@@ -133,15 +133,6 @@ struct Args {
     #[arg(long)]
     show_ship_config: bool,
 
-    /// Force the team-roster side panels on (mutually exclusive with the stats panel).
-    /// Auto-enabled when one or more --merge replays are passed.
-    #[arg(long, conflicts_with = "no_team_rosters")]
-    team_rosters: bool,
-
-    /// Force the team-roster side panels off.
-    #[arg(long)]
-    no_team_rosters: bool,
-
     /// Force the self-perspective stats panel on (mutually exclusive with team rosters).
     #[arg(long, conflicts_with = "no_stats_panel")]
     stats_panel: bool,
@@ -410,8 +401,6 @@ fn main() -> Result<(), Report> {
         no_dead_trails: args.no_dead_trails,
         show_speed_trails: args.show_speed_trails,
         show_ship_config: args.show_ship_config,
-        team_rosters: args.team_rosters,
-        no_team_rosters: args.no_team_rosters,
         stats_panel: args.stats_panel,
         no_stats_panel: args.no_stats_panel,
         include_pre_battle: args.include_pre_battle,
@@ -644,8 +633,9 @@ fn main() -> Result<(), Report> {
             let view = session.world_mut().view();
             renderer.populate_players(&view);
             if !dog_tag_resolved {
-                renderer.resolve_self_dog_tag_emblem(vfs);
-                dog_tag_resolved = true;
+                if renderer.resolve_self_dog_tag_emblem(vfs) {
+                    dog_tag_resolved = true;
+                }
             }
             renderer.update_squadron_info(&view);
             renderer.update_ship_abilities(&view);
@@ -659,7 +649,7 @@ fn main() -> Result<(), Report> {
         let view = session.world_mut().view();
         renderer.populate_players(&view);
         if !dog_tag_resolved {
-            renderer.resolve_self_dog_tag_emblem(vfs);
+            let _ = renderer.resolve_self_dog_tag_emblem(vfs);
         }
         renderer.update_squadron_info(&view);
         renderer.update_ship_abilities(&view);
