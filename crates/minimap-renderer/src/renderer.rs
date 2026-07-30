@@ -260,7 +260,7 @@ fn calculate_player_wpa(
     let wpa_efficiency = if hp_cur > 0.0 && hp_max > 0.0 {
         let hp_ratio = (hp_cur / hp_max).clamp(0.0, 1.0);
         let damage_ratio = damage_dealt as f32 / (damage_received as f32).max(1.0);
-        damage_ratio.min(3.0) * hp_ratio * 0.20
+        damage_ratio.min(0.40) * hp_ratio * 0.15
     } else {
         0.0
     };

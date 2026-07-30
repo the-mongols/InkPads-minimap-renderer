@@ -74,6 +74,7 @@ class ReplayAnalyzer:
         # Incremental WPA & uWPA Tracking
         self.player_wpa = defaultdict(float)
         self.player_uwpa_extra = defaultdict(float)
+        self.death_clocks = {}
         self._last_damage = defaultdict(float)
         self._last_spotting = defaultdict(float)
         self._last_potential = defaultdict(float)
@@ -681,6 +682,8 @@ class ReplayAnalyzer:
         if prop == "isAlive" and val == 0 and eid in self.ships:
             if eid not in self.sunk_ships:
                 self.sunk_ships.add(eid)
+                if eid not in self.death_clocks:
+                    self.death_clocks[eid] = clock
                 s = self.ships[eid]
                 victim_meta = {
                     "username": s["name"],
@@ -854,22 +857,26 @@ class ReplayAnalyzer:
             # Base accrued WPA from live action-time events
             accrued_wpa = self.player_wpa.get(eid, 0.0)
 
-            # Fallback for non-self players where individual damage events weren't reported via EntityProperty:
-            if dmg > 0:
+            # Fallback for non-self players only if live damage events were absent:
+            if accrued_wpa == 0.0 and dmg > 0:
                 class_mult = self.class_weights.get(s_class, 1.0)
-                estimated_combat_wpa = (float(dmg) / 40000.0) * class_mult * 0.90
-                accrued_wpa = max(accrued_wpa, estimated_combat_wpa)
+                accrued_wpa = (float(dmg) / 40000.0) * class_mult * 0.90
 
             # Add survival efficiency bonus only for survivors (matching renderer.rs)
             wpa_efficiency = 0.0
-            if eid not in self.sunk_ships and cur_hp > 0 and max_hp > 0:
+            if eid not in self.sunk_ships and eid not in self.death_clocks and cur_hp > 0 and max_hp > 0:
                 hp_ratio = min(1.0, max(0.0, float(cur_hp) / float(max_hp)))
                 damage_ratio = float(dmg) / max(1.0, float(rcv))
-                wpa_efficiency = min(3.0, damage_ratio) * hp_ratio * 0.20
+                wpa_efficiency = min(0.40, damage_ratio) * hp_ratio * 0.15
             
+            # Standard WPA: wpaCombat + wpaKills + wpaEfficiency (unified score for all friendly players)
             total_wpa = round(accrued_wpa + wpa_efficiency, 2)
+            
+            # uWPA: Standard WPA + Spotting + Potential (micro WPA for originator visual context)
+            spotting_wpa = (float(st.get("spotting", 0)) / 100000.0) * 0.25
+            potential_wpa = (float(st.get("potential", 0)) / 1500000.0) * 0.25
             extra_uwpa = self.player_uwpa_extra.get(eid, 0.0)
-            total_uwpa = round(accrued_wpa + wpa_efficiency + extra_uwpa, 2)
+            total_uwpa = round(accrued_wpa + wpa_efficiency + spotting_wpa + potential_wpa + extra_uwpa, 2)
 
             stats_summary.append({
                 "account_id": s.get("spa_id"),
