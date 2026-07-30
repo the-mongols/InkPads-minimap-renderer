@@ -81,24 +81,18 @@ class ReplayAnalyzer:
             "DD": 1.50,
             "SS": 1.30,
             "CV": 1.20,
-            "CA": 1.00,
-            "CL": 1.00,
+            "CA": 1.25,
+            "CL": 1.25,
             "BB": 0.85
         }
 
         self._parse_replay_header()
 
     def _get_live_leverage(self, clock: float) -> float:
-        s0, s1 = self.team_scores
-        score_diff = abs(s0 - s1)
-        max_score = max(s0, s1)
-        closeness = 1.0 - (score_diff / 1000.0)
-        urgency = 1.0 + ((max_score / 1000.0) ** 2)
-        lev = closeness * urgency
         elapsed = self._elapsed(clock)
-        if elapsed <= 300.0:  # Early game first 5 minutes multiplier
-            lev *= 1.50
-        return max(0.20, lev)
+        if elapsed <= 300.0:  # Early game first 5 minutes leverage multiplier (matching renderer.rs)
+            return 1.50
+        return 1.00
 
     def _parse_replay_header(self):
         self.header_vehicles_by_name = {}
@@ -610,9 +604,8 @@ class ReplayAnalyzer:
                 if val > old_val and eid not in self.sunk_ships:
                     delta = val - old_val
                     lev = self._get_live_leverage(clock)
-                    s_class = self.ships[eid].get("ship_class") or "CA"
-                    c_weight = self.class_weights.get(s_class, 1.00)
-                    self.player_wpa[eid] += (delta / 75000.0) * c_weight * lev
+                    target_max_hp = 40000.0
+                    self.player_wpa[eid] += (delta / target_max_hp) * 1.00 * lev
                     self._last_damage[eid] = val
                 self.player_stats[eid]["damage"] = val
             elif prop == "damageSpotting":
@@ -711,9 +704,9 @@ class ReplayAnalyzer:
                 killer_eid = args[8] if len(args) > 8 else None
                 if killer_eid and killer_eid in self.ships and killer_eid not in self.sunk_ships:
                     lev = self._get_live_leverage(clock)
-                    k_class = self.ships[killer_eid].get("ship_class") or "CA"
-                    k_weight = self.class_weights.get(k_class, 1.00)
-                    self.player_wpa[killer_eid] += 0.25 * k_weight * lev
+                    victim_class = s.get("ship_class") or "CA"
+                    v_weight = self.class_weights.get(victim_class, 1.00)
+                    self.player_wpa[killer_eid] += 0.25 * v_weight * lev
                 killer_eid = args[8] if len(args) > 8 else None
                 killer_name = self.ships.get(killer_eid, {}).get("name") if killer_eid else "Unknown"
                 
@@ -852,12 +845,12 @@ class ReplayAnalyzer:
             # Base accrued WPA from live action-time events
             accrued_wpa = self.player_wpa.get(eid, 0.0)
 
-            # Add survival efficiency bonus only for survivors
+            # Add survival efficiency bonus only for survivors (matching renderer.rs)
             wpa_efficiency = 0.0
-            if eid not in self.sunk_ships:
-                hp_eff = (cur_hp / max_hp) if max_hp > 0 else 0.0
-                trade_ratio = (dmg / max(1.0, float(rcv)))
-                wpa_efficiency = min(0.40, trade_ratio * hp_eff * 0.15)
+            if eid not in self.sunk_ships and cur_hp > 0 and max_hp > 0:
+                hp_ratio = min(1.0, max(0.0, float(cur_hp) / float(max_hp)))
+                damage_ratio = float(dmg) / max(1.0, float(rcv))
+                wpa_efficiency = min(3.0, damage_ratio) * hp_ratio * 0.20
             
             total_wpa = round(accrued_wpa + wpa_efficiency, 2)
             extra_uwpa = self.player_uwpa_extra.get(eid, 0.0)
