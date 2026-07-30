@@ -565,6 +565,15 @@ class ReplayAnalyzer:
                             player_eid = self._get_player_eid()
                             if agg_eid is not None and agg_eid != player_eid:
                                 self.player_stats[agg_eid]["damage"] = self.player_stats[agg_eid].get("damage", 0) + int(dmg)
+                                lev = self._get_live_leverage(clock)
+                                if player_eid and player_eid in self.ships:
+                                    target_max_hp = float(self.ships[player_eid].get("max_health", 40000)) or 40000.0
+                                    t_class = self.ships[player_eid].get("ship_class") or "CA"
+                                else:
+                                    target_max_hp = 40000.0
+                                    t_class = "CA"
+                                t_weight = self.class_weights.get(t_class, 1.00)
+                                self.player_wpa[agg_eid] += (float(dmg) / target_max_hp) * t_weight * lev
 
             if isinstance(payload, dict) and "BattleResults" in payload:
                 results_str = payload["BattleResults"]
@@ -844,6 +853,12 @@ class ReplayAnalyzer:
 
             # Base accrued WPA from live action-time events
             accrued_wpa = self.player_wpa.get(eid, 0.0)
+
+            # Fallback for non-self players where individual damage events weren't reported via EntityProperty:
+            if dmg > 0:
+                class_mult = self.class_weights.get(s_class, 1.0)
+                estimated_combat_wpa = (float(dmg) / 40000.0) * class_mult * 0.90
+                accrued_wpa = max(accrued_wpa, estimated_combat_wpa)
 
             # Add survival efficiency bonus only for survivors (matching renderer.rs)
             wpa_efficiency = 0.0
