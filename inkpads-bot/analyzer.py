@@ -489,15 +489,26 @@ class ReplayAnalyzer:
                             except: pass
 
             ec = payload.get("EntityCreate")
-            if isinstance(ec, dict) and ec.get("entity_type") == "InteractiveZone":
-                eid = ec.get("entity_id")
+            if isinstance(ec, dict):
                 props = ec.get("props", {})
-                cp = props.get("componentsState", {}).get("controlPoint", {})
-                idx = cp.get("index")
-                label = chr(65 + idx) if idx is not None else "?"
-                team = props.get("teamId", -1)
-                self.zones[eid] = {"label": label, "index": idx, "team_id": team}
-                self.zone_team_state[eid] = team
+                br = props.get("battleResult")
+                if isinstance(br, dict):
+                    w_id = br.get("winnerTeamId")
+                    if w_id is not None:
+                        try:
+                            w_id = int(w_id)
+                            if w_id >= -1:
+                                self.winner_team_id = w_id
+                        except (ValueError, TypeError):
+                            pass
+                if ec.get("entity_type") == "InteractiveZone":
+                    eid = ec.get("entity_id")
+                    cp = props.get("componentsState", {}).get("controlPoint", {})
+                    idx = cp.get("index")
+                    label = chr(65 + idx) if idx is not None else "?"
+                    team = props.get("teamId", -1)
+                    self.zones[eid] = {"label": label, "index": idx, "team_id": team}
+                    self.zone_team_state[eid] = team
 
     def _get_player_eid(self) -> Optional[int]:
         if self.player_name:
@@ -665,6 +676,16 @@ class ReplayAnalyzer:
             self.team_scores = val
             self._calculate_advantage(clock)
 
+        if prop == "battleResult" and isinstance(val, dict):
+            w_id = val.get("winnerTeamId")
+            if w_id is not None:
+                try:
+                    w_id = int(w_id)
+                    if w_id >= -1:
+                        self.winner_team_id = w_id
+                except (ValueError, TypeError):
+                    pass
+
         if prop == "teamId" and eid in self.zones:
             prev_team = self.zone_team_state.get(eid, -1)
             new_team = int(val) if val is not None else -1
@@ -800,50 +821,62 @@ class ReplayAnalyzer:
         e_clan = self._majority_clan(enemy_team_id)
         l_info = getattr(self, "league_data", {}).get(friendly_team_id, {})
 
-        # Improve result detection if still UNKNOWN
-        if self.match_result == "UNKNOWN" or self.match_result == "unknown" or not self.match_result:
+        self.player_team = player_team
+        winner_team_id = getattr(self, "winner_team_id", None)
+
+        if winner_team_id is not None and winner_team_id >= -1:
+            if winner_team_id == -1:
+                self.match_result = "DRAW"
+            elif winner_team_id == player_team:
+                self.match_result = "VICTORY"
+            else:
+                self.match_result = "DEFEAT"
+        elif self.match_result == "UNKNOWN" or self.match_result == "unknown" or not self.match_result:
+            p_score = self.team_scores[player_team] if len(self.team_scores) > player_team else 0
+            e_score = self.team_scores[enemy_team_id] if len(self.team_scores) > enemy_team_id else 0
+
+            if p_score >= 1000 and e_score < 1000:
+                self.match_result = "VICTORY"
+            elif e_score >= 1000 and p_score < 1000:
+                self.match_result = "DEFEAT"
+            else:
+                alive_count = {0: 0, 1: 0}
+                total_count = {0: 0, 1: 0}
+                for eid, s in self.ships.items():
+                    t = s.get("team")
+                    if t is not None:
+                        total_count[t] = total_count.get(t, 0) + 1
+                        if eid not in self.sunk_ships:
+                            alive_count[t] = alive_count.get(t, 0) + 1
                 
-            # 2. Count survivors per team
-            alive_count = {0: 0, 1: 0}
-            total_count = {0: 0, 1: 0}
-            for eid, s in self.ships.items():
-                t = s.get("team")
-                if t is not None:
-                    total_count[t] = total_count.get(t, 0) + 1
-                    if eid not in self.sunk_ships:
-                        alive_count[t] = alive_count.get(t, 0) + 1
-            
-            # 3. Determine winner based on ship counts and survivors
-            enemy_team = 1 - player_team
-            
-            p_alive = alive_count.get(player_team, 0)
-            e_alive = alive_count.get(enemy_team, 0)
-            p_total = total_count.get(player_team, 0)
-            e_total = total_count.get(enemy_team, 0)
-            
-            if p_total > 0 and e_total > 0:
-                # If enemy team is completely wiped out: VICTORY!
-                if e_alive == 0 and p_alive > 0:
-                    self.match_result = "VICTORY"
-                # If friendly team is completely wiped out: DEFEAT!
-                elif p_alive == 0 and e_alive > 0:
-                    self.match_result = "DEFEAT"
-                # If both have survivors, compare relative losses
-                else:
-                    friendly_loss_ratio = (p_total - p_alive) / p_total
-                    enemy_loss_ratio = (e_total - e_alive) / e_total
-                    if friendly_loss_ratio < enemy_loss_ratio:
+                p_alive = alive_count.get(player_team, 0)
+                e_alive = alive_count.get(enemy_team_id, 0)
+                p_total = total_count.get(player_team, 0)
+                e_total = total_count.get(enemy_team_id, 0)
+                
+                if p_total > 0 and e_total > 0:
+                    if e_alive == 0 and p_alive > 0:
                         self.match_result = "VICTORY"
-                    elif friendly_loss_ratio > enemy_loss_ratio:
+                    elif p_alive == 0 and e_alive > 0:
+                        self.match_result = "DEFEAT"
+                    elif p_score > e_score and p_score > 0:
+                        self.match_result = "VICTORY"
+                    elif e_score > p_score and e_score > 0:
                         self.match_result = "DEFEAT"
                     else:
-                        # Tie break by total alive ships
-                        if p_alive > e_alive:
+                        friendly_loss_ratio = (p_total - p_alive) / p_total
+                        enemy_loss_ratio = (e_total - e_alive) / e_total
+                        if friendly_loss_ratio < enemy_loss_ratio:
                             self.match_result = "VICTORY"
-                        else:
+                        elif friendly_loss_ratio > enemy_loss_ratio:
                             self.match_result = "DEFEAT"
-            else:
-                self.match_result = "DEFEAT" # Default safety
+                        else:
+                            if p_alive > e_alive:
+                                self.match_result = "VICTORY"
+                            else:
+                                self.match_result = "DEFEAT"
+                else:
+                    self.match_result = "DEFEAT"
 
         stats_summary = []
         for eid, s in self.ships.items():
