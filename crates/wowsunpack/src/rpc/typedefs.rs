@@ -529,6 +529,8 @@ pub fn parse_type(arg: &roxmltree::Node, aliases: &HashMap<String, ArgType>) -> 
         ArgType::Primitive(PrimitiveType::Int32)
     } else if t == "INT64" {
         ArgType::Primitive(PrimitiveType::Int64)
+    } else if t == "FLOAT64" {
+        ArgType::Primitive(PrimitiveType::Float64)
     } else if t == "FLOAT32" {
         ArgType::Primitive(PrimitiveType::Float32)
     } else if t == "FLOAT" {

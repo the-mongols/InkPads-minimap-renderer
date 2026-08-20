@@ -1,0 +1,123 @@
+# Comprehensive SVG Icon Mapping for InkPads-minimap-renderer
+# Maps WoWS asset keys to SVG filenames in assets/svg_icons/.
+
+[consumables]
+"PCY011_AirDefenseDisp"                     = "Icon 1.svg"
+"PCY011_AirDefenseDispPremium"              = "Icon 1.svg"
+"PCY025_AirDefenseDispSuper"                = "Icon 1.svg"
+"PCY060_AirDefenseDispPremium_TimeBased"    = "Icon 1.svg"
+
+"PCY006_SmokeGenerator"                    = "Icon 2.svg"
+"PCY006_SmokeGeneratorPremium"             = "Icon 2.svg"
+
+"PCY006_SmokeGeneratorCrawler"             = "Icon 3.svg"
+"PCY014_SmokeGeneratorCrawler_Premium"     = "Icon 3.svg"
+
+"PCY006_SmokeGeneratorOil"                 = "Icon 4.svg"
+"PCY014_SmokeGeneratorOil_Premium"         = "Icon 4.svg"
+
+"PCY014_SmokeGenerator_Cycle"              = "Icon 5.svg"
+"PCY014_SmokeGenerator_Cycle_Premium"      = "Icon 5.svg"
+
+"PCY007_SpeedBooster"                      = "Icon 6.svg"
+"PCY015_SpeedBoosterPremium"               = "Icon 6.svg"
+"PCY029_SpeedBoosterSuper"                 = "Icon 6.svg"
+"PCY064_SpeedBoosterPremium_TimeBased"    = "Icon 6.svg"
+
+"PCY015_SpeedBooster_Imp_Premium"          = "Icon 7.svg"
+
+"PCY001_CrashCrew"                         = "Icon 8.svg"
+"PCY009_CrashCrewPremium"                  = "Icon 8.svg"
+"PCY023_CrashCrewSuper"                    = "Icon 8.svg"
+"PCY037_CrashCrewAuto"                     = "Icon 8.svg"
+"PCY058_CrashCrewPremium_TimeBased"        = "Icon 8.svg"
+
+"PCY009_CrashCrew_Limited"                 = "Icon 9.svg"
+"PCY009_CrashCrew_Limited_Premium"         = "Icon 9.svg"
+
+"PCY009_RegenCrew"                         = "Icon 10.svg"
+"PCY010_RegenCrewPremium"                  = "Icon 10.svg"
+"PCY024_RegenCrewSuper"                    = "Icon 10.svg"
+"PCY059_RegenCrewPremium_TimeBased"        = "Icon 10.svg"
+
+"PCY010_RegenCrew_Eheal_Premium"            = "Icon 11.svg"
+
+"PCY036_RegenerateHealth"                  = "Icon 12.svg"
+"PCY036_RegenerateHealth_Long_Premium"     = "Icon 12.svg"
+
+"PCY080_AirstrikeCountermeasures"          = "Icon 13.svg"
+
+"PCY011_SonarSearch"                       = "Icon 14.svg"
+"PCY011_SonarSearchPremium"                = "Icon 14.svg"
+"PCY065_SonarSearchPremium_TimeBased"      = "Icon 14.svg"
+
+"PCY016_SonarSearch_Short_Premium"         = "Icon 15.svg"
+
+"PCY021_MGReloader"                        = "Icon 17.svg"
+"PCY022_ArtilleryBoosterPremium"           = "Icon 17.svg"
+"PCY033_ArtilleryBoosterSuper"             = "Icon 17.svg"
+"PCY067_ArtilleryBoosterPremium_TimeBased" = "Icon 17.svg"
+
+"PCY019_RLSSearch"                         = "Icon 18.svg"
+"PCY020_RLSSearchPremium"                  = "Icon 18.svg"
+"PCY032_RLSSearchSuper"                    = "Icon 18.svg"
+
+"PCY005_Spotter"                           = "Icon 19.svg"
+"PCY013_Spotter"                           = "Icon 19.svg"
+"PCY013_SpotterPremium"                    = "Icon 19.svg"
+"PCY027_SpotterSuper"                      = "Icon 19.svg"
+"PCY062_SpotterPremium_TimeBased"          = "Icon 19.svg"
+
+"PCY013_JAP_BC"                            = "Icon 20.svg"
+
+"PCY013_Spotter_Circle_Premium"            = "Icon 21.svg"
+
+"PCY004_Fighter"                           = "Icon 22.svg"
+"PCY012_FighterPremium"                    = "Icon 22.svg"
+"PCY026_FighterSuper"                      = "Icon 22.svg"
+"PCY035_CallFighters"                      = "Icon 22.svg"
+"PCY038_FighterAuto"                       = "Icon 22.svg"
+"PCY061_FighterPremium_TimeBased"          = "Icon 22.svg"
+
+"PCY017_TorpedoReloader"                   = "Icon 23.svg"
+"PCY018_TorpedoReloaderPremium"            = "Icon 23.svg"
+"PCY031_TorpedoReloaderSuper"              = "Icon 23.svg"
+"PCY087_AuxiliaryTorpedoArmamentBooster"   = "Icon 23.svg"
+
+"PCY046_FastDeepRudders"                   = "Icon 24.svg"
+"PCY072_FastDeepRudders_TimeBased"         = "Icon 24.svg"
+
+"PCY034_ForsageBooster"                    = "Icon 25.svg"
+"PCY068_ForsageBooster_TimeBased"          = "Icon 25.svg"
+
+"PCY047_SubmarineEnergyFreeze"             = "Icon 26.svg"
+"PCY073_SubmarineEnergyFreeze_TimeBased"   = "Icon 26.svg"
+
+[ribbons]
+"subribbon_main_caliber_penetration"       = "Icon 16.svg"
+"ribbon_torpedo"                           = "Icon 49.svg"
+"ribbon_base_defense"                      = "Icon 50.svg"
+"ribbon_crit"                              = "Icon 51.svg"
+"ribbon_building_kill"                     = "Icon 52.svg"
+"ribbon_acoustic_hit"                      = "Icon 53.svg"
+"ribbon_assist"                            = "Icon 54.svg"
+"ribbon_mine"                              = "Icon 55.svg"
+"ribbon_bomb"                              = "Icon 56.svg"
+"ribbon_burn"                              = "Icon 57.svg"
+"ribbon_base_capture"                      = "Icon 58.svg"
+"ribbon_base_capture_assist"               = "Icon 59.svg"
+"ribbon_drop"                              = "Icon 60.svg"
+"ribbon_citadel"                           = "Icon 61.svg"
+"ribbon_main_caliber"                      = "Icon 62.svg"
+"ribbon_detected"                          = "Icon 63.svg"
+"ribbon_dbomb"                             = "Icon 64.svg"
+"ribbon_splane"                            = "Icon 65.svg"
+"ribbon_plane"                             = "Icon 66.svg"
+"ribbon_demining_mine"                     = "Icon 67.svg"
+"ribbon_flood"                             = "Icon 68.svg"
+"ribbon_rocket"                            = "Icon 69.svg"
+"ribbon_demining_minefield"                = "Icon 70.svg"
+"ribbon_frag"                              = "Icon 71.svg"
+"ribbon_secondary_caliber"                 = "Icon 72.svg"
+"ribbon_suppressed"                        = "Icon 73.svg"
+"subribbon_secondary_caliber"              = "Icon 80.svg"

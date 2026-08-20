@@ -183,6 +183,8 @@ const KNOWN_TEST_BUILDS: &[u32] = &[
     6965290,  // v12.3.1 (S-189 submarine replay)
     9531281,  // v14.1.0 (Hull DD replay)
     11965230, // v15.1.0 (Vermont, Marceau, Narai replays)
+    12830008, // v15.6.0
+    13015811, // v15.7.0
 ];
 
 fn main() {

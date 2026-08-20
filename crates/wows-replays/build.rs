@@ -127,6 +127,8 @@ const KNOWN_TEST_BUILDS: &[u32] = &[
     10695045, // v14.9 (Ocean CV event replay)
     11791718, // v15.0 (Forrest Sherman replay)
     11965230, // v15.1 (Vermont, Marceau, Narai replays)
+    12830008, // v15.6.0
+    13015811, // v15.7.0
 ];
 
 fn main() {

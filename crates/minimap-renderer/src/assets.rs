@@ -295,10 +295,190 @@ pub fn load_building_icons(vfs: &VfsPath, version: Option<&Version>) -> HashMap<
     icons
 }
 
-/// Load consumable icons from game files into a HashMap keyed by PCY name.
-///
-/// Discovers all `consumable_PCY*.png` files in `gui/consumables/` to support
-/// all ability variants (base, Premium, Super, TimeBased, etc.).
+#[derive(serde::Deserialize, Default)]
+struct SvgIconMap {
+    #[serde(default)]
+    consumables: HashMap<String, String>,
+    #[serde(default)]
+    ribbons: HashMap<String, String>,
+}
+
+fn rasterize_svg_file(path: &std::path::Path, target_w: u32, target_h: u32) -> Option<RgbaImage> {
+    let data = std::fs::read(path).ok()?;
+    let opt = resvg::usvg::Options::default();
+    let tree = resvg::usvg::Tree::from_data(&data, &opt).ok()?;
+
+    let internal_size = target_w.max(target_h) * 4;
+    let tree_size = tree.size();
+    let sx = internal_size as f32 / tree_size.width();
+    let sy = internal_size as f32 / tree_size.height();
+    let scale = sx.min(sy);
+
+    let mut pixmap = tiny_skia::Pixmap::new(internal_size, internal_size)?;
+    let offset_x = (internal_size as f32 - tree_size.width() * scale) / 2.0;
+    let offset_y = (internal_size as f32 - tree_size.height() * scale) / 2.0;
+    let transform = tiny_skia::Transform::from_scale(scale, scale).post_translate(offset_x, offset_y);
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+
+    let w = pixmap.width();
+    let h = pixmap.height();
+    let pix_data = pixmap.data();
+    let mut min_x = w;
+    let mut min_y = h;
+    let mut max_x = 0u32;
+    let mut max_y = 0u32;
+    for y in 0..h {
+        for x in 0..w {
+            let idx = (y * w + x) as usize * 4;
+            if pix_data[idx + 3] > 0 {
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x);
+                max_y = max_y.max(y);
+            }
+        }
+    }
+
+    if max_x < min_x || max_y < min_y {
+        return RgbaImage::from_raw(target_w, target_h, vec![0u8; (target_w * target_h * 4) as usize]);
+    }
+
+    let crop_x = min_x;
+    let crop_y = min_y;
+    let crop_w = (max_x + 1) - crop_x;
+    let crop_h = (max_y + 1) - crop_y;
+
+    let mut cropped = RgbaImage::new(crop_w, crop_h);
+    for y in 0..crop_h {
+        for x in 0..crop_w {
+            let src_idx = ((crop_y + y) * w + crop_x + x) as usize * 4;
+            let a = pix_data[src_idx + 3];
+            let (r, g, b) = if a > 0 {
+                let af = a as f32 / 255.0;
+                (
+                    (pix_data[src_idx] as f32 / af).min(255.0) as u8,
+                    (pix_data[src_idx + 1] as f32 / af).min(255.0) as u8,
+                    (pix_data[src_idx + 2] as f32 / af).min(255.0) as u8,
+                )
+            } else {
+                (0, 0, 0)
+            };
+            cropped.put_pixel(x, y, image::Rgba([r, g, b, a]));
+        }
+    }
+
+    let fit_sx = target_w as f32 / crop_w as f32;
+    let fit_sy = target_h as f32 / crop_h as f32;
+    let fit_scale = fit_sx.min(fit_sy);
+    let final_w = (crop_w as f32 * fit_scale).round().max(1.0) as u32;
+    let final_h = (crop_h as f32 * fit_scale).round().max(1.0) as u32;
+
+    let resized = image::imageops::resize(&cropped, final_w, final_h, image::imageops::FilterType::Lanczos3);
+    let mut output = RgbaImage::new(target_w, target_h);
+    let ox = (target_w.saturating_sub(final_w)) / 2;
+    let oy = (target_h.saturating_sub(final_h)) / 2;
+    image::imageops::overlay(&mut output, &resized, ox as i64, oy as i64);
+
+    Some(output)
+}
+
+fn rasterize_svg_aspect(path: &std::path::Path, target_h: u32) -> Option<RgbaImage> {
+    let data = std::fs::read(path).ok()?;
+    let opt = resvg::usvg::Options::default();
+    let tree = resvg::usvg::Tree::from_data(&data, &opt).ok()?;
+
+    let internal_h = target_h * 4;
+    let tree_size = tree.size();
+    let scale = internal_h as f32 / tree_size.height();
+    let internal_w = (tree_size.width() * scale).round().max(1.0) as u32;
+
+    let mut pixmap = tiny_skia::Pixmap::new(internal_w, internal_h)?;
+    let transform = tiny_skia::Transform::from_scale(scale, scale);
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+
+    let w = pixmap.width();
+    let h = pixmap.height();
+    let pix_data = pixmap.data();
+    let mut min_x = w;
+    let mut min_y = h;
+    let mut max_x = 0u32;
+    let mut max_y = 0u32;
+    for y in 0..h {
+        for x in 0..w {
+            let idx = (y * w + x) as usize * 4;
+            if pix_data[idx + 3] > 0 {
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x);
+                max_y = max_y.max(y);
+            }
+        }
+    }
+
+    if max_x < min_x || max_y < min_y {
+        return RgbaImage::from_raw(target_h, target_h, vec![0u8; (target_h * target_h * 4) as usize]);
+    }
+
+    let crop_x = min_x;
+    let crop_y = min_y;
+    let crop_w = (max_x + 1) - crop_x;
+    let crop_h = (max_y + 1) - crop_y;
+
+    let mut cropped = RgbaImage::new(crop_w, crop_h);
+    for y in 0..crop_h {
+        for x in 0..crop_w {
+            let src_idx = ((crop_y + y) * w + crop_x + x) as usize * 4;
+            let a = pix_data[src_idx + 3];
+            let (r, g, b) = if a > 0 {
+                let af = a as f32 / 255.0;
+                (
+                    (pix_data[src_idx] as f32 / af).min(255.0) as u8,
+                    (pix_data[src_idx + 1] as f32 / af).min(255.0) as u8,
+                    (pix_data[src_idx + 2] as f32 / af).min(255.0) as u8,
+                )
+            } else {
+                (0, 0, 0)
+            };
+            cropped.put_pixel(x, y, image::Rgba([r, g, b, a]));
+        }
+    }
+
+    let target_w = if crop_h > 0 {
+        ((crop_w as f32 / crop_h as f32) * target_h as f32).round() as u32
+    } else {
+        target_h
+    }.max(1);
+
+    let resized = image::imageops::resize(&cropped, target_w, target_h, image::imageops::FilterType::Lanczos3);
+    Some(resized)
+}
+
+fn find_assets_dir() -> Option<std::path::PathBuf> {
+    if let Ok(mut dir) = std::env::current_dir() {
+        loop {
+            let assets = dir.join("assets");
+            if assets.join("svg_icon_map.toml").exists() {
+                return Some(assets);
+            }
+            if !dir.pop() {
+                break;
+            }
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let mut dir = exe;
+        while dir.pop() {
+            let assets = dir.join("assets");
+            if assets.join("svg_icon_map.toml").exists() {
+                return Some(assets);
+            }
+        }
+    }
+    None
+}
+
+/// Load consumable icons from game files into a HashMap keyed by PCY name,
+/// with high-resolution SVG overrides applied from `assets/svg_icon_map.toml`.
 pub fn load_consumable_icons(vfs: &VfsPath, version: Option<&Version>) -> HashMap<String, RgbaImage> {
     let mut icons = HashMap::new();
 
@@ -313,10 +493,29 @@ pub fn load_consumable_icons(vfs: &VfsPath, version: Option<&Version>) -> HashMa
                     continue;
                 }
                 if let Some(img) = load_image_entry(&entry) {
-                    let resized = image::imageops::resize(&img, 28, 28, image::imageops::FilterType::Lanczos3);
+                    let resized = image::imageops::resize(&img, 64, 64, image::imageops::FilterType::Lanczos3);
                     icons.insert(pcy_name.to_string(), resized);
                 }
             }
+        }
+    }
+
+    // Apply high quality custom SVG icon overrides if present (replaces low-res VFS PNGs)
+    if let Some(assets_dir) = find_assets_dir()
+        && let Ok(map_str) = std::fs::read_to_string(assets_dir.join("svg_icon_map.toml"))
+        && let Ok(map) = toml::from_str::<SvgIconMap>(&map_str)
+    {
+        let svg_dir = assets_dir.join("svg_icons");
+        let mut count = 0;
+        for (key, file_name) in map.consumables {
+            let svg_path = svg_dir.join(&file_name);
+            if let Some(rgba) = rasterize_svg_file(&svg_path, 64, 64) {
+                icons.insert(key, rgba);
+                count += 1;
+            }
+        }
+        if count > 0 {
+            debug!(count, "Loaded high quality SVG consumable overrides");
         }
     }
 
@@ -325,8 +524,7 @@ pub fn load_consumable_icons(vfs: &VfsPath, version: Option<&Version>) -> HashMa
 }
 
 /// Load ribbon icons from `gui/ribbons` (or `gui/ribbons/subribbons` when
-/// `dir` is `SubRibbons`), keyed by file stem to match `translate_ribbon`'s
-/// lowercased icon key. Absent in Flash-era builds; returns an empty map then.
+/// `dir` is `SubRibbons`), with high-resolution SVG overrides applied from `assets/svg_icon_map.toml`.
 pub fn load_ribbon_icons(vfs: &VfsPath, dir: GuiAssetDir, version: Option<&Version>) -> HashMap<String, RgbaImage> {
     let mut icons = HashMap::new();
 
@@ -341,13 +539,32 @@ pub fn load_ribbon_icons(vfs: &VfsPath, dir: GuiAssetDir, version: Option<&Versi
             if let Some(img) = load_image_entry(&entry) {
                 // Ribbon icons are wide (e.g. 133x51), so resize to a fixed
                 // height with proportional width to avoid squishing them.
-                let target_h = 32u32;
+                let target_h = 64u32;
                 let (w, h) = (img.width(), img.height());
                 let target_w =
                     if h > 0 { (((w as f32 / h as f32) * target_h as f32).round() as u32).max(1) } else { target_h };
                 let resized = image::imageops::resize(&img, target_w, target_h, image::imageops::FilterType::Lanczos3);
                 icons.insert(stem.to_string(), resized);
             }
+        }
+    }
+
+    // Apply high quality custom SVG ribbon overrides if present (replaces low-res VFS PNGs)
+    if let Some(assets_dir) = find_assets_dir()
+        && let Ok(map_str) = std::fs::read_to_string(assets_dir.join("svg_icon_map.toml"))
+        && let Ok(map) = toml::from_str::<SvgIconMap>(&map_str)
+    {
+        let svg_dir = assets_dir.join("svg_icons");
+        let mut count = 0;
+        for (key, file_name) in map.ribbons {
+            let svg_path = svg_dir.join(&file_name);
+            if let Some(rgba) = rasterize_svg_aspect(&svg_path, 64) {
+                icons.insert(key, rgba);
+                count += 1;
+            }
+        }
+        if count > 0 {
+            debug!(count, "Loaded high quality SVG ribbon overrides");
         }
     }
 

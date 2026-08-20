@@ -90,6 +90,8 @@ const KNOWN_TEST_BUILDS: &[u32] = &[
     6359964,  // v0.11.9 (Cossack ArmsRace)
     8260685,  // v13.3 (V-170 DD)
     11965230, // v15.1 (Vermont, Marceau, Narai)
+    12830008, // v15.6.0
+    13015811, // v15.7.0
 ];
 
 fn main() {

@@ -37,6 +37,7 @@ use crate::draw_command::KillFeedEntry;
 use crate::draw_command::RenderTarget;
 use crate::draw_command::ShipVisibility;
 use wows_replays::types::ElapsedClock;
+use wows_replays::types::EntityId;
 use wt_translations::DefaultTextResolver;
 use wt_translations::TextResolver;
 use wt_translations::TranslatableText;
@@ -371,7 +372,8 @@ fn draw_capture_point(
     }
 }
 
-/// Draw player name and/or ship name labels centered above a ship icon.
+/// Draw player name and/or ship name labels centered below a ship icon.
+/// Returns the bottom Y coordinate of the rendered text labels if any were drawn.
 fn draw_ship_labels(
     pm: &mut Pixmap,
     x: f32,
@@ -381,11 +383,11 @@ fn draw_ship_labels(
     name_color: Option<[u8; 3]>,
     fonts: &GameFonts,
     scale_factor: f32,
-) {
+) -> Option<i32> {
     let line_height = (12.0 * scale_factor).round() as i32;
     let line_count = player_name.is_some() as i32 + ship_name.is_some() as i32;
     if line_count == 0 {
-        return;
+        return None;
     }
 
     // Apply armament color to ship_name if shown, otherwise player_name
@@ -395,7 +397,7 @@ fn draw_ship_labels(
     let y = y.round() as i32;
 
     // Position lines below the icon and health bar
-    let icon_offset = (28.0 * scale_factor).round() as i32;
+    let icon_offset = (24.0 * scale_factor).round() as i32;
     let base_y = y + icon_offset;
     let mut cur_y = base_y;
 
@@ -413,7 +415,10 @@ fn draw_ship_labels(
         let (w, _) = text_size(scale, font, name);
         let tx = x - w as i32 / 2;
         draw_text_shadow(pm, color, tx, cur_y, scale, font, name);
+        cur_y += line_height;
     }
+
+    Some(cur_y)
 }
 
 /// Draw a health bar below a ship icon.
@@ -1482,6 +1487,8 @@ pub struct ImageTarget {
     powerup_icons: HashMap<String, RgbaImage>,
     /// Bounding rects [x, y, w, h] of previously placed config-circle labels in the current frame.
     placed_labels: Vec<[i32; 4]>,
+    /// Bottom Y coordinate of rendered ship text labels keyed by EntityId for the current frame.
+    ship_label_bottoms: HashMap<EntityId, i32>,
     /// Resolves translatable game text (battle results, advantage labels, etc.)
     text_resolver: Arc<dyn TextResolver>,
     pub large_elements: bool,
@@ -1619,6 +1626,7 @@ impl ImageTarget {
             death_cause_icons,
             powerup_icons,
             placed_labels: Vec::new(),
+            ship_label_bottoms: HashMap::new(),
             text_resolver: Arc::new(DefaultTextResolver),
             large_elements,
             aspect_ratio_16_9,
@@ -1646,6 +1654,7 @@ impl RenderTarget for ImageTarget {
     fn begin_frame(&mut self) {
         self.canvas = self.base_canvas.clone();
         self.placed_labels.clear();
+        self.ship_label_bottoms.clear();
     }
 
     fn draw(&mut self, cmd: &DrawCommand) {
@@ -1762,6 +1771,7 @@ impl RenderTarget for ImageTarget {
                 );
             }
             DrawCommand::Ship {
+                entity_id,
                 pos,
                 yaw,
                 species,
@@ -1812,7 +1822,7 @@ impl RenderTarget for ImageTarget {
                 }
 
                 draw_ship_icon(&mut self.canvas, icon, x, y, *yaw, color.map(|c| c), *opacity, scale_factor);
-                draw_ship_labels(
+                if let Some(bottom) = draw_ship_labels(
                     &mut self.canvas,
                     x,
                     y,
@@ -1821,7 +1831,9 @@ impl RenderTarget for ImageTarget {
                     *name_color,
                     &self.fonts,
                     scale_factor,
-                );
+                ) {
+                    self.ship_label_bottoms.insert(*entity_id, bottom);
+                }
             }
             DrawCommand::HealthBar { pos, fraction, fill_color, background_color, background_alpha, .. } => {
                 let scale_factor = if self.large_elements { 1.1f32 } else { 1.0f32 };
@@ -1891,19 +1903,36 @@ impl RenderTarget for ImageTarget {
                 // Filled circle only, no outline
                 draw_filled_circle(&mut self.canvas, x, y, *radius_px as f32, *color, *alpha);
             }
-            DrawCommand::ConsumableIcons { pos, icon_keys, has_hp_bar, .. } => {
+            DrawCommand::ConsumableIcons { entity_id, pos, icon_keys, has_hp_bar, .. } => {
+                let scale_factor = if self.large_elements { 1.1f32 } else { 1.0f32 };
                 let x = (pos.x + x_off).round() as i32;
                 let y = (pos.y + y_off).round() as i32;
-                let base_y = if *has_hp_bar { y + 28 } else { y + 26 };
-                let icon_size = 28i32;
-                let gap = 1i32;
+                let icon_size = (22.0 * scale_factor).round() as i32;
+                let base_y = if let Some(&label_bottom) = self.ship_label_bottoms.get(entity_id) {
+                    label_bottom + icon_size / 2 + 3
+                } else if *has_hp_bar {
+                    y + (28.0 * scale_factor).round() as i32
+                } else {
+                    y + (24.0 * scale_factor).round() as i32
+                };
+                let gap = 2i32;
                 let count = icon_keys.len() as i32;
                 let total_w = count * icon_size + (count - 1) * gap;
                 let start_x = x - total_w / 2 + icon_size / 2;
                 for (i, icon_key) in icon_keys.iter().enumerate() {
                     if let Some(icon) = self.consumable_icons.get(icon_key) {
                         let ix = start_x + i as i32 * (icon_size + gap);
-                        draw_icon(&mut self.canvas, icon, ix as f32, base_y as f32);
+                        let resized = if icon.width() != icon_size as u32 || icon.height() != icon_size as u32 {
+                            image::imageops::resize(
+                                icon,
+                                icon_size as u32,
+                                icon_size as u32,
+                                image::imageops::FilterType::Lanczos3,
+                            )
+                        } else {
+                            icon.clone()
+                        };
+                        draw_icon(&mut self.canvas, &resized, ix as f32, base_y as f32);
                     }
                 }
             }
@@ -2477,13 +2506,13 @@ impl RenderTarget for ImageTarget {
 
                 // Draw active consumables centered horizontally in the left 57% column at cons_y
                 let cons_gap = (6.0 * scale_factor).round() as i32;
-                let max_cons_size = (36.0 * scale_factor).round() as i32;
+                let max_cons_size = (40.0 * scale_factor).round() as i32;
 
                 if !consumables.is_empty() {
                     let n = consumables.len() as i32;
                     let inner_x = *x + padding;
                     let inner_w = left_w - padding * 2;
-                    let cons_size = ((inner_w - cons_gap * (n - 1)) / n).min(max_cons_size).max(16);
+                    let cons_size = ((inner_w - cons_gap * (n - 1)) / n).min(max_cons_size).max(20);
                     let total_cons_w = n * cons_size + (n - 1) * cons_gap;
                     let cons_start_x = inner_x + (inner_w - total_cons_w) / 2;
 
@@ -2495,7 +2524,7 @@ impl RenderTarget for ImageTarget {
                                 icon,
                                 cons_size as u32,
                                 cons_size as u32,
-                                image::imageops::FilterType::Triangle,
+                                image::imageops::FilterType::Lanczos3,
                             );
 
                             if !cons.active {
@@ -2555,15 +2584,15 @@ impl RenderTarget for ImageTarget {
                 // Options A & B (large_format = true) use 2x base dimensions to fill the 228px stats panel slot.
                 // Option C (--inkpads-layout / large_format = false) retains compact scale for placement under table.
                 let (base_cell_w, base_row_h, base_icon_h, base_font_pt, max_h) = if *large_format {
-                    (180.0, 90.0, 80.0, 26.0, 220.0)
+                    (140.0, 68.0, 56.0, 18.0, 220.0)
                 } else {
-                    (90.0, 45.0, 40.0, 13.0, 55.0)
+                    (98.0, 48.0, 38.0, 13.0, 110.0)
                 };
 
                 let mut best_s: f32 = 0.5;
                 if !ribbons.is_empty() {
                     let mut s: f32 = 1.0;
-                    while s >= 0.3 {
+                    while s >= 0.35 {
                         let cur_cell_w = (base_cell_w * s).round() as i32;
                         let cur_row_h = (base_row_h * s).round() as i32;
                         
@@ -2583,9 +2612,9 @@ impl RenderTarget for ImageTarget {
                 let cell_w = (base_cell_w * best_s).round() as i32;
                 let gap = (2.0 * best_s).round() as i32;
                 let scale = self.fonts.scale(base_font_pt * best_s);
-                let pill_pad_x = (4.0 * if *large_format { 2.0 * best_s } else { best_s }).max(2.0);
-                let pill_pad_y = (1.0 * if *large_format { 2.0 * best_s } else { best_s }).max(1.0);
-                let pill_radius = (2.0 * if *large_format { 2.0 * best_s } else { best_s }).max(1.0);
+                let pill_pad_x = (4.0 * if *large_format { 1.5 * best_s } else { best_s }).max(2.0);
+                let pill_pad_y = (1.0 * if *large_format { 1.5 * best_s } else { best_s }).max(1.0);
+                let pill_radius = (3.0 * if *large_format { 1.5 * best_s } else { best_s }).max(1.0);
 
                 // Group ribbons into rows to calculate centered layout
                 let mut rows: Vec<Vec<&crate::draw_command::RibbonCount>> = Vec::new();
@@ -2624,7 +2653,7 @@ impl RenderTarget for ImageTarget {
                                 icon_h
                             };
                             
-                            let max_w = cell_w - (6.0 * if *large_format { 2.0 * best_s } else { 1.0 }).round() as i32;
+                            let max_w = cell_w - 4;
                             if w > max_w {
                                 let ratio = max_w as f32 / w as f32;
                                 w = max_w;
@@ -2661,7 +2690,7 @@ impl RenderTarget for ImageTarget {
                                 pill_h,
                                 pill_radius,
                                 [0, 0, 0],
-                                0.65,
+                                0.70,
                             );
                             
                             draw_text_shadow(
