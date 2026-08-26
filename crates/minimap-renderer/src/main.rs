@@ -429,6 +429,7 @@ fn main() -> Result<(), Report> {
         wows_minimap_renderer::drawing::SidePanelLayout::from_options(&options),
         options.large_elements,
         options.aspect_ratio_16_9,
+        options.discord_layout,
         options.stats_panel_width,
     );
     target.inkpads_layout = options.inkpads_layout;

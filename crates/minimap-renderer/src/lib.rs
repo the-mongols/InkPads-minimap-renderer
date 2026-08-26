@@ -28,6 +28,12 @@ pub const CANVAS_HEIGHT: u32 = MINIMAP_SIZE + HUD_HEIGHT;
 pub const STATS_PANEL_WIDTH: u32 = 720;
 /// Width of the stats side panel in 16:9 aspect ratio mode.
 pub const STATS_PANEL_WIDTH_16_9: u32 = 928;
+/// Width of the vertical score strip on the left side of the minimap.
+pub const VERTICAL_SCORE_STRIP_WIDTH: u32 = 112;
+/// Width of the left and right outer empty margins in 16:9 Discord layout.
+pub const CANVAS_MARGIN_WIDTH: u32 = 48;
+/// Total canvas width for the 16:9 Discord layout: 48 + 112 + 1200 + 720 + 48 = 2128.
+pub const CANVAS_WIDTH_16_9: u32 = 2128;
 /// Halo thickness (in icon-pixel space) for the detected-teammate outline
 /// drawn around ship icons. Both renderers pad the outline texture by this
 /// amount on each side so the halo wraps fully around the icon's silhouette

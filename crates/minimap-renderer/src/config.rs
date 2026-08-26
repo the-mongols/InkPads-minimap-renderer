@@ -36,6 +36,7 @@ pub struct RenderOptions {
     pub large_elements: bool,
     pub compact_stats: bool,
     pub aspect_ratio_16_9: bool,
+    pub discord_layout: bool,
     pub inkpads_layout: bool,
     pub stats_panel_width: Option<u32>,
     /// Controls which ships have their config circles rendered when show_ship_config is true.
@@ -76,6 +77,7 @@ impl Default for RenderOptions {
             large_elements: false,
             compact_stats: false,
             aspect_ratio_16_9: false,
+            discord_layout: false,
             inkpads_layout: false,
             stats_panel_width: None,
             ship_config_visibility: ShipConfigVisibility::default(),
@@ -93,6 +95,22 @@ impl RenderOptions {
     /// decision.
     pub fn stats_panel_visible(&self) -> bool {
         self.show_stats_panel
+    }
+
+    /// Returns the X-offset for the 1:1 minimap in pixels.
+    /// In Discord layout with the stats panel active, the minimap is shifted right
+    /// by 160 px (48px left empty margin + 112px vertical score strip).
+    pub fn map_x_offset(&self) -> u32 {
+        if self.discord_layout && self.show_stats_panel {
+            crate::CANVAS_MARGIN_WIDTH + crate::VERTICAL_SCORE_STRIP_WIDTH
+        } else {
+            0
+        }
+    }
+
+    /// True when the vertical score strip should be used instead of the top horizontal bar.
+    pub fn vertical_score_strip(&self) -> bool {
+        self.discord_layout && self.show_stats_panel
     }
 }
 
@@ -162,6 +180,7 @@ pub struct RendererConfig {
     pub large_elements: bool,
     pub compact_stats: bool,
     pub aspect_ratio_16_9: bool,
+    pub discord_layout: bool,
     pub inkpads_layout: bool,
     pub stats_panel_width: Option<u32>,
     /// Include the pre-battle phase (spawn and countdown) at the start of the
@@ -201,6 +220,7 @@ impl Default for RendererConfig {
             large_elements: false,
             compact_stats: false,
             aspect_ratio_16_9: false,
+            discord_layout: false,
             inkpads_layout: false,
             stats_panel_width: None,
             include_pre_battle: false,
@@ -254,6 +274,7 @@ impl RendererConfig {
             large_elements: self.large_elements,
             compact_stats: self.compact_stats,
             aspect_ratio_16_9: self.aspect_ratio_16_9,
+            discord_layout: self.discord_layout,
             inkpads_layout: self.inkpads_layout,
             stats_panel_width: self.stats_panel_width,
             ship_config_visibility: ShipConfigVisibility::default(),
@@ -390,6 +411,7 @@ include_pre_battle = false
             self.include_pre_battle = true;
         }
         if overrides.discord_layout {
+            self.discord_layout = true;
             self.large_elements = true;
             self.compact_stats = true;
             self.aspect_ratio_16_9 = true;

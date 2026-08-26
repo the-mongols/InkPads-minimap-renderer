@@ -698,6 +698,102 @@ fn draw_score_bar(
     }
 }
 
+/// Draw the vertical team score strip on the left of the minimap (Discord layout).
+fn draw_vertical_score_strip(
+    pm: &mut Pixmap,
+    strip_x: u32,
+    strip_w: u32,
+    team0_score: i32,
+    team1_score: i32,
+    team0_color: [u8; 3],
+    team1_color: [u8; 3],
+    max_score: i32,
+    team0_timer: Option<&str>,
+    team1_timer: Option<&str>,
+    fonts: &GameFonts,
+    scale_factor: f32,
+) {
+    let sx = strip_x as f32;
+    let sw = strip_w as f32;
+    let max_score_f = (max_score as f32).max(1.0);
+
+    // Dark background for vertical strip
+    draw_filled_rect(pm, sx, 0.0, sw, CANVAS_HEIGHT as f32, [22, 27, 34], 0.95);
+    // Subtle border lines on left and right
+    draw_line(pm, sx, 0.0, sx, CANVAS_HEIGHT as f32, [55, 60, 72], 0.8, 1.0);
+    draw_line(pm, sx + sw, 0.0, sx + sw, CANVAS_HEIGHT as f32, [55, 60, 72], 0.8, 1.0);
+
+    // Max travel height per team (center clock takes y ≈ 530..670)
+    let max_bar_h = 520.0f32;
+
+    // Team 1 (Enemy / Red): progress grows from top (y = 0) downward
+    let t1_frac = (team1_score as f32 / max_score_f).clamp(0.0, 1.0);
+    let t1_h = t1_frac * max_bar_h;
+    if t1_h > 0.0 {
+        draw_filled_rect(pm, sx, 0.0, sw, t1_h, team1_color, 0.85);
+    }
+
+    // Team 0 (Friendly / Green): progress grows from bottom (y = 1200) upward
+    let t0_frac = (team0_score as f32 / max_score_f).clamp(0.0, 1.0);
+    let t0_h = t0_frac * max_bar_h;
+    if t0_h > 0.0 {
+        draw_filled_rect(pm, sx, CANVAS_HEIGHT as f32 - t0_h, sw, t0_h, team0_color, 0.85);
+    }
+
+    let font = &fonts.primary;
+    let timer_color: [u8; 3] = [220, 220, 220];
+    let pill_color: [u8; 3] = [10, 12, 16];
+    let pill_alpha = 0.80f32;
+    let pill_pad_x = 6.0f32;
+    let pill_w = sw - pill_pad_x * 2.0; // 100 px wide
+    let pill_x = sx + pill_pad_x;
+
+    let score_scale = fonts.scale(32.0 * scale_factor.min(1.2));
+    let timer_scale = fonts.scale(22.0 * scale_factor.min(1.2));
+
+    // ── Team 1 (Top Pill) ──
+    let t1_score_str = format!("{}", team1_score);
+    let (t1_sw, t1_sh) = text_size(score_scale, font, &t1_score_str);
+    let t1_has_timer = team1_timer.is_some();
+    let t1_timer_h = if t1_has_timer { 24.0 } else { 0.0 };
+    let t1_pill_h = (t1_sh as f32 + t1_timer_h + 16.0).max(48.0);
+    let t1_pill_y = 16.0f32;
+
+    draw_rounded_rect(pm, pill_x, t1_pill_y, pill_w, t1_pill_h, 6.0, pill_color, pill_alpha);
+
+    let t1_score_x = (pill_x + (pill_w - t1_sw as f32) / 2.0).round() as i32;
+    let t1_score_y = (t1_pill_y + 6.0).round() as i32;
+    draw_text(pm, [255, 255, 255], t1_score_x, t1_score_y, score_scale, font, &t1_score_str);
+
+    if let Some(timer) = team1_timer {
+        let (tw, _) = text_size(timer_scale, font, timer);
+        let tx = (pill_x + (pill_w - tw as f32) / 2.0).round() as i32;
+        let ty = t1_score_y + t1_sh as i32 + 2;
+        draw_text(pm, timer_color, tx, ty, timer_scale, font, timer);
+    }
+
+    // ── Team 0 (Bottom Pill) ──
+    let t0_score_str = format!("{}", team0_score);
+    let (t0_sw, t0_sh) = text_size(score_scale, font, &t0_score_str);
+    let t0_has_timer = team0_timer.is_some();
+    let t0_timer_h = if t0_has_timer { 24.0 } else { 0.0 };
+    let t0_pill_h = (t0_sh as f32 + t0_timer_h + 16.0).max(48.0);
+    let t0_pill_y = CANVAS_HEIGHT as f32 - 16.0 - t0_pill_h;
+
+    draw_rounded_rect(pm, pill_x, t0_pill_y, pill_w, t0_pill_h, 6.0, pill_color, pill_alpha);
+
+    let t0_score_x = (pill_x + (pill_w - t0_sw as f32) / 2.0).round() as i32;
+    let t0_score_y = (t0_pill_y + 6.0).round() as i32;
+    draw_text(pm, [255, 255, 255], t0_score_x, t0_score_y, score_scale, font, &t0_score_str);
+
+    if let Some(timer) = team0_timer {
+        let (tw, _) = text_size(timer_scale, font, timer);
+        let tx = (pill_x + (pill_w - tw as f32) / 2.0).round() as i32;
+        let ty = t0_score_y + t0_sh as i32 + 2;
+        draw_text(pm, timer_color, tx, ty, timer_scale, font, timer);
+    }
+}
+
 /// Draw the game timer.
 fn draw_timer(pm: &mut Pixmap, time_remaining: Option<i64>, elapsed: ElapsedClock, fonts: &GameFonts, map_width: u32) {
     let font = &fonts.primary;
@@ -732,17 +828,69 @@ fn draw_timer(pm: &mut Pixmap, time_remaining: Option<i64>, elapsed: ElapsedCloc
     }
 }
 
+/// Draw the center match clock in the vertical score strip.
+fn draw_vertical_timer(
+    pm: &mut Pixmap,
+    strip_x: u32,
+    strip_w: u32,
+    time_remaining: Option<i64>,
+    elapsed: ElapsedClock,
+    fonts: &GameFonts,
+) {
+    let font = &fonts.primary;
+    let sx = strip_x as f32;
+    let sw = strip_w as f32;
+    let pill_pad_x = 6.0f32;
+    let pill_w = sw - pill_pad_x * 2.0;
+    let pill_x = sx + pill_pad_x;
+
+    let main_scale = fonts.scale(32.0);
+    let small_scale = fonts.scale(22.0);
+
+    let pill_h = 76.0f32;
+    let pill_y = (CANVAS_HEIGHT as f32 - pill_h) / 2.0;
+
+    draw_rounded_rect(pm, pill_x, pill_y, pill_w, pill_h, 6.0, [10, 12, 16], 0.85);
+
+    if let Some(remaining) = time_remaining {
+        let r_mins = remaining / 60;
+        let r_secs = remaining % 60;
+        let remaining_text = format!("{:02}:{:02}", r_mins, r_secs);
+        let (rw, rh) = text_size(main_scale, font, &remaining_text);
+        let rx = (pill_x + (pill_w - rw as f32) / 2.0).round() as i32;
+        let ry = (pill_y + 8.0).round() as i32;
+        draw_text(pm, [255, 255, 255], rx, ry, main_scale, font, &remaining_text);
+
+        let e_mins = (elapsed.seconds() as i32) / 60;
+        let e_secs = (elapsed.seconds() as i32) % 60;
+        let elapsed_text = format!("+{:02}:{:02}", e_mins, e_secs);
+        let (ew, _) = text_size(small_scale, font, &elapsed_text);
+        let ex = (pill_x + (pill_w - ew as f32) / 2.0).round() as i32;
+        let ey = ry + rh as i32 + 2;
+        draw_text(pm, [200, 200, 200], ex, ey, small_scale, font, &elapsed_text);
+    } else {
+        let e_mins = (elapsed.seconds() as i32) / 60;
+        let e_secs = (elapsed.seconds() as i32) % 60;
+        let elapsed_text = format!("{:02}:{:02}", e_mins, e_secs);
+        let (ew, _) = text_size(main_scale, font, &elapsed_text);
+        let ex = (pill_x + (pill_w - ew as f32) / 2.0).round() as i32;
+        let ey = (pill_y + (pill_h - 32.0) / 2.0).round() as i32;
+        draw_text(pm, [255, 255, 255], ex, ey, main_scale, font, &elapsed_text);
+    }
+}
+
 fn draw_pre_battle_countdown(
     pm: &mut Pixmap,
     seconds: i64,
     fonts: &GameFonts,
     resolver: &dyn TextResolver,
     map_width: u32,
+    map_x_offset: u32,
 ) {
     let text = format!("{}", seconds);
     let subtitle = resolver.resolve(&TranslatableText::PreBattleLabel);
     let glow_color: [u8; 3] = [255, 200, 50]; // gold
-    draw_battle_result_overlay(pm, &text, Some(&subtitle), glow_color, true, fonts, map_width);
+    draw_battle_result_overlay(pm, &text, Some(&subtitle), glow_color, true, fonts, map_width, map_x_offset);
 }
 
 /// Map a DeathCause to the icon key used in the death_cause_icons HashMap.
@@ -1291,6 +1439,7 @@ fn draw_battle_result_overlay(
     subtitle_above: bool,
     fonts: &GameFonts,
     map_width: u32,
+    map_x_offset: u32,
 ) {
     let font = &fonts.primary;
     let w = map_width;
@@ -1305,7 +1454,7 @@ fn draw_battle_result_overlay(
     let gap = if subtitle.is_some() { 8 } else { 0 };
     let total_height = th + gap as u32 + sub_height;
 
-    let x = (w as i32 - tw as i32) / 2;
+    let x = map_x_offset as i32 + (w as i32 - tw as i32) / 2;
     let center_y = (h as i32 - total_height as i32) / 2;
 
     // When subtitle is above, subtitle comes first then main text;
@@ -1338,7 +1487,7 @@ fn draw_battle_result_overlay(
     // Subtitle
     if let Some(sub) = subtitle {
         let (sw, _) = text_size(sub_scale, font, sub);
-        let sx = (w as i32 - sw as i32) / 2;
+        let sx = map_x_offset as i32 + (w as i32 - sw as i32) / 2;
         // Subtle dark outline for readability
         for &(dx, dy) in offsets {
             draw_text(pm, [0, 0, 0], sx + dx * 2, sub_y + dy * 2, sub_scale, font, sub);
@@ -1493,6 +1642,7 @@ pub struct ImageTarget {
     text_resolver: Arc<dyn TextResolver>,
     pub large_elements: bool,
     pub aspect_ratio_16_9: bool,
+    pub discord_layout: bool,
     pub inkpads_layout: bool,
 }
 
@@ -1556,6 +1706,7 @@ impl ImageTarget {
             layout,
             large_elements,
             aspect_ratio_16_9,
+            false,
             None,
         )
     }
@@ -1574,6 +1725,7 @@ impl ImageTarget {
         layout: SidePanelLayout,
         large_elements: bool,
         aspect_ratio_16_9: bool,
+        discord_layout: bool,
         stats_panel_width_override: Option<u32>,
     ) -> Self {
         let map = map_image.unwrap_or_else(|| RgbImage::from_pixel(MINIMAP_SIZE, MINIMAP_SIZE, Rgb([30, 40, 60])));
@@ -1591,11 +1743,18 @@ impl ImageTarget {
         }
         let (canvas_width, map_x_offset, hud_width) = match layout {
             SidePanelLayout::None => (MINIMAP_SIZE, 0, MINIMAP_SIZE),
-            SidePanelLayout::StatsPanel => (MINIMAP_SIZE + panel_width, 0, MINIMAP_SIZE),
+            SidePanelLayout::StatsPanel => {
+                if discord_layout {
+                    let offset = crate::CANVAS_MARGIN_WIDTH + crate::VERTICAL_SCORE_STRIP_WIDTH;
+                    (crate::CANVAS_WIDTH_16_9, offset, MINIMAP_SIZE)
+                } else {
+                    (MINIMAP_SIZE + panel_width, 0, MINIMAP_SIZE)
+                }
+            }
         };
 
         // Pre-build the base canvas: dark background + map + grid
-        let mut base_rgb = RgbImage::from_pixel(canvas_width, CANVAS_HEIGHT, Rgb([20, 25, 35]));
+        let mut base_rgb = RgbImage::from_pixel(canvas_width, CANVAS_HEIGHT, Rgb([14, 17, 23]));
         for y in 0..map.height().min(MINIMAP_SIZE) {
             for x in 0..map.width().min(MINIMAP_SIZE) {
                 base_rgb.put_pixel(x + map_x_offset, y + HUD_HEIGHT, *map.get_pixel(x, y));
@@ -1630,6 +1789,7 @@ impl ImageTarget {
             text_resolver: Arc::new(DefaultTextResolver),
             large_elements,
             aspect_ratio_16_9,
+            discord_layout,
             inkpads_layout: false,
         }
     }
@@ -1951,28 +2111,56 @@ impl RenderTarget for ImageTarget {
                     .unwrap_or_default();
                 let advantage_team = advantage.map(|(_, team)| team as i32).unwrap_or(-1);
                 let scale_factor = if self.large_elements { 1.8f32 } else { 1.0f32 };
-                draw_score_bar(
-                    &mut self.canvas,
-                    *team0,
-                    *team1,
-                    *team0_color,
-                    *team1_color,
-                    *max_score,
-                    team0_timer.as_deref(),
-                    team1_timer.as_deref(),
-                    &advantage_label,
-                    advantage_team,
-                    &self.fonts,
-                    self.hud_width,
-                    scale_factor,
-                );
+                if self.discord_layout && self.map_x_offset > 0 {
+                    draw_vertical_score_strip(
+                        &mut self.canvas,
+                        crate::CANVAS_MARGIN_WIDTH,
+                        crate::VERTICAL_SCORE_STRIP_WIDTH,
+                        *team0,
+                        *team1,
+                        *team0_color,
+                        *team1_color,
+                        *max_score,
+                        team0_timer.as_deref(),
+                        team1_timer.as_deref(),
+                        &self.fonts,
+                        scale_factor,
+                    );
+                } else {
+                    draw_score_bar(
+                        &mut self.canvas,
+                        *team0,
+                        *team1,
+                        *team0_color,
+                        *team1_color,
+                        *max_score,
+                        team0_timer.as_deref(),
+                        team1_timer.as_deref(),
+                        &advantage_label,
+                        advantage_team,
+                        &self.fonts,
+                        self.hud_width,
+                        scale_factor,
+                    );
+                }
             }
             DrawCommand::TeamAdvantage { .. } => {
                 // Advantage is now rendered inline in the score bar;
                 // this command is retained for consumers that want the breakdown data.
             }
             DrawCommand::Timer { time_remaining, elapsed } => {
-                draw_timer(&mut self.canvas, *time_remaining, *elapsed, &self.fonts, self.hud_width);
+                if self.discord_layout && self.map_x_offset > 0 {
+                    draw_vertical_timer(
+                        &mut self.canvas,
+                        crate::CANVAS_MARGIN_WIDTH,
+                        crate::VERTICAL_SCORE_STRIP_WIDTH,
+                        *time_remaining,
+                        *elapsed,
+                        &self.fonts,
+                    );
+                } else {
+                    draw_timer(&mut self.canvas, *time_remaining, *elapsed, &self.fonts, self.hud_width);
+                }
             }
             DrawCommand::PreBattleCountdown { seconds } => {
                 draw_pre_battle_countdown(
@@ -1981,6 +2169,7 @@ impl RenderTarget for ImageTarget {
                     &self.fonts,
                     &*self.text_resolver,
                     self.hud_width,
+                    self.map_x_offset,
                 );
             }
             DrawCommand::TeamBuffs { friendly_buffs, enemy_buffs } => {
@@ -2177,6 +2366,7 @@ impl RenderTarget for ImageTarget {
                     *subtitle_above,
                     &self.fonts,
                     self.hud_width,
+                    self.map_x_offset,
                 );
             }
             DrawCommand::StatsPanel { x, width } => {

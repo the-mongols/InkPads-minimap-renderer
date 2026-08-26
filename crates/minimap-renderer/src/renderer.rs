@@ -2305,7 +2305,7 @@ impl<'a> MinimapRenderer<'a> {
 
         // 12. Stats panel (right side panel with ship HP, damage, ribbons, activity).
         if self.options.show_stats_panel {
-            let panel_x = MINIMAP_SIZE as i32;
+            let panel_x = (self.options.map_x_offset() + MINIMAP_SIZE) as i32;
             let panel_w = {
                 let base_w = if self.options.aspect_ratio_16_9 {
                     self.options.stats_panel_width.unwrap_or(STATS_PANEL_WIDTH_16_9)
