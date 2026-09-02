@@ -665,6 +665,13 @@ fn main() -> Result<(), Report> {
             _ => "Draw",
         };
         info!("WINNING_TEAM: {}", winner_str);
+
+        let match_result = match (renderer.self_team_id(), wt) {
+            (Some(self_t), wt) if wt >= 0 && wt == self_t as i8 => "Victory",
+            (Some(_), wt) if wt >= 0 => "Defeat",
+            _ => "Draw",
+        };
+        info!("MATCH_RESULT: {}", match_result);
     }
     {
         let view = session.world_mut().view();

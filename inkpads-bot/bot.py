@@ -300,18 +300,10 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
             opponent_clan = get_opponent_clan(header, min_players=4)
 
             err_text = stderr.decode('utf-8', errors='ignore') if stderr else ""
-            winner_name = extract_winning_team(err_text)
+            outcome, winner_name, embed_color = resolve_match_outcome(header, err_text)
             f_clan, e_clan = get_team_clans(header)
             if not e_clan and opponent_clan and opponent_clan != "N/A":
                 e_clan = opponent_clan
-
-            embed_color = 0x2ECC71
-            if winner_name == "Alpha Team":
-                embed_color = 0x2ECC71
-            elif winner_name == "Bravo Team":
-                embed_color = 0xE74C3C
-            elif winner_name == "Draw":
-                embed_color = 0xF1C40F
 
             embed_title = f"[{f_clan}] vs [{e_clan}]" if (f_clan and e_clan) else "Tournament Match Render Complete"
 
@@ -659,6 +651,57 @@ def extract_winning_team(stderr_text: str) -> str:
     if m:
         return m.group(1).strip()
     return ""
+
+def extract_match_result(stderr_text: str) -> str:
+    if not stderr_text:
+        return ""
+    m = re.search(r'MATCH_RESULT:\s*([A-Za-z0-9 ]+)', stderr_text)
+    if m:
+        return m.group(1).strip()
+    return ""
+
+def resolve_match_outcome(header, stderr_text: str):
+    """
+    Determines friendly match outcome (Victory, Defeat, Draw), objective winning team, and embed color.
+    Returns (outcome, winner_name, embed_color).
+    """
+    err_text = stderr_text or ""
+    winner_name = extract_winning_team(err_text)
+    match_result = extract_match_result(err_text)
+
+    # 1. Use MATCH_RESULT from renderer (perspective-aware) if present
+    if match_result:
+        outcome = match_result
+    elif winner_name:
+        # 2. Fallback: inspect self player's teamId (relation == 0) from header
+        self_team = None
+        if isinstance(header, dict):
+            vehicles = header.get("vehicles", [])
+            if isinstance(vehicles, list):
+                for v in vehicles:
+                    if isinstance(v, dict) and v.get("relation") == 0:
+                        self_team = v.get("teamId")
+                        break
+        if self_team is not None and winner_name in ("Alpha Team", "Bravo Team"):
+            winning_team_id = 0 if winner_name == "Alpha Team" else 1
+            outcome = "Victory" if winning_team_id == self_team else "Defeat"
+        elif winner_name == "Draw":
+            outcome = "Draw"
+        else:
+            outcome = "Victory" if winner_name == "Alpha Team" else "Defeat"
+    else:
+        outcome = ""
+
+    if outcome == "Victory":
+        embed_color = 0x2ECC71  # Green
+    elif outcome == "Defeat":
+        embed_color = 0xE74C3C  # Red
+    elif outcome == "Draw":
+        embed_color = 0xF1C40F  # Gold
+    else:
+        embed_color = 0x2ECC71  # Default Green
+
+    return outcome, winner_name, embed_color
 
 def get_battle_type_title(match_group, game_type):
     group = str(match_group).strip().lower() if match_group else ""
@@ -1098,20 +1141,10 @@ async def _render_impl(
                     logger.warning(f"[{session_id}] Failed to extract enemy clan via analyzer: {ae}")
 
             err_text = stderr.decode('utf-8', errors='ignore') if stderr else ""
-            winner_name = extract_winning_team(err_text)
+            outcome, winner_name, embed_color = resolve_match_outcome(header, err_text)
             f_clan, e_clan = get_team_clans(header)
             if not e_clan and opponent_clan and opponent_clan != "N/A":
                 e_clan = opponent_clan
-
-            # Determine dynamic color for all matches (Victory = Green, Defeat = Red, Draw = Gold)
-            if winner_name == "Alpha Team":
-                embed_color = 0x2ECC71  # Green
-            elif winner_name == "Bravo Team":
-                embed_color = 0xE74C3C  # Red
-            elif winner_name == "Draw":
-                embed_color = 0xF1C40F  # Gold
-            else:
-                embed_color = 0x2ECC71  # Default Green
 
             details = []
             if is_clan_battle or (f_clan and e_clan):
@@ -1125,14 +1158,7 @@ async def _render_impl(
 
                 # Subtext for Clan Battles: **Victory / Defeat:** map | **Ship:** ship | **Date:** date
                 if not is_dual:
-                    if winner_name == "Alpha Team":
-                        result_label = "Victory"
-                    elif winner_name == "Bravo Team":
-                        result_label = "Defeat"
-                    elif winner_name == "Draw":
-                        result_label = "Draw"
-                    else:
-                        result_label = "Clan Battle"
+                    result_label = outcome if outcome else "Clan Battle"
                     details.append(f"**{result_label}:** {map_name}")
                 else:
                     if mode_name and map_name: details.append(f"**{mode_name}:** {map_name}")

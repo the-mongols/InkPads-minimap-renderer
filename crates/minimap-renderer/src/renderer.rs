@@ -702,6 +702,11 @@ impl<'a> MinimapRenderer<'a> {
         self.fonts = Some(fonts);
     }
 
+    /// Returns the recording player's team ID (0 for Alpha, 1 for Bravo), if determined.
+    pub fn self_team_id(&self) -> Option<i64> {
+        self.self_team_id
+    }
+
     /// Reset all cached state, allowing the renderer to be reused after a seek.
     pub fn reset(&mut self) {
         self.squadron_info.clear();

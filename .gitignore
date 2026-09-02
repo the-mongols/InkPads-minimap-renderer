@@ -13,6 +13,8 @@ temp/
 
 # Local Dev Only
 /maintenance.md
+local_docs/
+docs/
 
 # Data and Artifacts
 data/samples/

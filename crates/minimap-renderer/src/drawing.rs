@@ -128,11 +128,20 @@ fn color_paint(color: [u8; 3], alpha: f32) -> Paint<'static> {
 
 // ── Text rendering directly onto Pixmap ────────────────────────────────────
 
-/// Draw anti-aliased text onto a Pixmap at (x, y) with the given color.
+/// Draw anti-aliased text onto a Pixmap at (x, y) with the given color and alpha.
 ///
 /// Uses ab_glyph's per-pixel coverage callback for proper anti-aliasing.
 /// Coordinates are in pixel space (x = left edge, y = top edge of text).
-fn draw_text(pm: &mut Pixmap, color: [u8; 3], x: i32, y: i32, scale: PxScale, font: &impl Font, text: &str) {
+fn draw_text_alpha(
+    pm: &mut Pixmap,
+    color: [u8; 3],
+    alpha: f32,
+    x: i32,
+    y: i32,
+    scale: PxScale,
+    font: &impl Font,
+    text: &str,
+) {
     let scaled = font.as_scaled(scale);
     let mut cursor_x = x as f32;
     let baseline_y = y as f32 + scaled.ascent();
@@ -155,7 +164,7 @@ fn draw_text(pm: &mut Pixmap, color: [u8; 3], x: i32, y: i32, scale: PxScale, fo
                 if px < 0 || px >= w || py < 0 || py >= h {
                     return;
                 }
-                let cov = coverage.clamp(0.0, 1.0);
+                let cov = (coverage * alpha).clamp(0.0, 1.0);
                 if cov < 0.01 {
                     return;
                 }
@@ -181,6 +190,11 @@ fn draw_text(pm: &mut Pixmap, color: [u8; 3], x: i32, y: i32, scale: PxScale, fo
         cursor_x += scaled.h_advance(glyph_id);
         last_glyph_id = Some(glyph_id);
     }
+}
+
+/// Draw anti-aliased text onto a Pixmap at (x, y) with the given color.
+fn draw_text(pm: &mut Pixmap, color: [u8; 3], x: i32, y: i32, scale: PxScale, font: &impl Font, text: &str) {
+    draw_text_alpha(pm, color, 1.0, x, y, scale, font, text);
 }
 
 /// Measure the width and height of text at the given scale.
@@ -218,8 +232,22 @@ fn wpa_color(wpa: f64, team_avg: f64) -> [u8; 3] {
 
 /// Draw text with a shadow (black offset by +1,+1).
 fn draw_text_shadow(pm: &mut Pixmap, color: [u8; 3], x: i32, y: i32, scale: PxScale, font: &impl Font, text: &str) {
-    draw_text(pm, [0, 0, 0], x + 1, y + 1, scale, font, text);
-    draw_text(pm, color, x, y, scale, font, text);
+    draw_text_shadow_alpha(pm, color, 1.0, x, y, scale, font, text);
+}
+
+/// Draw text with a shadow and transparency.
+fn draw_text_shadow_alpha(
+    pm: &mut Pixmap,
+    color: [u8; 3],
+    alpha: f32,
+    x: i32,
+    y: i32,
+    scale: PxScale,
+    font: &impl Font,
+    text: &str,
+) {
+    draw_text_alpha(pm, [0, 0, 0], (alpha * 0.8).clamp(0.0, 1.0), x + 1, y + 1, scale, font, text);
+    draw_text_alpha(pm, color, alpha, x, y, scale, font, text);
 }
 
 // ── Drawing primitives ─────────────────────────────────────────────────────
@@ -3243,6 +3271,23 @@ impl RenderTarget for ImageTarget {
                         cy += 2; // small gap after chat
                     }
                 }
+
+                // Subtle watermark in the bottom right corner of the stats panel, below/right of the chat activity feed
+                let credit_text = "Developed by The_Mongols";
+                let credit_scale = self.fonts.scale_cond_bold(9.5 * sf);
+                let (credit_w, credit_h) = text_size(credit_scale, &self.fonts.cond_bold, credit_text);
+                let credit_x = *x + *width - padding - credit_w as i32;
+                let credit_y = *y + *height - padding - credit_h as i32;
+                draw_text_shadow_alpha(
+                    &mut self.canvas,
+                    [255, 255, 255],
+                    0.20,
+                    credit_x,
+                    credit_y,
+                    credit_scale,
+                    &self.fonts.cond_bold,
+                    credit_text,
+                );
             }
 
             DrawCommand::InkpadsTeammateTable { x, y, width, height, rows } => {
@@ -3495,6 +3540,23 @@ fn draw_inkpads_inline_feeds(
             cy += inter_block_gap;
         }
     }
+
+    // Subtle watermark in the bottom right corner of the stats panel, below/right of the chat activity feed
+    let credit_text = "Developed by The_Mongols";
+    let credit_scale = fonts.scale_cond_bold(9.5f32);
+    let (credit_w, credit_h) = text_size(credit_scale, &fonts.cond_bold, credit_text);
+    let credit_x = x + width - padding - credit_w as i32;
+    let credit_y = y + height - padding - credit_h as i32;
+    draw_text_shadow_alpha(
+        pm,
+        [255, 255, 255],
+        0.20,
+        credit_x,
+        credit_y,
+        credit_scale,
+        &fonts.cond_bold,
+        credit_text,
+    );
 }
 
 fn format_number_commas(n: u32) -> String {
