@@ -21,7 +21,21 @@ TOKEN = os.getenv('DISCORD_TOKEN')
 WOWS_PATH = os.getenv('WOWS_PATH', 'C:\\Games\\World_of_Warships')
 # Default to a few likely locations for the renderer
 RENDERER_PATH = os.getenv('RENDERER_PATH')
-WOWS_EXTRACTED_DIR = os.getenv('WOWS_EXTRACTED_DIR')
+def find_extracted_dir():
+    env_dir = os.getenv('WOWS_EXTRACTED_DIR')
+    if env_dir and Path(env_dir).exists():
+        return str(Path(env_dir).resolve())
+    candidates = [
+        Path(__file__).parent.parent / 'game_data' / 'extracted',
+        Path(__file__).parent / 'game_data' / 'extracted',
+        Path('game_data/extracted').resolve()
+    ]
+    for c in candidates:
+        if c.exists() and c.is_dir():
+            return str(c.resolve())
+    return None
+
+WOWS_EXTRACTED_DIR = find_extracted_dir()
 RENDERER_FONT_PATH = os.getenv('RENDERER_FONT_PATH')
 FORCE_CPU = os.getenv('FORCE_CPU', 'false').lower() in ('true', '1', 'yes')
 RENDERER_CODEC = os.getenv('RENDERER_CODEC')
