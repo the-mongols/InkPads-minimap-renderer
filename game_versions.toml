@@ -13,6 +13,15 @@
 # Each build's manifest IDs point to the depot manifest where that
 # build was first introduced.
 
+[versions.13187581]
+version = "15.8.0"
+client_depot_id = 552993
+client_manifest_id = "0"
+content_depot_id = 552991
+content_manifest_id = "0"
+localization_depot_id = 552994
+localization_manifest_id = "0"
+
 [versions.13015811]
 version = "15.7.0"
 client_depot_id = 552993

@@ -90,8 +90,26 @@ pub fn link_file(cas_root: &Path, hash: &str, link_path: &Path) -> Result<(), ro
         let _ = std::fs::remove_file(link_path);
     }
 
-    try_symlink(&rel_target, link_path)
-        .attach_with(|| format!("Failed to create symlink {} -> {}", link_path.display(), rel_target.display()))?;
+    if let Err(e) = try_symlink(&rel_target, link_path) {
+        #[cfg(target_os = "windows")]
+        if e.raw_os_error() == Some(1314) {
+            if std::fs::hard_link(&target, link_path).is_err() {
+                std::fs::copy(&target, link_path).attach_with(|| {
+                    format!(
+                        "Failed to copy CAS object {} to {}",
+                        target.display(),
+                        link_path.display()
+                    )
+                })?;
+            }
+            return Ok(());
+        }
+        bail!(
+            "Failed to create symlink {} -> {}: {e}",
+            link_path.display(),
+            rel_target.display()
+        );
+    }
     Ok(())
 }
 

@@ -10,6 +10,7 @@ import json
 import re
 from pathlib import Path
 from collections import Counter
+from typing import Optional, Any, Dict
 from dotenv import load_dotenv
 import logging
 
@@ -36,20 +37,13 @@ if ENABLE_INKPADS_LAYOUT:
 
 
 
-# Webhook Configuration (optional early handover)
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
-CF_CLIENT_ID = os.getenv('CF_ACCESS_CLIENT_ID')
-CF_CLIENT_SECRET = os.getenv('CF_ACCESS_CLIENT_SECRET')
-
-def get_webhook_headers():
-    headers = {}
-    if WEBHOOK_SECRET:
-        headers["X-Webhook-Secret"] = WEBHOOK_SECRET
-    if CF_CLIENT_ID and CF_CLIENT_SECRET:
-        headers["CF-Access-Client-Id"] = CF_CLIENT_ID
-        headers["CF-Access-Client-Secret"] = CF_CLIENT_SECRET
-    return headers
+# Clan Battles Telemetry Bridge Configuration (Smart Producer - Phase 1)
+ENABLE_SMART_PRODUCER = os.getenv('ENABLE_SMART_PRODUCER', 'false').lower() in ('true', '1', 'yes')
+CB_TELEMETRY_WEBHOOK_URL = os.getenv('CB_TELEMETRY_WEBHOOK_URL')
+try:
+    CB_TELEMETRY_TIMEOUT_SEC = float(os.getenv('CB_TELEMETRY_TIMEOUT_SEC', '5.0'))
+except (ValueError, TypeError):
+    CB_TELEMETRY_TIMEOUT_SEC = 5.0
 
 def find_renderer():
     if RENDERER_PATH:
@@ -868,63 +862,224 @@ def get_opponent_clan(header, min_players=4):
 
 
 
-async def send_webhook_payload(replay_path, red_replay_path, session_id):
-    if not WEBHOOK_URL:
-        return
-    
-    max_retries = 3
-    headers = get_webhook_headers()
-    loop = asyncio.get_event_loop()
-    
-    for attempt in range(1, max_retries + 1):
-        if not replay_path.exists():
-            logger.error(f"[{session_id}] Cannot upload payload: replay file {replay_path} not found.")
-            break
-            
+def build_telemetry_dict(
+    header: dict,
+    analyzer_inst: Any,
+    outcome: str,
+    winner_name: Optional[str],
+    friendly_clan: str,
+    enemy_clan: str,
+    map_name: str,
+    session_id: str
+) -> Optional[dict]:
+    """
+    Constructs match telemetry adhering strictly to telemetry.schema.json (v1.0.0).
+    Reuses metadata already parsed by ReplayAnalyzer (line 1133) with zero extra CPU overhead.
+    """
+    meta = analyzer_inst.get_metadata() if analyzer_inst else {}
+
+    # 1. Resolve Arena ID (must be non-empty numeric string matching ^[0-9]+$)
+    raw_arena_id = meta.get("arena_id") or header.get("arenaUniqueID") or ""
+    arena_id = str(raw_arena_id).strip()
+    if not arena_id.isdigit():
+        logger.debug(f"[{session_id}] Telemetry skipped: arena_id '{arena_id}' is non-numeric or missing.")
+        return None
+
+    # 2. Match Date & Fingerprint ({date}_{arena_id})
+    date_time = meta.get("match_date") or header.get("dateTime") or ""
+    match_fingerprint = ""
+    if date_time:
+        from datetime import datetime
         try:
-            logger.info(f"[{session_id}] Webhook transmission attempt {attempt}/{max_retries} initiated.")
-            
-            files = {}
-            fh_to_close = []
-            try:
-                f_green = open(replay_path, 'rb')
-                fh_to_close.append(f_green)
-                files['file'] = (replay_path.name, f_green, 'application/octet-stream')
-                
-                if red_replay_path and red_replay_path.exists():
-                    f_red = open(red_replay_path, 'rb')
-                    fh_to_close.append(f_red)
-                    files['red_file'] = (red_replay_path.name, f_red, 'application/octet-stream')
-                
-                def post_payload():
-                    return requests.post(WEBHOOK_URL, files=files, headers=headers, timeout=60)
-                
-                resp = await loop.run_in_executor(None, post_payload)
-            finally:
-                for fh in fh_to_close:
-                    try:
-                        fh.close()
-                    except Exception as ce:
-                        logger.warning(f"[{session_id}] Error closing file handle: {ce}")
-            
-            if resp.status_code in (200, 201, 202):
-                logger.info(f"[{session_id}] Webhook transmission successful.")
-                return
-            elif resp.status_code in (400, 401, 403, 404):
-                logger.error(f"[{session_id}] Webhook rejected with status {resp.status_code}.")
-                break
+            dt = datetime.strptime(date_time, "%d.%m.%Y %H:%M:%S")
+            match_fingerprint = f"{dt.strftime('%Y-%m-%d_%H-%M-%S')}_{arena_id}"
+        except Exception:
+            clean_dt = re.sub(r'[^0-9]', '_', date_time).strip('_')
+            match_fingerprint = f"{clean_dt}_{arena_id}"
+    if not match_fingerprint:
+        match_fingerprint = f"match_{arena_id}"
+
+    # 3. Outcome Normalization ("VICTORY", "DEFEAT", "DRAW", "UNKNOWN")
+    norm_outcome = str(outcome).upper().strip() if outcome else ""
+    if norm_outcome not in ("VICTORY", "DEFEAT", "DRAW"):
+        meta_res = str(meta.get("result", "")).upper().strip()
+        if meta_res in ("VICTORY", "DEFEAT", "DRAW"):
+            norm_outcome = meta_res
+        else:
+            norm_outcome = "UNKNOWN"
+
+    # 4. Winner Team
+    resolved_winner = winner_name
+    if not resolved_winner:
+        if norm_outcome == "VICTORY":
+            resolved_winner = friendly_clan or "Friendly Team"
+        elif norm_outcome == "DEFEAT":
+            resolved_winner = enemy_clan or "Enemy Team"
+        else:
+            resolved_winner = None
+
+    # 5. Clans
+    f_clan = friendly_clan or meta.get("friendly_clan") or "Unknown"
+    e_clan = enemy_clan or meta.get("enemy_clan") or "Unknown"
+
+    # 6. Duration
+    try:
+        game_dur = float(meta.get("game_duration") or header.get("duration") or 1200.0)
+    except (ValueError, TypeError):
+        game_dur = 1200.0
+
+    # 7. Events Count & Team Scores
+    events_count = len(analyzer_inst.events) if (analyzer_inst and hasattr(analyzer_inst, "events")) else 0
+    scores = [0, 0]
+    if analyzer_inst and hasattr(analyzer_inst, "team_scores") and len(analyzer_inst.team_scores) >= 2:
+        try:
+            scores = [int(analyzer_inst.team_scores[0]), int(analyzer_inst.team_scores[1])]
+        except (ValueError, TypeError):
+            scores = [0, 0]
+
+    # 8. Player Stats (strictly compliant with telemetry.schema.json)
+    raw_stats = meta.get("player_stats") or []
+    sanitized_player_stats = []
+    valid_classes = {"DD", "CA", "CL", "BB", "CV", "SS", "Unknown"}
+
+    for p in raw_stats:
+        if not isinstance(p, dict):
+            continue
+        s_class = str(p.get("ship_class", "CA")).strip()
+        if s_class not in valid_classes:
+            s_class = "Unknown"
+
+        sanitized_player_stats.append({
+            "account_id": p.get("account_id"),
+            "name": str(p.get("name") or "Unknown"),
+            "clan": str(p.get("clan") or ""),
+            "team": 0 if p.get("team") == 0 else 1,
+            "ship_id": p.get("ship_id"),
+            "ship_name": str(p.get("ship_name") or "Unknown"),
+            "ship_index": str(p.get("ship_index") or ""),
+            "ship_class": s_class,
+            "has_radar": bool(p.get("has_radar", False)),
+            "has_hydro": bool(p.get("has_hydro", False)),
+            "damage": float(p.get("damage") or 0),
+            "received": float(p.get("received") or 0),
+            "spotting": float(p.get("spotting") or 0),
+            "potential": float(p.get("potential") or 0),
+            "wpa": float(p.get("wpa") or 0.0),
+            "uwpa": float(p.get("uwpa") or 0.0),
+            "survived": bool(p.get("survived", False)),
+        })
+
+    return {
+        "schema_version": "1.0.0",
+        "producer": "inkpads-minimap-renderer-bot",
+        "arena_id": arena_id,
+        "match_fingerprint": match_fingerprint,
+        "outcome": norm_outcome,
+        "winner_team": resolved_winner,
+        "friendly_clan": f_clan,
+        "enemy_clan": e_clan,
+        "map_name": map_name or "Unknown Map",
+        "date_time": date_time,
+        "game_duration": game_dur,
+        "events_count": events_count,
+        "team_scores": scores,
+        "player_stats": sanitized_player_stats,
+    }
+
+
+async def dispatch_smart_telemetry(
+    client: discord.Client,
+    webhook_url: str,
+    replay_bytes: bytes,
+    replay_filename: str,
+    header: dict,
+    analyzer_inst: Any,
+    outcome: str,
+    winner_name: Optional[str],
+    friendly_clan: str,
+    enemy_clan: str,
+    map_name: str,
+    session_id: str,
+    timeout_sec: float = 5.0
+):
+    """
+    Shadow-dispatches match telemetry and raw replay binary to private Discord buffer.
+    Immune to race conditions with replay_path.unlink() via in-memory replay_bytes.
+    Bounded by hard timeout circuit breaker (default 5.0s).
+    """
+    if not ENABLE_SMART_PRODUCER or not webhook_url:
+        return
+
+    try:
+        telemetry_dict = build_telemetry_dict(
+            header=header,
+            analyzer_inst=analyzer_inst,
+            outcome=outcome,
+            winner_name=winner_name,
+            friendly_clan=friendly_clan,
+            enemy_clan=enemy_clan,
+            map_name=map_name,
+            session_id=session_id
+        )
+        if not telemetry_dict:
+            return
+
+        # Build Discord Embed per SPEC-01 Section 4
+        f_clan = telemetry_dict["friendly_clan"]
+        e_clan = telemetry_dict["enemy_clan"]
+        outcome_val = telemetry_dict["outcome"]
+        arena_id_val = telemetry_dict["arena_id"]
+        date_time_val = telemetry_dict["date_time"]
+        duration_sec = telemetry_dict["game_duration"]
+        minutes = int(duration_sec // 60)
+        seconds = int(duration_sec % 60)
+
+        if outcome_val == "VICTORY":
+            embed_color = 0x2ECC71  # Green
+        elif outcome_val == "DEFEAT":
+            embed_color = 0xE74C3C  # Red
+        else:
+            embed_color = 0xF1C40F  # Amber
+
+        embed = discord.Embed(
+            title=f"CB Telemetry: [{f_clan}] vs [{e_clan}]",
+            description=f"**Result:** {outcome_val} | **Map:** {telemetry_dict['map_name']}",
+            color=embed_color
+        )
+        embed.add_field(name="Arena ID", value=f"`{arena_id_val}`", inline=True)
+        embed.add_field(name="Date", value=f"`{date_time_val}`", inline=True)
+        embed.add_field(name="Duration", value=f"`{minutes}m {seconds:02d}s`", inline=True)
+        embed.set_footer(text="InkPads Smart Producer v1.0.0 • Pre-Chewed Ingest")
+
+        # Build multipart attachments
+        import io
+        replay_file = discord.File(io.BytesIO(replay_bytes), filename=replay_filename)
+        json_bytes = json.dumps(telemetry_dict, indent=2, ensure_ascii=False).encode('utf-8')
+        telemetry_file = discord.File(io.BytesIO(json_bytes), filename="telemetry.json")
+
+        async def _do_send():
+            session = getattr(client.http, "_HTTPClient__session", None) if client and hasattr(client, "http") else None
+            if session and not session.closed:
+                wh = discord.Webhook.from_url(webhook_url, session=session)
+                await wh.send(embed=embed, files=[replay_file, telemetry_file])
             else:
-                logger.warning(f"[{session_id}] Webhook failed with status {resp.status_code}.")
-                
-        except Exception as e:
-            logger.error(f"[{session_id}] Exception during webhook transmission: {e}")
-        
-        if attempt < max_retries:
-            backoff = 2 ** attempt
-            logger.info(f"[{session_id}] Retrying webhook transmission in {backoff} seconds.")
-            await asyncio.sleep(backoff)
-            
-    logger.error(f"[{session_id}] Webhook transmission failed after {max_retries} attempts.")
+                async with aiohttp.ClientSession() as fallback_session:
+                    wh = discord.Webhook.from_url(webhook_url, session=fallback_session)
+                    await wh.send(embed=embed, files=[replay_file, telemetry_file])
+
+        # Enforce timeout circuit breaker (Python 3.10 and 3.11+ compatible)
+        if hasattr(asyncio, "timeout"):
+            async with asyncio.timeout(timeout_sec):
+                await _do_send()
+        else:
+            await asyncio.wait_for(_do_send(), timeout=timeout_sec)
+
+        logger.info(f"[{session_id}] Smart Producer telemetry dispatched successfully for arena {arena_id_val}.")
+
+    except asyncio.TimeoutError:
+        logger.warning(f"[{session_id}] Smart Producer dispatch timed out after {timeout_sec}s. Dropped safely.")
+    except Exception as exc:
+        logger.debug(f"[{session_id}] Smart Producer dispatch failed safely: {exc}")
 
 
 
@@ -976,7 +1131,7 @@ async def _render_impl(
         render_queue.append(session_id)
         await interaction.edit_original_response(embed=embed)
 
-    webhook_task = None
+    analyzer_inst = None
     
     try:
         # Block until we acquire a render slot
@@ -1043,17 +1198,10 @@ async def _render_impl(
         embed.description = f"{info_line}\n\nStatus: [░░░░░░░░░░] 0%\nRendering..."
         await interaction.edit_original_response(embed=embed)
 
-        # 2. Early verification and Webhook handover
-        if WEBHOOK_URL:
-            try:
-                match_group = str(header.get("matchGroup", "")).lower()
-                game_type = str(header.get("gameType", "")).lower()
-                is_clan_battle = any(x in match_group or x in game_type for x in ("clan", "cvc", "cw"))
-                
-                if is_clan_battle:
-                    webhook_task = asyncio.create_task(send_webhook_payload(replay_path, red_replay_path, session_id))
-            except Exception as e:
-                logger.warning(f"[{session_id}] Early verification failed: {e}")
+        # 2. Clan Battle Detection
+        match_group = str(header.get("matchGroup", "")).lower()
+        game_type = str(header.get("gameType", "")).lower()
+        is_clan_battle = any(x in match_group or x in game_type for x in ("clan", "cvc", "cw"))
 
         # 3. Build CLI Command
         guild_limit_bytes = 10 * 1024 * 1024
@@ -1193,6 +1341,32 @@ async def _render_impl(
             embed.color = embed_color
             embed.description = info_line
             await interaction.edit_original_response(embed=embed, attachments=[file])
+
+            # 8. Smart Telemetry Dispatch (Non-blocking background harvest for Clan Battles)
+            if ENABLE_SMART_PRODUCER and is_clan_battle and CB_TELEMETRY_WEBHOOK_URL:
+                try:
+                    replay_bytes = replay_path.read_bytes()
+                    telemetry_task = asyncio.create_task(
+                        dispatch_smart_telemetry(
+                            client=interaction.client,
+                            webhook_url=CB_TELEMETRY_WEBHOOK_URL,
+                            replay_bytes=replay_bytes,
+                            replay_filename=replay.filename,
+                            header=header,
+                            analyzer_inst=analyzer_inst,
+                            outcome=outcome,
+                            winner_name=winner_name,
+                            friendly_clan=f_clan,
+                            enemy_clan=e_clan,
+                            map_name=map_name,
+                            session_id=session_id,
+                            timeout_sec=CB_TELEMETRY_TIMEOUT_SEC,
+                        )
+                    )
+                    background_tasks.add(telemetry_task)
+                    telemetry_task.add_done_callback(background_tasks.discard)
+                except Exception as te:
+                    logger.debug(f"[{session_id}] Failed to spawn smart telemetry task: {te}")
         else:
             logger.error(f"[{session_id}] Render process failed with code {process.returncode}")
             logger.error(f"STDOUT:\n{stdout.decode('utf-8', errors='ignore')}")
@@ -1237,12 +1411,6 @@ async def _render_impl(
         logger.exception(f"[{session_id}] Error during render process")
         await interaction.followup.send("An internal error occurred during the render.")
     finally:
-        if webhook_task:
-            try:
-                await webhook_task
-            except Exception as we:
-                logger.error(f"[{session_id}] Error awaiting webhook: {we}")
-                
         try:
             if replay_path.exists(): replay_path.unlink()
             if red_replay_path and red_replay_path.exists(): red_replay_path.unlink()
