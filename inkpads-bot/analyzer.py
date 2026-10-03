@@ -669,7 +669,7 @@ class ReplayAnalyzer:
                                 "damage_amount": dmg,
                                 "percent_health_lost": round(pct, 1)
                             }
-                            self.add_event(clock, "CRITICAL_HIT", f"{s['name']} took critical damage: {dmg} ({pct:.1f}%)", team=s["team"], metadata=metadata)
+                            self.add_event(clock, "CRITICAL_HIT", f"{s['name']} took critical damage: {dmg:.1f} ({pct:.1f}%)", team=s["team"], metadata=metadata)
                 self.player_stats[eid]["current_health"] = val
 
         if prop == "team_scores" and isinstance(val, list) and len(val) >= 2:

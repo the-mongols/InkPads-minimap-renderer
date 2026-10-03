@@ -36,6 +36,7 @@ const VFS_DIRS: &[&str] = &[
     "gui/crew_commander/skills",
     "gui/modernization_icons",
     "gui/signal_flags",
+    "gui/dogTags",
     "scripts/entity_defs",
 ];
 

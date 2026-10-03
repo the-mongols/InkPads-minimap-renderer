@@ -62,11 +62,11 @@ impl From<CodecArg> for VideoCodec {
 #[command(name = "Minimap Renderer")]
 struct Args {
     /// Path to the World of Warships game directory
-    #[arg(short = 'g', long = "game", conflicts_with = "extracted_dir", required_unless_present_any = ["generate_config", "check_encoder", "extracted_dir"])]
+    #[arg(short = 'g', long = "game", required_unless_present_any = ["generate_config", "check_encoder", "extracted_dir"])]
     game_dir: Option<PathBuf>,
 
     /// Path to pre-extracted renderer data directory (alternative to --game)
-    #[arg(long, conflicts_with = "game_dir", required_unless_present_any = ["generate_config", "check_encoder", "game_dir"])]
+    #[arg(long, required_unless_present_any = ["generate_config", "check_encoder", "game_dir"])]
     extracted_dir: Option<PathBuf>,
 
     /// Output MP4 file path, for dumping may not be specified to dump to stdout instead
@@ -301,14 +301,33 @@ fn main() -> Result<(), Report> {
         info!(player = %r.meta.playerName, "Loaded merge replay");
     }
 
-    // Load game data from either a full game install or pre-extracted directory
-    let resolved_extracted: Option<PathBuf> =
-        args.extracted_dir.as_ref().map(|extracted| resolve_extracted_dir(extracted, &replay_version)).transpose()?;
+    // Load game data from either a pre-extracted directory or full game install
+    let mut resolved_extracted: Option<PathBuf> = None;
+    if let Some(ref extracted) = args.extracted_dir {
+        match resolve_extracted_dir(extracted, &replay_version) {
+            Ok(p) => resolved_extracted = Some(p),
+            Err(e) => {
+                if args.game_dir.is_some() {
+                    warn!("Extracted dir check failed ({e}); falling back to --game directory");
+                } else {
+                    return Err(e);
+                }
+            }
+        }
+    }
 
     let (vfs_owned, specs, game_params, controller_game_params) = if let Some(ref resolved) = resolved_extracted {
-        load_from_extracted(resolved, &replay_version, args.recreate_game_params)?
+        match load_from_extracted(resolved, &replay_version, args.recreate_game_params) {
+            Ok(data) => data,
+            Err(e) if args.game_dir.is_some() => {
+                warn!("Failed loading from extracted data ({e}); falling back to --game directory");
+                let game_dir = args.game_dir.as_ref().unwrap();
+                load_from_game_dir(game_dir, &replay_version)?
+            }
+            Err(e) => return Err(e),
+        }
     } else {
-        let game_dir = args.game_dir.as_ref().expect("game directory is required");
+        let game_dir = args.game_dir.as_ref().expect("game directory or extracted directory is required");
         load_from_game_dir(game_dir, &replay_version)?
     };
     let vfs = &vfs_owned;
@@ -451,6 +470,7 @@ fn main() -> Result<(), Report> {
         .or_else(|| load_packed_image("gui/dogTags/default.png", vfs))
         .or_else(|| load_packed_image("gui/dog_tags/default.png", vfs))
         .or_else(|| load_packed_image("gui/dogtags/default.png", vfs))
+        .or_else(|| image::load_from_memory(include_bytes!("DT_Default.png")).ok())
         .map(|img| img.into_rgba8());
 
     if default_emblem.is_none() {

@@ -61,11 +61,19 @@ pub fn load_game_resources(game_dir: &Path, replay_version: &Version) -> Result<
     let idx_dir = game_dir.join("bin").join(build.to_string()).join("idx");
     let mut idx_files = Vec::new();
 
-    for entry in read_dir(&idx_dir)? {
-        let entry = entry?;
-        if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
-            let file_data = std::fs::read(entry.path())?;
-            idx_files.push(idx::parse(&file_data)?);
+    let mut entries: Vec<_> = read_dir(&idx_dir)?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .collect();
+    entries.sort_by_key(|e| e.file_name());
+
+    for entry in entries {
+        let file_data = std::fs::read(entry.path())?;
+        match idx::parse(&file_data) {
+            Ok(parsed) => idx_files.push(parsed),
+            Err(e) => {
+                tracing::warn!(path = ?entry.path(), error = ?e, "Failed to parse idx file, skipping");
+            }
         }
     }
 
@@ -122,21 +130,25 @@ pub fn build_game_vfs_for_build(game_dir: &Path, build: u32) -> Result<VfsPath, 
 
     let mut idx_files = Vec::new();
     let mut idx_errors = Vec::new();
-    for entry in read_dir(&idx_dir).context_with(|| format!("Failed to read idx dir: {}", idx_dir.display()))? {
-        let entry = entry?;
-        if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
-            let path = entry.path();
-            let data = std::fs::read(&path).attach_with(|| format!("path: {}", path.display()))?;
-            match idx::parse(&data) {
-                Ok(parsed) => idx_files.push(parsed),
-                Err(e) => {
-                    let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-                    // Log the first 16 bytes as hex for debugging unknown formats
-                    let header_hex: String =
-                        data.iter().take(16).map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ");
-                    eprintln!("WARN: Failed to parse idx file {filename}: {e} (header: {header_hex})");
-                    idx_errors.push((filename, e));
-                }
+    let mut entries: Vec<_> = read_dir(&idx_dir)
+        .context_with(|| format!("Failed to read idx dir: {}", idx_dir.display()))?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .collect();
+    entries.sort_by_key(|e| e.file_name());
+
+    for entry in entries {
+        let path = entry.path();
+        let data = std::fs::read(&path).attach_with(|| format!("path: {}", path.display()))?;
+        match idx::parse(&data) {
+            Ok(parsed) => idx_files.push(parsed),
+            Err(e) => {
+                let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                // Log the first 16 bytes as hex for debugging unknown formats
+                let header_hex: String =
+                    data.iter().take(16).map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ");
+                eprintln!("WARN: Failed to parse idx file {filename}: {e} (header: {header_hex})");
+                idx_errors.push((filename, e));
             }
         }
     }

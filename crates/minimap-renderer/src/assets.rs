@@ -1249,7 +1249,7 @@ pub fn compose_dog_tag_emblem<GP: GameParamProvider>(
         match shape_img {
             Some(img) => img,
             None => {
-                warn!("Dog tag: failed to load BackgroundShape layer for {}", sl.index);
+                debug!("Dog tag: failed to load BackgroundShape layer for {}", sl.index);
                 return None;
             }
         }
@@ -1261,7 +1261,7 @@ pub fn compose_dog_tag_emblem<GP: GameParamProvider>(
             match load_packed_image(&sym_path, vfs).map(|i| i.into_rgba8()) {
                 Some(img) => img,
                 None => {
-                    warn!("Dog tag: failed to load unique/premium base symbol {}", bs.index);
+                    debug!("Dog tag: failed to load unique/premium base symbol {}", bs.index);
                     return None;
                 }
             }
@@ -1271,7 +1271,7 @@ pub fn compose_dog_tag_emblem<GP: GameParamProvider>(
             match load_packed_image(&shape_path_border, vfs).map(|i| i.into_rgba8()) {
                 Some(img) => img,
                 None => {
-                    warn!("Dog tag: failed to load default BackgroundShape PCNA001");
+                    debug!("Dog tag: failed to load default BackgroundShape PCNA001");
                     return None;
                 }
             }

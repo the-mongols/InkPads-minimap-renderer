@@ -483,6 +483,8 @@ pub struct MinimapRenderer<'a> {
     self_emblem: Option<RgbaImage>,
     /// Cached self player entity ID (populated from controller state).
     self_entity_id: Option<EntityId>,
+    /// Whether custom dog tag emblem resolution has already been attempted for self player.
+    self_dog_tag_resolved: bool,
 
     /// Static per-entity facts scanned from all merged replay streams at
     /// session load. Lets the roster show max HP, ship config, and inventory
@@ -555,6 +557,7 @@ impl<'a> MinimapRenderer<'a> {
             self_silhouette: None,
             self_emblem: None,
             self_entity_id: None,
+            self_dog_tag_resolved: false,
             vehicle_facts: HashMap::new(),
             damage_events: HashMap::new(),
             has_merged_perspectives: false,
@@ -634,20 +637,31 @@ impl<'a> MinimapRenderer<'a> {
     /// resolves them against `game_params`, loads and composites the PNG layers
     /// from the VFS, and replaces `self_emblem` with the result (if successful).
     ///
-    /// Should be called once after `populate_players` has run and the VFS is
-    /// available.  If the dog tag is not available or any asset is missing the
-    /// current `self_emblem` (i.e. the default fallback) is preserved.
+    /// Should be called after `populate_players` has run and the VFS is
+    /// available. If the self player is not yet known, returns `false` so the
+    /// caller can retry. Once the self player is known, the attempt is performed
+    /// exactly once and returns `true` (whether composition succeeded or preserved
+    /// the fallback emblem) to avoid repeating failed disk/VFS lookups and log spam
+    /// on every tick.
     pub fn resolve_self_dog_tag_emblem(&mut self, vfs: &wowsunpack::vfs::VfsPath) -> bool {
+        if self.self_dog_tag_resolved {
+            return true;
+        }
+
         let Some(self_eid) = self.self_entity_id else {
             return false; // self not yet known
         };
+
+        // Self player entity is identified. Attempt resolution exactly once.
+        self.self_dog_tag_resolved = true;
+
         let Some(dog_tag_value) = self.player_dog_tags.get(&self_eid) else {
-            return false; // no dog tag for self
+            return true; // no dog tag for self
         };
 
         // The dog tag field is an array of integer component IDs.
         let Some(arr) = dog_tag_value.as_array() else {
-            return false;
+            return true;
         };
 
         let component_ids: Vec<wows_replays::types::GameParamId> = arr
@@ -656,17 +670,16 @@ impl<'a> MinimapRenderer<'a> {
             .collect();
 
         if component_ids.is_empty() {
-            return false;
+            return true;
         }
 
         if let Some(emblem) = crate::assets::compose_dog_tag_emblem(&component_ids, self.game_params, vfs) {
             self.self_emblem = Some(emblem);
             tracing::info!(entity_id = %self_eid, ?component_ids, "Loaded custom dog tag emblem for self player");
-            true
         } else {
-            tracing::warn!(entity_id = %self_eid, ?component_ids, "Failed to compose dog tag emblem for self player");
-            false
+            tracing::warn!(entity_id = %self_eid, ?component_ids, "Failed to compose dog tag emblem for self player; preserving fallback emblem");
         }
+        true
     }
 
     /// Install a pre-scanned per-entity facts cache. Driven by
@@ -728,6 +741,7 @@ impl<'a> MinimapRenderer<'a> {
         self.position_history.clear();
         // Note: self_silhouette is an asset, not frame state — preserved across reset.
         self.self_entity_id = None;
+        self.self_dog_tag_resolved = false;
     }
 
     /// Populate player info from controller state (once).

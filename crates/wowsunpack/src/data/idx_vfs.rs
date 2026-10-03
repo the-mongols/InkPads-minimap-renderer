@@ -203,7 +203,15 @@ where
         if file_entry.compression_info != 0 {
             let mut data = Vec::with_capacity(file_entry.unpacked_size as usize);
             let mut decoder = DeflateDecoder::new(source_bytes);
-            std::io::copy(&mut decoder, &mut data).map_err(|e| VfsError::from(VfsErrorKind::IoError(e)))?;
+            std::io::copy(&mut decoder, &mut data).map_err(|e| {
+                VfsError::from(VfsErrorKind::IoError(std::io::Error::new(
+                    e.kind(),
+                    format!(
+                        "Decompressing '{}' from '{}' (offset {}, size {}, unpacked {}): {}",
+                        path, file_entry.volume_filename, file_entry.offset, file_entry.size, file_entry.unpacked_size, e
+                    ),
+                )))
+            })?;
             Ok(Box::new(Cursor::new(data)))
         } else {
             let data = source_bytes.to_vec();
@@ -318,7 +326,15 @@ mod async_impl {
             if file_entry.compression_info != 0 {
                 let mut data = Vec::with_capacity(file_entry.unpacked_size as usize);
                 let mut decoder = DeflateDecoder::new(source_bytes);
-                std::io::copy(&mut decoder, &mut data).map_err(|e| VfsError::from(VfsErrorKind::IoError(e)))?;
+                std::io::copy(&mut decoder, &mut data).map_err(|e| {
+                    VfsError::from(VfsErrorKind::IoError(std::io::Error::new(
+                        e.kind(),
+                        format!(
+                            "Decompressing '{}' from '{}' (offset {}, size {}, unpacked {}): {}",
+                            path, file_entry.volume_filename, file_entry.offset, file_entry.size, file_entry.unpacked_size, e
+                        ),
+                    )))
+                })?;
                 Ok(Box::new(async_std::io::Cursor::new(data)))
             } else {
                 let data = source_bytes.to_vec();

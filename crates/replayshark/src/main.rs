@@ -439,33 +439,40 @@ fn load_game_data(
     extracted_dir: Option<&str>,
     replay_version: &Version,
 ) -> anyhow::Result<Vec<EntitySpec>> {
-    let specs = match (game_dir, extracted_dir) {
-        (Some(game_dir), _) => {
-            let resources =
-                game_data::load_game_resources(Path::new(game_dir), replay_version).map_err(|e| anyhow!("{}", e))?;
-            resources.specs
+    if let Some(extracted) = extracted_dir {
+        match resolve_extracted_dir(Path::new(extracted), replay_version) {
+            Ok(resolved_dir) => {
+                let vfs_dir = resolved_dir.join("vfs");
+                let scripts_dir = if vfs_dir.exists() { vfs_dir } else { resolved_dir };
+                let loader = DataFileWithCallback::new(|path| {
+                    let path = Path::new(path);
+                    let file_data = std::fs::read(scripts_dir.join(path))?;
+                    Ok(Cow::Owned(file_data))
+                });
+                match parse_scripts(&loader) {
+                    Ok(specs) => return Ok(specs),
+                    Err(e) if game_dir.is_some() => {
+                        eprintln!("Failed to parse scripts from extracted dir ({e:?}); falling back to game directory");
+                    }
+                    Err(e) => return Err(anyhow!("Failed to parse entity specs: {e:?}")),
+                }
+            }
+            Err(e) => {
+                if game_dir.is_none() {
+                    return Err(e);
+                }
+                eprintln!("Extracted dir check failed ({e}); falling back to game directory");
+            }
         }
-        (None, Some(extracted)) => {
-            let extracted_dir = resolve_extracted_dir(Path::new(extracted), replay_version)?;
-            let vfs_dir = extracted_dir.join("vfs");
-            let scripts_dir = if vfs_dir.exists() { vfs_dir } else { extracted_dir };
-            let loader = DataFileWithCallback::new(|path| {
-                let path = Path::new(path);
+    }
 
-                let file_data = std::fs::read(scripts_dir.join(path))
-                    .with_context(|| format!("failed to read game file from extracted dir: {:?}", path))
-                    .unwrap();
+    if let Some(game_dir) = game_dir {
+        let resources =
+            game_data::load_game_resources(Path::new(game_dir), replay_version).map_err(|e| anyhow!("{}", e))?;
+        return Ok(resources.specs);
+    }
 
-                Ok(Cow::Owned(file_data))
-            });
-            parse_scripts(&loader).unwrap()
-        }
-        (None, None) => {
-            return Err(anyhow!("Game directory or extracted files directory must be supplied"));
-        }
-    };
-
-    Ok(specs)
+    Err(anyhow!("Game directory or extracted files directory must be supplied"))
 }
 
 fn audit_types(specs: &[EntitySpec]) {
