@@ -2,6 +2,7 @@
 .env
 *.log
 minimap_renderer.exe
+replayshark.exe
 inkpads-bot/temp/
 temp/
 *.mp4
@@ -15,6 +16,7 @@ temp/
 /maintenance.md
 local_docs/
 docs/
+specs/
 
 # Data and Artifacts
 data/samples/

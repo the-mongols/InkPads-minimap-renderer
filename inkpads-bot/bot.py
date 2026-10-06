@@ -711,10 +711,15 @@ def resolve_match_outcome(header, stderr_text: str):
 
     return outcome, winner_name, embed_color
 
-def get_battle_type_title(match_group, game_type):
+def get_battle_type_title(match_group, game_type, scenario=""):
     group = str(match_group).strip().lower() if match_group else ""
     gtype = str(game_type).strip().lower() if game_type else ""
-    if group == "pvp":
+    scen = str(scenario).strip().lower() if scenario else ""
+    combined = f"{group} {gtype} {scen}"
+
+    if "tournament" in combined or "four areas" in combined or "four_areas" in combined or "kots" in combined:
+        return "Tournament Battle"
+    elif group == "pvp":
         return "Random Battle"
     elif group == "ranked":
         return "Ranked Battle"
@@ -778,7 +783,9 @@ def get_game_mode_display_name(match_group, game_type, scenario="", logic=""):
     combined = f"{gtype} {scen} {log}"
 
     # Specific match mode / rule set detection from replay metadata
-    if "clandomination" in combined or "clan_domination" in combined or "clan domination" in combined:
+    if "tournament" in combined or "four areas" in combined or "four_areas" in combined or "kots" in combined:
+        return "Tournament Domination"
+    elif "clandomination" in combined or "clan_domination" in combined or "clan domination" in combined:
         return "ClanDomination"
     elif "domination" in combined:
         return "Domination"
@@ -1308,19 +1315,25 @@ async def _render_impl(
             if not e_clan and opponent_clan and opponent_clan != "N/A":
                 e_clan = opponent_clan
 
+            is_tournament = "tournament" in (str(match_group) + " " + str(game_type) + " " + str(scenario)).lower() or "four areas" in str(scenario).lower() or "kots" in str(match_group).lower()
+            is_scrim = bool(f_clan and e_clan and f_clan.upper() == e_clan.upper())
+
             details = []
-            if is_clan_battle or (f_clan and e_clan):
-                # Title format for Clan Battles: [CLAN1] vs [CLAN2]
+            if is_clan_battle or is_tournament or is_scrim or (f_clan and e_clan):
+                # Title format for Clan Battles & Tournaments: [CLAN1] vs [CLAN2]
+                prefix = "[Tournament] " if is_tournament else ("[Scrim] " if is_scrim else "")
                 if f_clan and e_clan:
-                    embed_title = f"[{f_clan}] vs [{e_clan}]"
+                    embed_title = f"{prefix}[{f_clan}] vs [{e_clan}]"
                 elif e_clan:
-                    embed_title = f"Clan Battle vs [{e_clan}]"
+                    embed_title = f"{prefix}vs [{e_clan}]"
+                elif is_tournament:
+                    embed_title = "Tournament Battle Render Complete"
                 else:
                     embed_title = "Clan Battle Render Complete"
 
                 # Subtext for Clan Battles: **Victory / Defeat:** map | **Ship:** ship | **Date:** date
                 if not is_dual:
-                    result_label = outcome if outcome else "Clan Battle"
+                    result_label = outcome if outcome else ("Tournament Battle" if is_tournament else "Clan Battle")
                     details.append(f"**{result_label}:** {map_name}")
                 else:
                     if mode_name and map_name: details.append(f"**{mode_name}:** {map_name}")
@@ -1328,7 +1341,7 @@ async def _render_impl(
                     if winner_name: details.append(f"**Victory:** {winner_name}")
             else:
                 # Title format for General Renders: <Battle Type> Render Complete (e.g. Random Battle Render Complete)
-                battle_type_title = get_battle_type_title(match_group, game_type)
+                battle_type_title = get_battle_type_title(match_group, game_type, scenario)
                 embed_title = f"{battle_type_title} Render Complete"
 
                 # Subtext for General Renders: **<Battle Mode>:** map | **Ship:** ship | **Date:** date

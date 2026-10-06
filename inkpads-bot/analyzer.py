@@ -124,6 +124,17 @@ class ReplayAnalyzer:
                         name = v.get("name")
                         relation = v.get("relation", 2)
                         
+                        # Spectator filtering: relation 3, observer flag, or missing ship
+                        is_spectator = (
+                            relation == 3 or
+                            v.get("isSpectator") is True or
+                            v.get("is_spectator") is True or
+                            relation not in (0, 1, 2) or
+                            not ship_id or ship_id == 0
+                        )
+                        if is_spectator:
+                            continue
+                        
                         team_id = 0 if relation in (0, 1) else 1
                         
                         if name and ship_id is not None:
@@ -402,6 +413,18 @@ class ReplayAnalyzer:
                     ship_id = p.get("meta_ship_id") or p.get("ship_id")
                     spa_id = p.get("db_id") or p.get("spa_id")
                     max_health = p.get("maxHealth") or p.get("max_health") or 0
+                    relation = p.get("relation")
+
+                    # Spectator guard in player_states (coaches, referees, observers)
+                    is_spectator = (
+                        team_id not in (0, 1) or
+                        relation == 3 or
+                        p.get("isSpectator") is True or
+                        p.get("is_spectator") is True or
+                        (ship_id == 0 and max_health == 0)
+                    )
+                    if is_spectator:
+                        continue
 
                     # Fallback to header vehicles if missing
                     if not ship_id or ship_id == 0:
