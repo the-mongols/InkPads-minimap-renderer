@@ -14,8 +14,18 @@ pub struct GameVersionManifest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameVersionEntry {
     pub version: String,
+    #[serde(alias = "client_depot_id", default)]
     pub depot_id: u32,
+    #[serde(alias = "client_manifest_id", default)]
     pub manifest_id: String,
+    #[serde(default)]
+    pub content_depot_id: Option<u32>,
+    #[serde(default)]
+    pub content_manifest_id: Option<String>,
+    #[serde(default)]
+    pub localization_depot_id: Option<u32>,
+    #[serde(default)]
+    pub localization_manifest_id: Option<String>,
 }
 
 impl GameVersionManifest {

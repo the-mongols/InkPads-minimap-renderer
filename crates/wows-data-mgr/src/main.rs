@@ -469,7 +469,7 @@ fn main() -> Result<(), Report> {
             }
         }
 
-        Commands::DumpRendererData { latest, build, version, output, force, game_dir: _ } => {
+        Commands::DumpRendererData { latest, build, version, output, force, game_dir } => {
             let target = if latest {
                 let builds = reg.available_builds();
                 *builds.last().ok_or_else(|| rootcause::report!("No builds available"))?
@@ -483,9 +483,12 @@ fn main() -> Result<(), Report> {
                 bail!("Specify --latest, --build, or --version");
             };
 
-            let game_dir = reg
-                .game_dir_for_build(target, &data_dir)
-                .ok_or_else(|| rootcause::report!("Build {target} not available locally"))?;
+            let game_dir = if let Some(gd) = game_dir {
+                gd
+            } else {
+                reg.game_dir_for_build(target, &data_dir)
+                    .ok_or_else(|| rootcause::report!("Build {target} not available locally"))?
+            };
 
             let version_str = if let Some(entry) = manifest.get(target) {
                 entry.version.clone()

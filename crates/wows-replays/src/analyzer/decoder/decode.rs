@@ -200,10 +200,52 @@ impl PlayerStateData {
     }
 
     fn player_key_map(version: &Version) -> HashMap<&'static str, i64> {
-        // This 38-field layout is stable from 0.11.11 onward: verified against real
-        // 0.11.11 replays, every field this code reads sits at the same index as it
-        // does at 0.12.8 (only keyTargetMarkers at 22 differs, which is unused here).
-        if version.is_at_least(&Version::from_client_exe("0,11,11,0")) {
+        if version.is_at_least(&Version::from_client_exe("15,9,0,0")) {
+            // WoWs 15.9 added a new field (index 33) before shipId.
+            // BigWorld FixedDict keys are sorted alphabetically, so from shipId
+            // onward every field shifted by +1 (making 39 fields total, indices 0..=38).
+            let mut h = HashMap::new();
+            h.insert(Self::KEY_ACCOUNT_DBID, 0);
+            h.insert(Self::KEY_ANTI_ABUSE_ENABLED, 1);
+            h.insert(Self::KEY_AVATAR_ID, 2);
+            h.insert(Self::KEY_CAMOUFLAGE_INFO, 3);
+            h.insert(Self::KEY_CLAN_COLOR, 4);
+            h.insert(Self::KEY_CLAN_ID, 5);
+            h.insert(Self::KEY_CLAN_TAG, 6);
+            h.insert(Self::KEY_CREW_PARAMS, 7);
+            h.insert(Self::KEY_DOG_TAG, 8);
+            h.insert(Self::KEY_FRAGS_COUNT, 9);
+            h.insert(Self::KEY_FRIENDLY_FIRE_ENABLED, 10);
+            h.insert(Self::KEY_ID, 11);
+            h.insert(Self::KEY_INVITATIONS_ENABLED, 12);
+            h.insert(Self::KEY_IS_ABUSER, 13);
+            h.insert(Self::KEY_IS_ALIVE, 14);
+            h.insert(Self::KEY_IS_BOT, 15);
+            h.insert(Self::KEY_IS_CLIENT_LOADED, 16);
+            h.insert(Self::KEY_IS_CONNECTED, 17);
+            h.insert(Self::KEY_IS_HIDDEN, 18);
+            h.insert(Self::KEY_IS_LEAVER, 19);
+            h.insert(Self::KEY_IS_PRE_BATTLE_OWNER, 20);
+            h.insert(Self::KEY_IS_T_SHOOTER, 21);
+            h.insert(Self::KEY_KEY_TARGET_MARKERS, 22);
+            h.insert(Self::KEY_KILLED_BUILDINGS_COUNT, 23);
+            h.insert(Self::KEY_MAX_HEALTH, 24);
+            h.insert(Self::KEY_NAME, 25);
+            h.insert(Self::KEY_PLAYER_MODE, 26);
+            h.insert(Self::KEY_PRE_BATTLE_ID_ON_START, 27);
+            h.insert(Self::KEY_PRE_BATTLE_SIGN, 28);
+            h.insert(Self::KEY_PREBATTLE_ID, 29);
+            h.insert(Self::KEY_REALM, 30);
+            h.insert(Self::KEY_SHIP_COMPONENTS, 31);
+            h.insert(Self::KEY_SHIP_CONFIG_DUMP, 32);
+            // 33: New field added in 15.9 (between shipConfigDump and shipId)
+            h.insert(Self::KEY_SHIP_ID, 34);
+            h.insert(Self::KEY_SHIP_PARAMS_ID, 35);
+            h.insert(Self::KEY_SKIN_ID, 36);
+            h.insert(Self::KEY_TEAM_ID, 37);
+            h.insert(Self::KEY_TTK_STATUS, 38);
+            h
+        } else if version.is_at_least(&Version::from_client_exe("0,11,11,0")) {
             let mut h = HashMap::new();
             h.insert(Self::KEY_ACCOUNT_DBID, 0);
             h.insert(Self::KEY_ANTI_ABUSE_ENABLED, 1);
@@ -378,7 +420,39 @@ impl PlayerStateData {
 
     /// Bot key mapping — bots have a different (smaller) set of fields with different indices.
     fn bot_key_map(version: &Version) -> HashMap<&'static str, i64> {
-        if version.is_at_least(&Version::from_client_exe("0,12,8,0")) {
+        if version.is_at_least(&Version::from_client_exe("15,9,0,0")) {
+            let mut h = HashMap::new();
+            h.insert(Self::KEY_ACCOUNT_DBID, 0);
+            h.insert(Self::KEY_ANTI_ABUSE_ENABLED, 1);
+            h.insert(Self::KEY_CAMOUFLAGE_INFO, 2);
+            h.insert(Self::KEY_CLAN_COLOR, 3);
+            h.insert(Self::KEY_CLAN_ID, 4);
+            h.insert(Self::KEY_CLAN_TAG, 5);
+            h.insert(Self::KEY_CREW_PARAMS, 6);
+            h.insert(Self::KEY_DOG_TAG, 7);
+            h.insert(Self::KEY_FRAGS_COUNT, 8);
+            h.insert(Self::KEY_FRIENDLY_FIRE_ENABLED, 9);
+            h.insert(Self::KEY_ID, 10);
+            h.insert(Self::KEY_IS_ABUSER, 11);
+            h.insert(Self::KEY_IS_ALIVE, 12);
+            h.insert(Self::KEY_IS_BOT, 13);
+            h.insert(Self::KEY_IS_HIDDEN, 14);
+            h.insert(Self::KEY_IS_T_SHOOTER, 15);
+            h.insert(Self::KEY_KEY_TARGET_MARKERS, 16);
+            h.insert(Self::KEY_KILLED_BUILDINGS_COUNT, 17);
+            h.insert(Self::KEY_MAX_HEALTH, 18);
+            h.insert(Self::KEY_NAME, 19);
+            h.insert(Self::KEY_REALM, 20);
+            h.insert(Self::KEY_SHIP_COMPONENTS, 21);
+            h.insert(Self::KEY_SHIP_CONFIG_DUMP, 22);
+            // 23: New field added in 15.9 (between shipConfigDump and shipId)
+            h.insert(Self::KEY_SHIP_ID, 24);
+            h.insert(Self::KEY_SHIP_PARAMS_ID, 25);
+            h.insert(Self::KEY_SKIN_ID, 26);
+            h.insert(Self::KEY_TEAM_ID, 27);
+            h.insert(Self::KEY_TTK_STATUS, 28);
+            h
+        } else if version.is_at_least(&Version::from_client_exe("0,12,8,0")) {
             let mut h = HashMap::new();
             h.insert(Self::KEY_ACCOUNT_DBID, 0);
             h.insert(Self::KEY_ANTI_ABUSE_ENABLED, 1);
@@ -691,6 +765,16 @@ impl PlayerStateData {
         self.raw_with_names
             .get(Self::KEY_SHIP_PARAMS_ID)
             .and_then(|v| v.as_u64())
+            .map(|id| GameParamId::from(id as u32))
+    }
+
+    /// The captain's GameParamId from crewParams, if present.
+    pub fn crew_params_id(&self) -> Option<GameParamId> {
+        self.raw_with_names
+            .get(Self::KEY_CREW_PARAMS)
+            .and_then(|v| v.as_array())
+            .and_then(|params| params.first())
+            .and_then(|id| id.as_u64())
             .map(|id| GameParamId::from(id as u32))
     }
 
@@ -2679,5 +2763,43 @@ mod player_key_map_tests {
         ] {
             assert_eq!(a.get(key), b.get(key), "field {key} diverges at 0.11.11");
         }
+    }
+
+    #[test]
+    fn v15_9_moves_player_fields_after_new_field() {
+        let old = PlayerStateData::player_key_map(&v(15, 8, 0));
+        let new = PlayerStateData::player_key_map(&v(15, 9, 0));
+
+        // Prior to 15.9: shipId was 33, teamId was 36, ttkStatus was 37
+        assert_eq!(old.get(PlayerStateData::KEY_SHIP_ID), Some(&33));
+        assert_eq!(old.get(PlayerStateData::KEY_SHIP_PARAMS_ID), Some(&34));
+        assert_eq!(old.get(PlayerStateData::KEY_SKIN_ID), Some(&35));
+        assert_eq!(old.get(PlayerStateData::KEY_TEAM_ID), Some(&36));
+        assert_eq!(old.get(PlayerStateData::KEY_TTK_STATUS), Some(&37));
+
+        // In 15.9: new field at 33 shifts shipId to 34, teamId to 37, ttkStatus to 38
+        assert_eq!(new.get(PlayerStateData::KEY_SHIP_ID), Some(&34));
+        assert_eq!(new.get(PlayerStateData::KEY_SHIP_PARAMS_ID), Some(&35));
+        assert_eq!(new.get(PlayerStateData::KEY_SKIN_ID), Some(&36));
+        assert_eq!(new.get(PlayerStateData::KEY_TEAM_ID), Some(&37));
+        assert_eq!(new.get(PlayerStateData::KEY_TTK_STATUS), Some(&38));
+
+        let raw_values = HashMap::from([
+            (11, Value::I64(12345)),
+            (25, Value::String(pickled::value::SharedFrozen::new("TestPlayer".to_string()))),
+            (33, Value::I64(32)), // new 15.9 field
+            (34, Value::I64(438_335)), // shipId / entityId
+            (35, Value::I64(4_076_779_344)), // shipParamsId
+            (36, Value::I64(4_156_157_872)), // skinId
+            (37, Value::I64(1)), // teamId
+            (38, Value::I64(0)), // ttkStatus
+        ]);
+        let mapped_values = PlayerStateData::convert_raw_dict(&raw_values, &v(15, 9, 0), false);
+        let player = PlayerStateData::from_values(raw_values, mapped_values, &v(15, 9, 0));
+
+        assert_eq!(player.entity_id(), EntityId::from(438_335u32));
+        assert_eq!(player.ship_params_id(), Some(GameParamId::from(4_076_779_344u32)));
+        assert_eq!(player.team_id(), 1);
+        assert_eq!(player.username(), "TestPlayer");
     }
 }
