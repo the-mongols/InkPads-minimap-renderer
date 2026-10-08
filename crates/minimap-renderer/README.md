@@ -125,7 +125,12 @@ minimap_renderer \
 | `--show-speed-trails` | Show speed-based trails (blue=slow, red=fast) |
 | `--show-ship-config` | Show detection/battery range circles |
 | `--config <path>` | Load render settings from a TOML config file |
-| `--dump-frame <n\|mid\|last>` | Dump a single frame as PNG instead of video |
+| `--dump-frame <n|mid|last>` | Dump a single frame as PNG instead of video |
+| `--aspect-ratio-16-9` | Scale layout and coordinates for 16:9 widescreen canvas |
+| `--inkpads-layout` | Enable high-density Clan Battles layout (teammate performance table, 30/70 bottom feed split) |
+| `--stats-panel-width <pixels>` | Override telemetry side panel width in pixels |
+| `--codec <h264\|h265\|av1>` | Video codec for output |
+| `--merge <path>` / `--red-replay <path>` | Merge opposing perspective replay to eliminate fog of war |
 | `--cpu` | Use CPU encoder (openh264) instead of GPU |
 | `--check-encoder` | Check encoder availability and exit |
 | `--generate-config` | Print default TOML config to stdout |
