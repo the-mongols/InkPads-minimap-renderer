@@ -4,7 +4,7 @@ A Discord bot to receive `.wowsreplay` files from users, and return high-quality
 
 ## Features
 - **`/render`**: Upload a replay to generate a tactical MP4 video.
-- **Dual-Replay Sync**: Upload a second replay from the opposing team to generate a unified "Spectator View".
+- **Dual-Replay Sync**: Upload an opposing team replay from the same match to eliminate fog of war and generate a synchronized omniscient view.
 - **Customizable**: Toggle ship movement trails and detection/weapon ranges.
 - **CPU/GPU Modes**: High-speed GPU encoding by default, with a CPU fallback for VPS environments.
 
