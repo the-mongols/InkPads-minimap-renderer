@@ -1073,12 +1073,19 @@ fn game_fonts_from_vfs(vfs: &VfsPath) -> Option<GameFonts> {
 /// available in any VFS.
 fn system_game_fonts() -> GameFonts {
     warn!("no Warhelios TTF in game files (older client?); falling back to a system font");
-    let (primary, primary_bytes) =
-        load_system_fallback_font().expect("no usable font found in the game files or on the system");
-    let primary_scale_factor = compute_scale_factor(&primary);
     let cond_bold_bytes = include_bytes!("WarHeliosCondCBold.ttf").to_vec();
-    let cond_bold = FontArc::try_from_vec(cond_bold_bytes).expect("failed to load embedded WarHeliosCondCBold.ttf");
+    let cond_bold = FontArc::try_from_vec(cond_bold_bytes.clone()).expect("failed to load embedded WarHeliosCondCBold.ttf");
     let cond_bold_scale_factor = compute_scale_factor(&cond_bold);
+    let (primary, primary_bytes, primary_scale_factor) = match load_system_fallback_font() {
+        Some((font, bytes)) => {
+            let sf = compute_scale_factor(&font);
+            (font, bytes, sf)
+        }
+        None => {
+            warn!("no system fallback font found; using embedded WarHeliosCondCBold as primary font");
+            (cond_bold.clone(), cond_bold_bytes.clone(), cond_bold_scale_factor)
+        }
+    };
     GameFonts {
         primary,
         fallbacks: Vec::new(),

@@ -18,6 +18,32 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stderr)]
 )
 logger = logging.getLogger("analyzer")
+ 
+def _find_extracted_dir(script_dir: str) -> str:
+    env_dir = os.getenv("WOWS_EXTRACTED_DIR")
+    if env_dir and os.path.isdir(env_dir):
+        return os.path.normpath(env_dir)
+    candidates = [
+        os.path.normpath(os.path.join(script_dir, "..", "game_data", "extracted")),
+        os.path.normpath(os.path.join(script_dir, "game_data", "extracted")),
+        os.path.abspath("game_data/extracted"),
+    ]
+    for c in candidates:
+        if os.path.isdir(c):
+            return c
+    return candidates[0]
+
+def _find_shark_exe(script_dir: str) -> str:
+    env_exe = os.getenv("REPLAYSHARK_EXE")
+    if env_exe:
+        return env_exe
+    cand_native = os.path.join(script_dir, "replayshark" if sys.platform != "win32" else "replayshark.exe")
+    if os.path.exists(cand_native):
+        return cand_native
+    cand_win = os.path.join(script_dir, "replayshark.exe")
+    if os.path.exists(cand_win):
+        return cand_win
+    return cand_native
 
 class ReplayAnalyzer:
     def __init__(self, input_path: str):
@@ -267,8 +293,8 @@ class ReplayAnalyzer:
 
     def _run_replayshark(self) -> List[Dict[str, Any]]:
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        extracted_path = os.path.normpath(os.path.join(script_dir, "..", "game_data", "extracted"))
-        shark_exe = os.getenv("REPLAYSHARK_EXE", os.path.join(script_dir, "replayshark.exe"))
+        extracted_path = _find_extracted_dir(script_dir)
+        shark_exe = _find_shark_exe(script_dir)
         wows_path = os.getenv("WOWS_PATH", "C:\\Games\\World_of_Warships")
         
         # Read replay version from header to see if we can use offline extracted specs
@@ -321,8 +347,8 @@ class ReplayAnalyzer:
         class_char at index 3: B=BB, C=CA/CL, D=DD, S=SS, A=CV
         """
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        extracted_path = os.path.normpath(os.path.join(script_dir, "..", "game_data", "extracted"))
-        shark_exe = os.getenv("REPLAYSHARK_EXE", os.path.join(script_dir, "replayshark.exe"))
+        extracted_path = _find_extracted_dir(script_dir)
+        shark_exe = _find_shark_exe(script_dir)
         wows_path = os.getenv("WOWS_PATH", "C:\\Games\\World_of_Warships")
 
         # Determine whether to use -e or -g (same logic as _run_replayshark)

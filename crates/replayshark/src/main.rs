@@ -1,4 +1,3 @@
-use anyhow::Context;
 use anyhow::anyhow;
 use clap::Parser;
 use clap::Subcommand;
