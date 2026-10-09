@@ -26,6 +26,7 @@ replayshark_dump.txt
 specs.json
 *_dump.json
 *.png
+!crates/minimap-renderer/src/*.png
 *.json
 !Cargo.toml
 !metadata.toml
