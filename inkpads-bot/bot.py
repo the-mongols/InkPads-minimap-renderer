@@ -163,12 +163,12 @@ async def on_message(message: discord.Message):
 
     # Also check if JSON is attached as a file
     json_text = content
-    if not json_text and message.attachments:
+    if (not json_text or ("{" not in json_text and "callbackUrl" not in json_text and "callback_url" not in json_text)) and message.attachments:
         for att in message.attachments:
             if att.filename.endswith('.json') or att.content_type == 'application/json':
                 try:
                     json_bytes = await att.read()
-                    json_text = json_bytes.decode('utf-8', errors='ignore')
+                    json_text = json_bytes.decode('utf-8', errors='ignore').strip()
                     break
                 except Exception:
                     pass
@@ -176,47 +176,62 @@ async def on_message(message: discord.Message):
     if not json_text:
         return
 
+    # If TOURNAMENT_LISTEN_CHANNEL_ID is not configured, avoid processing ordinary chat messages
+    if not TOURNAMENT_LISTEN_CHANNEL_ID and "{" not in json_text and "callbackUrl" not in json_text and "callback_url" not in json_text:
+        return
+
     # 1. Check code blocks first
     if "```" in json_text:
-        match = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', json_text)
+        match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', json_text)
         if match:
-            json_text = match.group(1)
+            json_text = match.group(1).strip()
 
-    # 2. If it doesn't start with '{', search for embedded JSON object {...}
-    if not json_text.startswith("{"):
-        match = re.search(r'(\{[\s\S]*\})', json_text)
-        if match:
-            json_text = match.group(1)
+    # 2. Extract outermost JSON object {...}
+    if not json_text.startswith("{") and "{" in json_text and "}" in json_text:
+        s_idx = json_text.find("{")
+        e_idx = json_text.rfind("}")
+        if s_idx != -1 and e_idx != -1 and e_idx > s_idx:
+            json_text = json_text[s_idx:e_idx + 1]
 
     try:
         data = json.loads(json_text)
     except Exception as e:
-        logger.warning(f"Failed to parse JSON message in tournament channel: {e}. Raw content: {repr(message.content)}")
+        if TOURNAMENT_LISTEN_CHANNEL_ID:
+            logger.warning(f"Failed to parse JSON message in tournament channel: {e}. Raw content: {repr(message.content)}")
         return
 
-    callback_url = data.get("callbackUrl")
-    target_channel_id = data.get("targetChannelId")
+    callback_url = data.get("callbackUrl") or data.get("callback_url")
+    target_channel_id = data.get("targetChannelId") or data.get("target_channel_id")
     replays = data.get("replays", [])
 
     if not callback_url or not target_channel_id or not replays:
-        logger.warning("Tournament payload missing required fields (callbackUrl, targetChannelId, replays)")
+        if TOURNAMENT_LISTEN_CHANNEL_ID:
+            logger.warning("Tournament payload missing required fields (callbackUrl, targetChannelId, replays)")
         return
 
     logger.info(f"Received valid tournament render payload for target channel {target_channel_id} with {len(replays)} replays.")
 
     # Schedule background task to process tournament render
-    task = asyncio.create_task(process_tournament_render(message, callback_url, target_channel_id, replays))
+    task = asyncio.create_task(process_tournament_render(message, callback_url, target_channel_id, replays, data=data))
     background_tasks.add(task)
     task.add_done_callback(background_tasks.discard)
 
-async def process_tournament_render(message: discord.Message, callback_url: str, target_channel_id: str, replays: list):
+async def process_tournament_render(message: discord.Message, callback_url: str, target_channel_id: str, replays: list, data: dict = None):
+    if not isinstance(data, dict):
+        data = {}
     session_id = str(uuid.uuid4())[:8]
     logger.info(f"[{session_id}] Starting tournament render execution.")
 
-    target_channel = bot.get_channel(int(target_channel_id))
+    try:
+        t_id = int(str(target_channel_id).strip())
+    except (ValueError, TypeError):
+        logger.error(f"[{session_id}] Invalid target channel ID format: {target_channel_id}")
+        return
+
+    target_channel = bot.get_channel(t_id)
     if not target_channel:
         try:
-            target_channel = await bot.fetch_channel(int(target_channel_id))
+            target_channel = await bot.fetch_channel(t_id)
         except Exception as e:
             logger.error(f"[{session_id}] Could not resolve target channel {target_channel_id}: {e}")
             return
@@ -227,31 +242,93 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
 
     try:
         async with aiohttp.ClientSession() as session:
-            for idx, rdata in enumerate(replays):
-                url = rdata.get("replay")
-                tag = rdata.get("tag", "").upper()
+            async def _download_replay(idx: int, rdata: Any) -> tuple[int, Optional[Path]]:
+                if isinstance(rdata, str):
+                    url = rdata
+                    tag = ""
+                elif isinstance(rdata, dict):
+                    url = rdata.get("replay") or rdata.get("url")
+                    tag = str(rdata.get("tag", "")).upper()
+                else:
+                    return idx, None
+
                 if not url:
-                    continue
-                
-                dest_path = TEMP_DIR / f"{session_id}_{'green' if idx == 0 else 'red'}.wowsreplay"
-                logger.info(f"[{session_id}] Downloading replay [{tag}] from {url}...")
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=120)) as resp:
-                    if resp.status == 200:
-                        content = await resp.read()
-                        dest_path.write_bytes(content)
-                        if idx == 0:
-                            green_path = dest_path
+                    return idx, None
+
+                role = 'green' if idx == 0 else 'red'
+                dest_path = TEMP_DIR / f"{session_id}_{role}.wowsreplay"
+                logger.info(f"[{session_id}] Downloading replay [{tag or role}] from {url}...")
+                headers = {"User-Agent": "InkPads-Bot/1.0 (minimap-renderer)"}
+                try:
+                    async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=120)) as resp:
+                        if resp.status == 200:
+                            content = await resp.read()
+                            if len(content) < 1000:
+                                logger.error(f"[{session_id}] Replay payload from {url} is suspiciously small ({len(content)} bytes).")
+                                return idx, None
+                            dest_path.write_bytes(content)
+                            return idx, dest_path
                         else:
-                            red_path = dest_path
-                    else:
-                        logger.error(f"[{session_id}] Failed to download replay from {url}: status {resp.status}")
+                            logger.error(f"[{session_id}] Failed to download replay from {url}: status {resp.status}")
+                            return idx, None
+                except Exception as dl_err:
+                    logger.error(f"[{session_id}] Exception downloading replay from {url}: {dl_err}")
+                    return idx, None
+
+            # Download primary and secondary replays concurrently (limit to first 2)
+            download_tasks = [_download_replay(idx, r) for idx, r in enumerate(replays[:2])]
+            results = await asyncio.gather(*download_tasks)
+            for idx, path in results:
+                if idx == 0:
+                    green_path = path
+                elif idx == 1:
+                    red_path = path
 
         if not green_path or not green_path.exists():
             logger.error(f"[{session_id}] Primary replay download failed or empty.")
             return
 
-        # Acquire semaphore for rendering
-        await render_semaphore.acquire()
+        # Pre-flight header inspection & version validation
+        header = parse_replay_header(green_path)
+        if not header:
+            logger.error(f"[{session_id}] Primary replay {green_path} header is corrupted or unreadable.")
+            return
+
+        version_str = header.get("clientVersionFromExe", "")
+        is_supported, err_msg, is_newer = validate_replay_version(version_str)
+        if not is_supported:
+            logger.warning(f"[{session_id}] Replay version unsupported: {version_str} - {err_msg}")
+            return
+
+        # Validate secondary (red) replay if present
+        if red_path and red_path.exists():
+            red_header = parse_replay_header(red_path)
+            if not red_header:
+                logger.warning(f"[{session_id}] Red replay {red_path} is invalid/corrupt. Falling back to single perspective.")
+                try:
+                    red_path.unlink()
+                except Exception:
+                    pass
+                red_path = None
+            else:
+                red_version = red_header.get("clientVersionFromExe", "")
+                if red_version != version_str:
+                    logger.warning(f"[{session_id}] Version mismatch between green ({version_str}) and red ({red_version}) replay. Falling back to single perspective.")
+                    try:
+                        red_path.unlink()
+                    except Exception:
+                        pass
+                    red_path = None
+
+        # Queue tracking
+        render_queue.append(session_id)
+        try:
+            # Acquire semaphore for rendering
+            await render_semaphore.acquire()
+        finally:
+            if session_id in render_queue:
+                render_queue.remove(session_id)
+
         try:
             # Build CLI command
             cmd = [str(RENDERER_EXE)]
@@ -260,16 +337,34 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
             else:
                 cmd.extend(["-g", str(GAME_DIR)])
 
-            codec = RENDERER_CODEC.lower() if RENDERER_CODEC and RENDERER_CODEC.lower() in ("h264", "h265", "av1") else ("h264" if FORCE_CPU else "h265")
-            cmd.extend(["-o", str(output_path), "--max-size-mib", "24", "--codec", codec])
+            # Dynamic guild upload size handling with safety margin
+            guild_limit_bytes = 10 * 1024 * 1024
+            if getattr(target_channel, "guild", None):
+                guild_limit_bytes = max(getattr(target_channel.guild, "filesize_limit", guild_limit_bytes), guild_limit_bytes)
+            default_max_size_mib = max(8, int((guild_limit_bytes * 0.95) / (1024 * 1024)))
+            custom_size_mib = data.get("max_size_mib") or data.get("maxSizeMib")
+            target_size_mib = int(custom_size_mib) if custom_size_mib else default_max_size_mib
+
+            codec = data.get("codec") or RENDERER_CODEC
+            if codec and str(codec).lower() in ("h264", "h265", "av1"):
+                codec = str(codec).lower()
+            else:
+                codec = "h264" if FORCE_CPU else "h265"
+
+            cmd.extend(["-o", str(output_path), "--max-size-mib", str(target_size_mib), "--codec", codec])
             if RENDERER_FONT_PATH:
                 cmd.extend(["--font", RENDERER_FONT_PATH])
             cmd.append(str(green_path))
 
             if red_path and red_path.exists():
                 cmd.extend(["--red-replay", str(red_path), "--no-chat", "--no-kill-feed", "--no-stats-panel"])
-            if FORCE_CPU:
+            if FORCE_CPU or data.get("cpu") or data.get("cpu_mode") or data.get("cpuMode"):
                 cmd.append("--cpu")
+
+            if data.get("show_trails") or data.get("showTrails"):
+                cmd.append("--show-trails")
+            if data.get("show_ship_config") or data.get("showShipConfig") or data.get("showConfig"):
+                cmd.append("--show-ship-config")
 
             layout_opt = str(data.get("layout") or data.get("preset") or ("C" if ENABLE_INKPADS_LAYOUT else "A")).upper()
             if layout_opt in ("C", "INKPADS"):
@@ -279,7 +374,7 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
             else:
                 cmd.extend(["--discord-layout", "--stats-panel-width", "720"])
 
-            logger.info(f"[{session_id}] Executing renderer CLI command (layout: {layout_opt})...")
+            logger.info(f"[{session_id}] Executing renderer CLI command (layout: {layout_opt}, target: {target_size_mib} MiB)...")
             process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             stdout, stderr = await process.communicate()
 
@@ -287,8 +382,23 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
                 logger.error(f"[{session_id}] Tournament render failed with code {process.returncode}: {stderr.decode('utf-8', errors='ignore')}")
                 return
 
-            # Extract header info for embed formatting
-            header = parse_replay_header(green_path)
+            # Safety compression check if output exceeds guild limit
+            if output_path.exists() and output_path.stat().st_size > int(guild_limit_bytes * 0.98):
+                logger.info(f"[{session_id}] Output size {output_path.stat().st_size} exceeds guild limit threshold {int(guild_limit_bytes * 0.98)}. Compressing with ffmpeg...")
+                compressed_path = TEMP_DIR / f"{session_id}_compressed.mp4"
+                c_proc = await asyncio.create_subprocess_exec(
+                    "ffmpeg", "-y", "-i", str(output_path),
+                    "-vcodec", "libx264", "-crf", "22", "-preset", "fast",
+                    str(compressed_path),
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL
+                )
+                await c_proc.communicate()
+                if compressed_path.exists() and compressed_path.stat().st_size > 0:
+                    output_path.unlink()
+                    output_path = compressed_path
+
+            # Format embed details
             raw_ship = header.get("playerVehicle", "")
             raw_map = header.get("mapName", "") or header.get("mapDisplayName", "")
             raw_dt = header.get("dateTime", "")
@@ -300,7 +410,7 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
             is_dual = bool(red_path and red_path.exists())
             mode_name = get_game_mode_display_name(match_group, game_type, scenario, logic)
             if not mode_name:
-                mode_name = "Training Battle"
+                mode_name = "Tournament Domination" if "kots" in str(match_group).lower() or "tournament" in str(match_group).lower() else "Training Battle"
 
             ship_name = clean_ship_name(raw_ship)
             map_name = get_map_display_name(raw_map)
@@ -1519,12 +1629,12 @@ async def ping(interaction: discord.Interaction):
 
 if __name__ == "__main__":
     if not TOKEN:
-        print("❌ Error: DISCORD_TOKEN not found in .env file.")
+        print("Error: DISCORD_TOKEN not found in .env file.")
     elif not RENDERER_EXE:
-        print("❌ Error: Renderer binary not found!")
+        print("Error: Renderer binary not found!")
         print("Please ensure minimap_renderer.exe is in the same folder or set RENDERER_PATH in .env")
     elif not GAME_DIR.exists():
-        print(f"⚠️ Warning: WoWs path not found at {GAME_DIR}")
+        print(f"Warning: WoWs path not found at {GAME_DIR}")
         print("The bot will still start, but renders may fail unless a valid path is provided in .env")
         bot.run(TOKEN)
     else:
