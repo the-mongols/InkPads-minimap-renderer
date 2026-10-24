@@ -617,8 +617,101 @@ fn draw_score_bar(
     fonts: &GameFonts,
     map_width: u32,
     scale_factor: f32,
+    team0_name: Option<&str>,
+    team1_name: Option<&str>,
+    bar_height: f32,
+    kots_layout: bool,
 ) {
     let width = map_width as f32;
+    if kots_layout {
+        let max_bar_w = 520.0f32;
+
+        // Dark background overlay across full 1200px scoreboard strip
+        draw_filled_rect(pm, 0.0, 0.0, width, bar_height, [16, 20, 28], 0.95);
+
+        // Team 0 progress (grows dynamically from left edge toward center)
+        let t0_frac = (team0_score as f32 / max_score as f32).clamp(0.0, 1.0);
+        let t0_width = t0_frac * max_bar_w;
+        if t0_width > 0.0 {
+            draw_filled_rect(pm, 0.0, 0.0, t0_width, bar_height, team0_color, 0.70);
+        }
+
+        // Team 1 progress (grows dynamically from right edge toward center)
+        let t1_frac = (team1_score as f32 / max_score as f32).clamp(0.0, 1.0);
+        let t1_width = t1_frac * max_bar_w;
+        if t1_width > 0.0 {
+            draw_filled_rect(pm, width - t1_width, 0.0, t1_width, bar_height, team1_color, 0.70);
+        }
+
+        let font_bold = &fonts.primary;
+        let font_regular = &fonts.primary;
+        let pill_h = 62.0f32;
+        let pill_y = (bar_height - pill_h) / 2.0;
+
+        let name_scale = fonts.scale(26.0);
+        let score_scale = fonts.scale(22.0);
+        let timer_scale = fonts.scale(16.0);
+        let pill_color = [10, 12, 16];
+        let pill_alpha = 0.85f32;
+
+        // ── Left Pill: Team 0 (Name on left, Stacked Score/Timer on right) ──
+        let t0_name = team0_name.unwrap_or("[ALPHA]");
+        let t0_score_str = format!("{}", team0_score);
+        let t0_timer_str = team0_timer.unwrap_or("-");
+
+        let (t0_nw, t0_nh) = text_size(name_scale, font_bold, t0_name);
+        let (t0_sw, _t0_sh) = text_size(score_scale, font_bold, &t0_score_str);
+        let (t0_tw, _) = text_size(timer_scale, font_regular, t0_timer_str);
+        let t0_stack_w = (t0_sw.max(t0_tw) as f32).max(40.0);
+        let t0_pill_w = t0_nw as f32 + 16.0 + t0_stack_w + 24.0;
+        let t0_pill_x = 12.0f32;
+
+        draw_rounded_rect(pm, t0_pill_x, pill_y, t0_pill_w, pill_h, 6.0, pill_color, pill_alpha);
+        // Colored accent strip on left edge
+        draw_filled_rect(pm, t0_pill_x, pill_y + 6.0, 4.0, pill_h - 12.0, team0_color, 1.0);
+
+        let t0_name_y = (pill_y + (pill_h - t0_nh as f32) / 2.0).round() as i32;
+        draw_text(pm, [255, 255, 255], (t0_pill_x + 14.0).round() as i32, t0_name_y, name_scale, font_bold, t0_name);
+
+        let t0_stack_x = (t0_pill_x + 14.0 + t0_nw as f32 + 12.0).round() as i32;
+        let t0_score_y = (pill_y + 7.0).round() as i32;
+        let t0_timer_y = (pill_y + 33.0).round() as i32;
+        draw_text(pm, [255, 255, 255], t0_stack_x, t0_score_y, score_scale, font_bold, &t0_score_str);
+        draw_text(pm, [180, 190, 205], t0_stack_x, t0_timer_y, timer_scale, font_regular, t0_timer_str);
+
+        // ── Right Pill: Team 1 (Stacked Score/Timer on left, Name on right) ──
+        let t1_name = team1_name.unwrap_or("[BRAVO]");
+        let t1_score_str = format!("{}", team1_score);
+        let t1_timer_str = team1_timer.unwrap_or("-");
+
+        let (t1_nw, t1_nh) = text_size(name_scale, font_bold, t1_name);
+        let (t1_sw, _t1_sh) = text_size(score_scale, font_bold, &t1_score_str);
+        let (t1_tw, _) = text_size(timer_scale, font_regular, t1_timer_str);
+        let t1_stack_w = (t1_sw.max(t1_tw) as f32).max(40.0);
+        let t1_pill_w = t1_stack_w + 16.0 + t1_nw as f32 + 24.0;
+        let t1_pill_x = width - 12.0 - t1_pill_w;
+
+        draw_rounded_rect(pm, t1_pill_x, pill_y, t1_pill_w, pill_h, 6.0, pill_color, pill_alpha);
+        // Colored accent strip on right edge
+        draw_filled_rect(pm, t1_pill_x + t1_pill_w - 4.0, pill_y + 6.0, 4.0, pill_h - 12.0, team1_color, 1.0);
+
+        let t1_stack_x = (t1_pill_x + 12.0).round() as i32;
+        let t1_score_y = (pill_y + 7.0).round() as i32;
+        let t1_timer_y = (pill_y + 33.0).round() as i32;
+        let t1_score_draw_x = t1_stack_x + (t1_stack_w - t1_sw as f32) as i32;
+        let t1_timer_draw_x = t1_stack_x + (t1_stack_w - t1_tw as f32) as i32;
+        draw_text(pm, [255, 255, 255], t1_score_draw_x, t1_score_y, score_scale, font_bold, &t1_score_str);
+        draw_text(pm, [180, 190, 205], t1_timer_draw_x, t1_timer_y, timer_scale, font_regular, t1_timer_str);
+
+        let t1_name_x = (t1_pill_x + 12.0 + t1_stack_w + 12.0).round() as i32;
+        let t1_name_y = (pill_y + (pill_h - t1_nh as f32) / 2.0).round() as i32;
+        draw_text(pm, [255, 255, 255], t1_name_x, t1_name_y, name_scale, font_bold, t1_name);
+
+        // Subtle bottom border
+        draw_line(pm, 0.0, bar_height, width, bar_height, [65, 75, 95], 0.9, 1.5);
+        return;
+    }
+
     let sf = scale_factor;
     let progress_h = (60.0 * sf).round();
     let bg_height = progress_h;
@@ -826,8 +919,8 @@ fn draw_vertical_score_strip(
 fn draw_timer(pm: &mut Pixmap, time_remaining: Option<i64>, elapsed: ElapsedClock, fonts: &GameFonts, map_width: u32) {
     let font = &fonts.primary;
     let center_x = map_width as i32 / 2;
-    let main_scale = fonts.scale(48.0);
-    let small_scale = fonts.scale(32.0);
+    let main_scale = fonts.scale(36.0);
+    let small_scale = fonts.scale(18.0);
 
     if let Some(remaining) = time_remaining {
         // Show time remaining as main timer (centered)
@@ -836,7 +929,7 @@ fn draw_timer(pm: &mut Pixmap, time_remaining: Option<i64>, elapsed: ElapsedCloc
         let remaining_text = format!("{:02}:{:02}", r_mins, r_secs);
         let (rw, _) = text_size(main_scale, font, &remaining_text);
         let rx = center_x - rw as i32 / 2;
-        draw_text_shadow(pm, [255, 255, 255], rx, 4, main_scale, font, &remaining_text);
+        draw_text_shadow(pm, [255, 255, 255], rx, 8, main_scale, font, &remaining_text);
 
         // Show elapsed as smaller text below
         let e_mins = (elapsed.seconds() as i32) / 60;
@@ -844,7 +937,7 @@ fn draw_timer(pm: &mut Pixmap, time_remaining: Option<i64>, elapsed: ElapsedCloc
         let elapsed_text = format!("+{:02}:{:02}", e_mins, e_secs);
         let (ew, _) = text_size(small_scale, font, &elapsed_text);
         let ex = center_x - ew as i32 / 2;
-        draw_text_shadow(pm, [180, 180, 180], ex, 58, small_scale, font, &elapsed_text);
+        draw_text_shadow(pm, [180, 190, 205], ex, 48, small_scale, font, &elapsed_text);
     } else {
         // Fallback: just show elapsed time centered (no timeLeft data yet)
         let mins = (elapsed.seconds() as i32) / 60;
@@ -852,7 +945,7 @@ fn draw_timer(pm: &mut Pixmap, time_remaining: Option<i64>, elapsed: ElapsedCloc
         let text = format!("{:02}:{:02}", mins, secs);
         let (w, _) = text_size(main_scale, font, &text);
         let x = center_x - w as i32 / 2;
-        draw_text_shadow(pm, [255, 255, 255], x, 20, main_scale, font, &text);
+        draw_text_shadow(pm, [255, 255, 255], x, 22, main_scale, font, &text);
     }
 }
 
@@ -1603,7 +1696,6 @@ fn damage_label_color_rgb(label: &str) -> [u8; 3] {
 // ── ImageTarget (RenderTarget implementation) ──────────────────────────────
 
 use crate::CANVAS_HEIGHT;
-use crate::HUD_HEIGHT;
 use crate::MINIMAP_SIZE;
 
 use crate::config::RenderOptions;
@@ -1615,11 +1707,15 @@ pub enum SidePanelLayout {
     None,
     /// Self-perspective stats panel on the right.
     StatsPanel,
+    /// KOTS Tournament dual team tables on the right.
+    KotsDualTables,
 }
 
 impl SidePanelLayout {
     pub fn from_options(opts: &RenderOptions) -> Self {
-        if opts.show_stats_panel {
+        if opts.kots_layout {
+            Self::KotsDualTables
+        } else if opts.show_stats_panel {
             Self::StatsPanel
         } else {
             Self::None
@@ -1672,6 +1768,9 @@ pub struct ImageTarget {
     pub aspect_ratio_16_9: bool,
     pub discord_layout: bool,
     pub inkpads_layout: bool,
+    pub kots_layout: bool,
+    pub ship_scale: f32,
+    pub hud_height: u32,
 }
 
 impl ImageTarget {
@@ -1769,27 +1868,32 @@ impl ImageTarget {
         if panel_width % 2 != 0 {
             panel_width += 1;
         }
-        let (canvas_width, map_x_offset, hud_width) = match layout {
-            SidePanelLayout::None => (MINIMAP_SIZE, 0, MINIMAP_SIZE),
+        let (canvas_width, map_x_offset, hud_width, hud_height) = match layout {
+            SidePanelLayout::None => (MINIMAP_SIZE, 0, MINIMAP_SIZE, 0),
             SidePanelLayout::StatsPanel => {
                 if discord_layout {
                     let offset = crate::CANVAS_MARGIN_WIDTH + crate::VERTICAL_SCORE_STRIP_WIDTH;
-                    (crate::CANVAS_WIDTH_16_9, offset, MINIMAP_SIZE)
+                    (crate::CANVAS_WIDTH_16_9, offset, MINIMAP_SIZE, 0)
                 } else {
-                    (MINIMAP_SIZE + panel_width, 0, MINIMAP_SIZE)
+                    (MINIMAP_SIZE + panel_width, 0, MINIMAP_SIZE, 0)
                 }
+            }
+            SidePanelLayout::KotsDualTables => {
+                (MINIMAP_SIZE + STATS_PANEL_WIDTH_16_9, 0, MINIMAP_SIZE, 80)
             }
         };
 
+        let canvas_height = MINIMAP_SIZE + hud_height;
+
         // Pre-build the base canvas: dark background + map + grid
-        let mut base_rgb = RgbImage::from_pixel(canvas_width, CANVAS_HEIGHT, Rgb([14, 17, 23]));
+        let mut base_rgb = RgbImage::from_pixel(canvas_width, canvas_height, Rgb([14, 17, 23]));
         for y in 0..map.height().min(MINIMAP_SIZE) {
             for x in 0..map.width().min(MINIMAP_SIZE) {
-                base_rgb.put_pixel(x + map_x_offset, y + HUD_HEIGHT, *map.get_pixel(x, y));
+                base_rgb.put_pixel(x + map_x_offset, y + hud_height, *map.get_pixel(x, y));
             }
         }
         let mut base = rgb_to_pixmap(&base_rgb);
-        draw_grid_at(&mut base, MINIMAP_SIZE, map_x_offset, HUD_HEIGHT, &fonts);
+        draw_grid_at(&mut base, MINIMAP_SIZE, map_x_offset, hud_height, &fonts);
 
         let ship_icon_outlines = ship_icons
             .iter()
@@ -1797,11 +1901,12 @@ impl ImageTarget {
             .collect();
 
         Self {
-            canvas: Pixmap::new(canvas_width, CANVAS_HEIGHT).unwrap(),
+            canvas: Pixmap::new(canvas_width, canvas_height).unwrap(),
             base_canvas: base,
             map_width: MINIMAP_SIZE,
             map_x_offset,
             hud_width,
+            hud_height,
             fonts,
             ship_icons,
             ship_icon_outlines,
@@ -1819,6 +1924,8 @@ impl ImageTarget {
             aspect_ratio_16_9,
             discord_layout,
             inkpads_layout: false,
+            kots_layout: layout == SidePanelLayout::KotsDualTables,
+            ship_scale: 1.0,
         }
     }
 
@@ -1846,7 +1953,7 @@ impl RenderTarget for ImageTarget {
     }
 
     fn draw(&mut self, cmd: &DrawCommand) {
-        let y_off = HUD_HEIGHT as f32;
+        let y_off = self.hud_height as f32;
         let x_off = self.map_x_offset as f32;
         match cmd {
             DrawCommand::ShotTracer { from, to, color } => {
@@ -2000,7 +2107,7 @@ impl RenderTarget for ImageTarget {
                     return;
                 };
 
-                let scale_factor = if self.large_elements { 1.1f32 } else { 1.0f32 };
+                let scale_factor = self.ship_scale * (if self.large_elements { 1.1f32 } else { 1.0f32 });
 
                 if *is_detected_teammate && let Some(outline) = self.ship_icon_outlines.get(icon_key) {
                     draw_ship_icon(&mut self.canvas, outline, x, y, *yaw, None, 1.0, scale_factor);
@@ -2024,7 +2131,7 @@ impl RenderTarget for ImageTarget {
                 }
             }
             DrawCommand::HealthBar { pos, fraction, fill_color, background_color, background_alpha, .. } => {
-                let scale_factor = if self.large_elements { 1.1f32 } else { 1.0f32 };
+                let scale_factor = self.ship_scale * (if self.large_elements { 1.1f32 } else { 1.0f32 });
                 draw_health_bar(
                     &mut self.canvas,
                     pos.x + x_off,
@@ -2055,7 +2162,7 @@ impl RenderTarget for ImageTarget {
                     return;
                 };
 
-                let scale_factor = if self.large_elements { 1.1f32 } else { 1.0f32 };
+                let scale_factor = self.ship_scale * (if self.large_elements { 1.1f32 } else { 1.0f32 });
                 draw_ship_icon(&mut self.canvas, icon, x, y, *yaw, color.map(|c| c), 1.0, scale_factor);
             }
             DrawCommand::Plane { pos, icon_key, player_name, ship_name, .. } => {
@@ -2092,7 +2199,7 @@ impl RenderTarget for ImageTarget {
                 draw_filled_circle(&mut self.canvas, x, y, *radius_px as f32, *color, *alpha);
             }
             DrawCommand::ConsumableIcons { entity_id, pos, icon_keys, has_hp_bar, .. } => {
-                let scale_factor = if self.large_elements { 1.1f32 } else { 1.0f32 };
+                let scale_factor = self.ship_scale * (if self.large_elements { 1.1f32 } else { 1.0f32 });
                 let x = (pos.x + x_off).round() as i32;
                 let y = (pos.y + y_off).round() as i32;
                 let icon_size = (22.0 * scale_factor).round() as i32;
@@ -2133,12 +2240,15 @@ impl RenderTarget for ImageTarget {
                 team0_timer,
                 team1_timer,
                 advantage,
+                team0_name,
+                team1_name,
             } => {
                 let advantage_label = advantage
                     .map(|(level, _)| self.text_resolver.resolve(&wt_translations::TranslatableText::Advantage(level)))
                     .unwrap_or_default();
                 let advantage_team = advantage.map(|(_, team)| team as i32).unwrap_or(-1);
                 let scale_factor = if self.large_elements { 1.8f32 } else { 1.0f32 };
+                let bar_height = if self.kots_layout { 80.0 } else { (60.0 * scale_factor).round() };
                 if self.discord_layout && self.map_x_offset > 0 {
                     draw_vertical_score_strip(
                         &mut self.canvas,
@@ -2169,6 +2279,10 @@ impl RenderTarget for ImageTarget {
                         &self.fonts,
                         self.hud_width,
                         scale_factor,
+                        team0_name.as_deref(),
+                        team1_name.as_deref(),
+                        bar_height,
+                        self.kots_layout,
                     );
                 }
             }
@@ -3315,6 +3429,32 @@ impl RenderTarget for ImageTarget {
                     &self.death_cause_icons,
                 );
             }
+            DrawCommand::KotsDualTables {
+                x,
+                y,
+                width,
+                height,
+                team0_name,
+                team1_name,
+                team0_is_north,
+                team0_rows,
+                team1_rows,
+            } => {
+                draw_kots_dual_tables(
+                    &mut self.canvas,
+                    *x,
+                    *y,
+                    *width,
+                    *height,
+                    team0_name,
+                    team1_name,
+                    *team0_is_north,
+                    team0_rows,
+                    team1_rows,
+                    &self.fonts,
+                    &self.ship_icons,
+                );
+            }
         }
     }
 
@@ -3570,4 +3710,329 @@ fn format_number_commas(n: u32) -> String {
         result.push(c);
     }
     result
+}
+
+fn draw_kots_dual_tables(
+    pm: &mut Pixmap,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    team0_name: &str,
+    team1_name: &str,
+    team0_is_north: bool,
+    team0_rows: &[crate::draw_command::TeammateTableRow],
+    team1_rows: &[crate::draw_command::TeammateTableRow],
+    fonts: &GameFonts,
+    ship_icons: &HashMap<String, ShipIcon>,
+) {
+    // Total panel dimensions: width (928), height (1280)
+    // Dark background for whole panel
+    draw_filled_rect(pm, x as f32, y as f32, width as f32, height as f32, [18, 22, 30], 0.95);
+    // Left boundary line separating map from side panel
+    draw_line(pm, x as f32, y as f32, x as f32, (y + height) as f32, [65, 75, 95], 0.9, 2.0);
+
+    let half_h = height / 2; // 640px per table
+    let (top_name, top_spawn, top_color, top_rows, bot_name, bot_spawn, bot_color, bot_rows) = if team0_is_north {
+        (
+            team0_name,
+            "NORTH SPAWN",
+            [60, 180, 100], // Friendly green
+            team0_rows,
+            team1_name,
+            "SOUTH SPAWN",
+            [220, 70, 70], // Enemy red
+            team1_rows,
+        )
+    } else {
+        (
+            team1_name,
+            "NORTH SPAWN",
+            [220, 70, 70], // Enemy red
+            team1_rows,
+            team0_name,
+            "SOUTH SPAWN",
+            [60, 180, 100], // Friendly green
+            team0_rows,
+        )
+    };
+
+    // Draw Top Table (North Spawn)
+    draw_single_kots_team_table(
+        pm,
+        x,
+        y,
+        width,
+        half_h,
+        top_name,
+        top_spawn,
+        top_color,
+        top_rows,
+        fonts,
+        ship_icons,
+    );
+
+    // Mid divider line between top and bottom tables
+    draw_line(
+        pm,
+        x as f32,
+        (y + half_h) as f32,
+        (x + width) as f32,
+        (y + half_h) as f32,
+        [75, 85, 105],
+        0.9,
+        2.0,
+    );
+
+    // Draw Bottom Table (South Spawn)
+    draw_single_kots_team_table(
+        pm,
+        x,
+        y + half_h,
+        width,
+        half_h,
+        bot_name,
+        bot_spawn,
+        bot_color,
+        bot_rows,
+        fonts,
+        ship_icons,
+    );
+}
+
+fn draw_single_kots_team_table(
+    pm: &mut Pixmap,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    team_name: &str,
+    spawn_label: &str,
+    team_accent: [u8; 3],
+    rows: &[crate::draw_command::TeammateTableRow],
+    fonts: &GameFonts,
+    _ship_icons: &HashMap<String, ShipIcon>,
+) {
+    let padding = 14i32;
+
+    // 1. Header banner (height: 44px)
+    let header_h = 44i32;
+    draw_filled_rect(pm, x as f32, y as f32, width as f32, header_h as f32, [24, 29, 40], 0.95);
+    // Left team accent indicator strip
+    draw_filled_rect(pm, x as f32, y as f32, 6.0, header_h as f32, team_accent, 1.0);
+
+    // Team name
+    let team_scale = fonts.scale(22.0);
+    draw_text_shadow(pm, [255, 255, 255], x + padding + 6, y + 10, team_scale, &fonts.primary, team_name);
+    let (tnw, _) = text_size(team_scale, &fonts.primary, team_name);
+
+    // Spawn label badge
+    let spawn_scale = fonts.scale(13.0);
+    let spawn_text = format!("({})", spawn_label);
+    draw_text_shadow(pm, [170, 185, 210], x + padding + 16 + tnw as i32, y + 15, spawn_scale, &fonts.primary, &spawn_text);
+
+    // Right side: alive count
+    let alive_count = rows.iter().filter(|r| !r.is_dead).count();
+    let total_count = rows.len();
+    let alive_str = format!("ALIVE: {} / {}", alive_count, total_count);
+    let alive_scale = fonts.scale(15.0);
+    let (aw, _) = text_size(alive_scale, &fonts.primary, &alive_str);
+    draw_text_shadow(pm, team_accent, x + width - padding - aw as i32, y + 13, alive_scale, &fonts.primary, &alive_str);
+
+    draw_line(pm, x as f32, (y + header_h) as f32, (x + width) as f32, (y + header_h) as f32, [55, 65, 80], 0.6, 1.0);
+
+    // 2. Column Headers (height: 30px)
+    let col_header_y = y + header_h;
+    let col_header_h = 30i32;
+    draw_filled_rect(pm, x as f32, col_header_y as f32, width as f32, col_header_h as f32, [20, 24, 33], 0.75);
+
+    let player_col_w = (width as f32 * 0.32) as i32;
+    let stat_col_w = (width - player_col_w - padding * 2) / 6;
+
+    let headers = ["PLAYER / SHIP", "WPA", "DAMAGE", "RECEIVED", "DMG TRADE", "HP", "KILLS"];
+    let header_scale = fonts.scale(13.0);
+    let header_font = &fonts.primary;
+
+    let mut hx = x + padding;
+    draw_text_shadow(pm, [150, 165, 190], hx, col_header_y + 7, header_scale, header_font, headers[0]);
+    hx += player_col_w;
+
+    for &h in &headers[1..] {
+        draw_text_shadow(pm, [150, 165, 190], hx, col_header_y + 7, header_scale, header_font, h);
+        hx += stat_col_w;
+    }
+
+    let rows_start_y = col_header_y + col_header_h;
+    draw_line(pm, x as f32, rows_start_y as f32, (x + width) as f32, rows_start_y as f32, [55, 65, 80], 0.6, 1.0);
+
+    // 3. Rows
+    // Total available height for 9 rows: ~480px -> 52px per row
+    let row_count = rows.len() as i32;
+    let row_h = if row_count > 0 { ((height - header_h - col_header_h - 44) / row_count).clamp(32, 54) } else { 50 };
+
+    let team_avg_wpa = if !rows.is_empty() {
+        rows.iter().map(|r| r.wpa as f64).sum::<f64>() / rows.len() as f64
+    } else {
+        1.0
+    };
+
+    let p_name_scale = fonts.scale(15.0);
+    let p_ship_scale = fonts.scale(13.0);
+    let stat_scale = fonts.scale(15.0);
+
+    let mut ry = rows_start_y;
+    for (i, row) in rows.iter().enumerate() {
+        if ry + row_h > y + height - 44 {
+            break;
+        }
+
+        // Zebra striping background
+        let bg_color = if row.is_dead {
+            [17, 20, 27]
+        } else if i % 2 == 0 {
+            [23, 28, 38]
+        } else {
+            [27, 33, 46]
+        };
+        let bg_alpha = if row.is_dead { 0.70 } else { 0.55 };
+        draw_filled_rect(pm, x as f32, ry as f32, width as f32, row_h as f32, bg_color, bg_alpha);
+
+        // Player / Ship column: 2 lines
+        let name_color = if row.is_dead { [120, 125, 135] } else { [240, 245, 255] };
+        let ship_color = if row.is_dead { [95, 100, 110] } else { [160, 175, 195] };
+
+        let player_label = if let Some(ref tag) = row.clan_tag {
+            if !tag.is_empty() {
+                format!("[{}] {}", tag, row.player_name)
+            } else {
+                row.player_name.clone()
+            }
+        } else {
+            row.player_name.clone()
+        };
+
+        let name_disp = truncate_to_fit(&player_label, (player_col_w - 12) as u32, p_name_scale, &fonts.primary);
+        let ship_disp = truncate_to_fit(&row.ship_name, (player_col_w - 12) as u32, p_ship_scale, &fonts.primary);
+
+        let mut rx = x + padding;
+        draw_text_shadow(pm, name_color, rx, ry + 6, p_name_scale, &fonts.primary, &name_disp);
+        draw_text_shadow(pm, ship_color, rx, ry + 27, p_ship_scale, &fonts.primary, &ship_disp);
+        rx += player_col_w;
+
+        // Stat columns
+        let stat_y = ry + (row_h - 15) / 2;
+
+        // WPA
+        let wpa_str = format!("{:.2}", row.wpa);
+        let wpa_col = if row.is_dead {
+            [120, 125, 135]
+        } else {
+            wpa_color(row.wpa as f64, team_avg_wpa)
+        };
+        draw_text_shadow(pm, wpa_col, rx, stat_y, stat_scale, &fonts.primary, &wpa_str);
+        rx += stat_col_w;
+
+        // DAMAGE
+        let dmg_str = format_number_commas(row.damage);
+        draw_text_shadow(pm, name_color, rx, stat_y, stat_scale, &fonts.primary, &dmg_str);
+        rx += stat_col_w;
+
+        // RECEIVED
+        let rec_str = format_number_commas(row.received);
+        draw_text_shadow(pm, name_color, rx, stat_y, stat_scale, &fonts.primary, &rec_str);
+        rx += stat_col_w;
+
+        // DMG TRADE
+        let trade_str = if row.received == 0 {
+            "-".to_string()
+        } else {
+            format!("{:.1}x", row.damage as f64 / row.received as f64)
+        };
+        let trade_col = if row.is_dead {
+            [120, 125, 135]
+        } else if row.received > 0 && row.damage as f64 / row.received as f64 >= 1.5 {
+            [100, 220, 140]
+        } else if row.received > 0 && (row.damage as f64 / row.received as f64) < 0.8 {
+            [235, 120, 100]
+        } else {
+            name_color
+        };
+        draw_text_shadow(pm, trade_col, rx, stat_y, stat_scale, &fonts.primary, &trade_str);
+        rx += stat_col_w;
+
+        // HP
+        let hp_pct = if row.is_dead || row.hp_max == 0 {
+            0
+        } else {
+            ((row.hp_cur as f64 / row.hp_max as f64 * 100.0).round() as u32).min(100)
+        };
+        let (hp_str, hp_col) = if row.is_dead {
+            ("0%".to_string(), [180, 60, 60])
+        } else {
+            (format!("{}%", hp_pct), name_color)
+        };
+        draw_text_shadow(pm, hp_col, rx, stat_y, stat_scale, &fonts.primary, &hp_str);
+        rx += stat_col_w;
+
+        // KILLS
+        let kills_str = if row.kills > 0 { row.kills.to_string() } else { "-".to_string() };
+        let kills_col = if row.kills > 0 && !row.is_dead { [255, 215, 80] } else { name_color };
+        draw_text_shadow(pm, kills_col, rx, stat_y, stat_scale, &fonts.primary, &kills_str);
+
+        // Row border
+        draw_line(pm, x as f32, (ry + row_h) as f32, (x + width) as f32, (ry + row_h) as f32, [45, 52, 65], 0.4, 1.0);
+        ry += row_h;
+    }
+
+    // 4. Team Total / Summary Row (height: 44px, pinned at bottom)
+    let total_y = y + height - 44;
+    draw_filled_rect(pm, x as f32, total_y as f32, width as f32, 44.0, [16, 20, 28], 0.95);
+    draw_line(pm, x as f32, total_y as f32, (x + width) as f32, total_y as f32, [75, 85, 105], 0.8, 1.5);
+
+    let total_scale = fonts.scale(14.0);
+    let total_ty = total_y + 14;
+
+    let mut tx = x + padding;
+    draw_text_shadow(pm, [200, 210, 230], tx, total_ty, total_scale, &fonts.primary, "TEAM TOTAL");
+    tx += player_col_w;
+
+    let total_dmg: u32 = rows.iter().map(|r| r.damage).sum();
+    let total_rec: u32 = rows.iter().map(|r| r.received).sum();
+    let total_kills: u32 = rows.iter().map(|r| r.kills).sum();
+    let total_cur_hp: u32 = rows.iter().map(|r| r.hp_cur).sum();
+    let total_max_hp: u32 = rows.iter().map(|r| r.hp_max).sum();
+    let total_hp_pct = if total_max_hp > 0 {
+        ((total_cur_hp as f64 / total_max_hp as f64 * 100.0).round() as u32).min(100)
+    } else {
+        0
+    };
+    let total_trade_str = if total_rec == 0 {
+        "-".to_string()
+    } else {
+        format!("{:.1}x", total_dmg as f64 / total_rec as f64)
+    };
+
+    // WPA avg
+    let avg_wpa_str = format!("{:.2}", team_avg_wpa);
+    draw_text_shadow(pm, [255, 255, 255], tx, total_ty, total_scale, &fonts.primary, &avg_wpa_str);
+    tx += stat_col_w;
+
+    // Damage sum
+    draw_text_shadow(pm, [255, 255, 255], tx, total_ty, total_scale, &fonts.primary, &format_number_commas(total_dmg));
+    tx += stat_col_w;
+
+    // Received sum
+    draw_text_shadow(pm, [255, 255, 255], tx, total_ty, total_scale, &fonts.primary, &format_number_commas(total_rec));
+    tx += stat_col_w;
+
+    // Trade ratio
+    draw_text_shadow(pm, [255, 255, 255], tx, total_ty, total_scale, &fonts.primary, &total_trade_str);
+    tx += stat_col_w;
+
+    // HP %
+    draw_text_shadow(pm, [255, 255, 255], tx, total_ty, total_scale, &fonts.primary, &format!("{}%", total_hp_pct));
+    tx += stat_col_w;
+
+    // Kills sum
+    draw_text_shadow(pm, [255, 215, 80], tx, total_ty, total_scale, &fonts.primary, &total_kills.to_string());
 }

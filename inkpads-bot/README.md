@@ -71,13 +71,17 @@ The website posts a JSON payload (either formatted raw, enclosed in backticks, o
 2. **Replay Acquisition**: Downloads primary (`TA` / Green) and secondary (`TB` / Red) team replays asynchronously to temporary workspace storage.
 3. **Rendering**: Invokes the `minimap_renderer` CLI binary with dual-replay flags (`--red-replay`) to produce a unified match MP4 video.
 4. **Discord Publication**: Uploads the resulting MP4 video along with match metadata (map, game mode, date/time, opponent clan) to `targetChannelId`.
-5. **Callback Acknowledgment**: Performs an HTTP `POST` request to `callbackUrl` returning the published Discord message details:
-   ```json
-   {
-     "messageId": "<DISCORD_MESSAGE_ID>",
-     "channelId": "<TARGET_CHANNEL_ID>"
-   }
-   ```
+5. **Callback Acknowledgment**: Performs an HTTP `POST` request to `callbackUrl` passing `messageId` and `channelId` (and `guildId` if available) as URL query parameters, as well as in the JSON payload body (with automatic fallback to `GET` if the endpoint returns HTTP 405):
+   - **Query Parameters**: `?messageId=<DISCORD_MESSAGE_ID>&channelId=<TARGET_CHANNEL_ID>&guildId=<GUILD_ID>`
+   - **JSON Body**:
+     ```json
+     {
+       "messageId": "<DISCORD_MESSAGE_ID>",
+       "channelId": "<TARGET_CHANNEL_ID>",
+       "guildId": "<GUILD_ID>",
+       "messageUrl": "https://discord.com/channels/<GUILD_ID>/<TARGET_CHANNEL_ID>/<DISCORD_MESSAGE_ID>"
+     }
+     ```
 
 ### 3. Installation & Run
 

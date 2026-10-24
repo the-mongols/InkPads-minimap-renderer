@@ -38,6 +38,10 @@ pub struct RenderOptions {
     pub aspect_ratio_16_9: bool,
     pub discord_layout: bool,
     pub inkpads_layout: bool,
+    pub kots_layout: bool,
+    pub ship_scale: f32,
+    pub team0_name: Option<String>,
+    pub team1_name: Option<String>,
     pub stats_panel_width: Option<u32>,
     /// Controls which ships have their config circles rendered when show_ship_config is true.
     /// Defaults to SelfOnly (only the replay owner's circles).
@@ -79,6 +83,10 @@ impl Default for RenderOptions {
             aspect_ratio_16_9: false,
             discord_layout: false,
             inkpads_layout: false,
+            kots_layout: false,
+            ship_scale: 1.0,
+            team0_name: None,
+            team1_name: None,
             stats_panel_width: None,
             ship_config_visibility: ShipConfigVisibility::default(),
         }
@@ -142,6 +150,10 @@ pub struct CliOverrides {
     pub aspect_ratio_16_9: bool,
     pub discord_layout: bool,
     pub inkpads_layout: bool,
+    pub kots_layout: bool,
+    pub ship_scale: Option<f32>,
+    pub team0_name: Option<String>,
+    pub team1_name: Option<String>,
     pub stats_panel_width: Option<u32>,
 }
 
@@ -182,6 +194,10 @@ pub struct RendererConfig {
     pub aspect_ratio_16_9: bool,
     pub discord_layout: bool,
     pub inkpads_layout: bool,
+    pub kots_layout: bool,
+    pub ship_scale: Option<f32>,
+    pub team0_name: Option<String>,
+    pub team1_name: Option<String>,
     pub stats_panel_width: Option<u32>,
     /// Include the pre-battle phase (spawn and countdown) at the start of the
     /// video. When false, rendering begins at battle start.
@@ -222,6 +238,10 @@ impl Default for RendererConfig {
             aspect_ratio_16_9: false,
             discord_layout: false,
             inkpads_layout: false,
+            kots_layout: false,
+            ship_scale: None,
+            team0_name: None,
+            team1_name: None,
             stats_panel_width: None,
             include_pre_battle: false,
         }
@@ -276,6 +296,10 @@ impl RendererConfig {
             aspect_ratio_16_9: self.aspect_ratio_16_9,
             discord_layout: self.discord_layout,
             inkpads_layout: self.inkpads_layout,
+            kots_layout: self.kots_layout,
+            ship_scale: self.ship_scale.unwrap_or(if self.kots_layout { 1.35 } else { 1.0 }),
+            team0_name: self.team0_name,
+            team1_name: self.team1_name,
             stats_panel_width: self.stats_panel_width,
             ship_config_visibility: ShipConfigVisibility::default(),
         }
@@ -420,6 +444,20 @@ include_pre_battle = false
             self.inkpads_layout = true;
             self.large_elements = true;
             self.aspect_ratio_16_9 = true;
+        }
+        if overrides.kots_layout {
+            self.kots_layout = true;
+            self.show_stats_panel = true;
+            self.aspect_ratio_16_9 = true;
+        }
+        if overrides.ship_scale.is_some() {
+            self.ship_scale = overrides.ship_scale;
+        }
+        if overrides.team0_name.is_some() {
+            self.team0_name = overrides.team0_name.clone();
+        }
+        if overrides.team1_name.is_some() {
+            self.team1_name = overrides.team1_name.clone();
         }
         if overrides.aspect_ratio_16_9 {
             self.aspect_ratio_16_9 = true;

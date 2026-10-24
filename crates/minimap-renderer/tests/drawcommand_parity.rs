@@ -244,6 +244,7 @@ fn normalize(cmd: &DrawCommand) -> String {
             team0_timer,
             team1_timer,
             advantage,
+            ..
         } => {
             format!(
                 "ScoreBar t0={team0} t1={team1} c0={team0_color:?} c1={team1_color:?} max={max_score} t0t={team0_timer:?} t1t={team1_timer:?} adv={advantage:?}"
@@ -327,6 +328,9 @@ fn normalize(cmd: &DrawCommand) -> String {
         }
         DrawCommand::InkpadsInLineFeeds { x, y, width, height, entries } => {
             format!("InkpadsInLineFeeds x={x} y={y} w={width} h={height} n={}", entries.len())
+        }
+        DrawCommand::KotsDualTables { x, y, width, height, team0_rows, team1_rows, .. } => {
+            format!("KotsDualTables x={x} y={y} w={width} h={height} t0_rows={} t1_rows={}", team0_rows.len(), team1_rows.len())
         }
     }
 }

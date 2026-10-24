@@ -221,6 +221,22 @@ struct Args {
     #[arg(long = "inkpads-layout")]
     inkpads_layout: bool,
 
+    /// Enable King of the Sea (KOTS) tournament dual-render layout (dual team tables, scoreboard strip above map)
+    #[arg(long = "kots-layout")]
+    kots_layout: bool,
+
+    /// Scale factor for the ship icon package (icon, outline halo, HP bar, ship/player names, consumable icons). Default: 1.35 in kots-layout, 1.0 otherwise.
+    #[arg(long = "ship-scale")]
+    ship_scale: Option<f32>,
+
+    /// Override team 0 (friendly/North) display name in scoreboard and table (e.g. "[BONKZ]")
+    #[arg(long = "team0-name")]
+    team0_name: Option<String>,
+
+    /// Override team 1 (enemy/South) display name in scoreboard and table (e.g. "[KITED]")
+    #[arg(long = "team1-name")]
+    team1_name: Option<String>,
+
     /// Override the statistics side panel width in pixels
     #[arg(long)]
     stats_panel_width: Option<u32>,
@@ -403,7 +419,7 @@ fn main() -> Result<(), Report> {
     };
     // Merged/dual replays default to a clean 1:1 map layout without stats panel sidebars
     let merge_mode = !args.merge.is_empty() || args.red_replay.is_some();
-    if merge_mode && !args.stats_panel {
+    if merge_mode && !args.stats_panel && !args.kots_layout {
         config.show_stats_panel = false;
     }
     config.apply_cli_overrides(&wows_minimap_renderer::config::CliOverrides {
@@ -428,6 +444,10 @@ fn main() -> Result<(), Report> {
         aspect_ratio_16_9: args.aspect_ratio_16_9,
         discord_layout: args.discord_layout,
         inkpads_layout: args.inkpads_layout,
+        kots_layout: args.kots_layout,
+        ship_scale: args.ship_scale,
+        team0_name: args.team0_name.clone(),
+        team1_name: args.team1_name.clone(),
         stats_panel_width: args.stats_panel_width,
     });
     let include_pre_battle = config.include_pre_battle;
@@ -452,6 +472,8 @@ fn main() -> Result<(), Report> {
         options.stats_panel_width,
     );
     target.inkpads_layout = options.inkpads_layout;
+    target.kots_layout = options.kots_layout;
+    target.ship_scale = options.ship_scale;
 
     // Load self player's ship silhouette for the stats panel
     let self_silhouette = replay_file.meta.vehicles.iter().find(|v| v.relation == 0).and_then(|v| {

@@ -473,6 +473,8 @@ pub struct MinimapRenderer<'a> {
 
     /// Game fonts for CJK fallback selection on chat messages.
     fonts: Option<GameFonts>,
+    /// Cached spawn orientation for KOTS layout (true if team 0 spawned North).
+    pub team0_is_north: Option<bool>,
 
     /// Flag icons for base-type capture points, keyed by "ally"/"enemy"/"neutral".
     flag_icons: HashMap<String, RgbaImage>,
@@ -566,6 +568,7 @@ impl<'a> MinimapRenderer<'a> {
             salvo_flight_times: None,
             locked_self_wpa: None,
             locked_teammates_wpa: HashMap::new(),
+            team0_is_north: None,
         }
     }
 
@@ -758,6 +761,15 @@ impl<'a> MinimapRenderer<'a> {
         }
 
         for (entity_id, player) in players {
+            // Spectator Quarantine:
+            // Non-combatants in training rooms (relation == 3, vehicle id 0, or team_id not 0 or 1)
+            let is_spectator = player.relation().value() == 3
+                || player.vehicle().id().raw() == 0
+                || (player.initial_state().team_id() != 0 && player.initial_state().team_id() != 1);
+            if is_spectator {
+                continue;
+            }
+
             self.player_relations.insert(*entity_id, player.relation());
             if let Some(species) = player.vehicle().species().and_then(|s| s.known()) {
                 self.player_species.insert(*entity_id, species.name().to_string());
@@ -1187,27 +1199,29 @@ impl<'a> MinimapRenderer<'a> {
         let max_score = controller.scoring_rules().map(|r| r.team_win_score as i32).unwrap_or(1000);
         if self.options.show_score {
             let scores = controller.team_scores();
-            if scores.len() >= 2 {
+            if scores.len() >= 2 || self.options.kots_layout {
                 // Show friendly score on left (green), enemy on right (red)
                 let swap = self.self_team_id == Some(1);
                 let (friendly_idx, enemy_idx) = if swap { (1, 0) } else { (0, 1) };
+                let friendly_score = scores.get(friendly_idx).map(|s| s.score).unwrap_or(0);
+                let enemy_score = scores.get(enemy_idx).map(|s| s.score).unwrap_or(0);
 
                 // Score timers: time to win from cap income
-                let (team0_timer, team1_timer) = if self.options.show_score_timer {
+                let (team0_timer, team1_timer) = if self.options.show_score_timer && scores.len() >= 2 {
                     let result = self.calculate_team_advantage(controller);
                     let bd = &result.breakdown;
                     let friendly_pps = if swap { bd.team1_pps } else { bd.team0_pps };
                     let enemy_pps = if swap { bd.team0_pps } else { bd.team1_pps };
                     (
-                        format_score_timer(scores[friendly_idx].score, max_score as i64, friendly_pps),
-                        format_score_timer(scores[enemy_idx].score, max_score as i64, enemy_pps),
+                        format_score_timer(friendly_score, max_score as i64, friendly_pps),
+                        format_score_timer(enemy_score, max_score as i64, enemy_pps),
                     )
                 } else {
                     (None, None)
                 };
 
                 // Team advantage indicator
-                let (advantage, advantage_breakdown) = if self.options.show_advantage {
+                let (advantage, advantage_breakdown) = if self.options.show_advantage && scores.len() >= 2 {
                     let result = self.calculate_team_advantage(controller);
                     let adv = match result.advantage {
                         crate::advantage::TeamAdvantage::Team0(level) => Some((level, 0u8)),
@@ -1219,15 +1233,57 @@ impl<'a> MinimapRenderer<'a> {
                     (None, None)
                 };
 
+                let (friendly_names, friendly_clans): (Vec<&str>, Vec<&str>) = controller
+                    .player_entities()
+                    .values()
+                    .filter(|p| {
+                        let is_spec = p.relation().value() == 3
+                            || p.vehicle().id().raw() == 0
+                            || (p.initial_state().team_id() != 0 && p.initial_state().team_id() != 1);
+                        if is_spec { return false; }
+                        if swap { p.initial_state().team_id() == 1 } else { p.initial_state().team_id() == 0 }
+                    })
+                    .map(|p| (p.initial_state().username(), p.initial_state().clan()))
+                    .unzip();
+
+                let (enemy_names, enemy_clans): (Vec<&str>, Vec<&str>) = controller
+                    .player_entities()
+                    .values()
+                    .filter(|p| {
+                        let is_spec = p.relation().value() == 3
+                            || p.vehicle().id().raw() == 0
+                            || (p.initial_state().team_id() != 0 && p.initial_state().team_id() != 1);
+                        if is_spec { return false; }
+                        if swap { p.initial_state().team_id() == 0 } else { p.initial_state().team_id() == 1 }
+                    })
+                    .map(|p| (p.initial_state().username(), p.initial_state().clan()))
+                    .unzip();
+
+                let team0_name = extract_tournament_team_name(
+                    self.options.team0_name.as_deref(),
+                    &friendly_names,
+                    &friendly_clans,
+                    "ALPHA",
+                );
+
+                let team1_name = extract_tournament_team_name(
+                    self.options.team1_name.as_deref(),
+                    &enemy_names,
+                    &enemy_clans,
+                    "BRAVO",
+                );
+
                 commands.push(DrawCommand::ScoreBar {
-                    team0: scores[friendly_idx].score as i32,
-                    team1: scores[enemy_idx].score as i32,
+                    team0: friendly_score as i32,
+                    team1: enemy_score as i32,
                     team0_color: TEAM0_COLOR,
                     team1_color: TEAM1_COLOR,
                     max_score,
                     team0_timer,
                     team1_timer,
                     advantage,
+                    team0_name: Some(team0_name),
+                    team1_name: Some(team1_name),
                 });
 
                 if let Some(breakdown) = advantage_breakdown {
@@ -2326,26 +2382,246 @@ impl<'a> MinimapRenderer<'a> {
         if self.options.show_stats_panel {
             let panel_x = (self.options.map_x_offset() + MINIMAP_SIZE) as i32;
             let panel_w = {
-                let base_w = if self.options.aspect_ratio_16_9 {
+                let base_w = if self.options.aspect_ratio_16_9 || self.options.kots_layout {
                     self.options.stats_panel_width.unwrap_or(STATS_PANEL_WIDTH_16_9)
                 } else {
                     self.options.stats_panel_width.unwrap_or(STATS_PANEL_WIDTH)
                 };
-                // When no explicit width override and large_elements is on, scale the
-                // panel proportionally so elements have enough room.
-                if self.options.stats_panel_width.is_none() && self.options.large_elements {
+                if self.options.stats_panel_width.is_none() && self.options.large_elements && !self.options.kots_layout {
                     (base_w as f32 * 1.8f32).round() as i32
                 } else {
                     base_w as i32
                 }
             };
-            // The score bar spans only the minimap width, not this side strip, so
-            // the panel's top is free. Start the header near the top (a small pad
-            // matching the score-bar pill inset) instead of below the HUD, which
-            // moves the block up and frees vertical room for the ribbon grid.
 
-            // Panel background
-            commands.push(DrawCommand::StatsPanel { x: panel_x, width: panel_w });
+            if self.options.kots_layout {
+                let swap = self.self_team_id == Some(1);
+                let (friendly_names, friendly_clans): (Vec<&str>, Vec<&str>) = controller
+                    .player_entities()
+                    .values()
+                    .filter(|p| {
+                        let is_spec = p.relation().value() == 3
+                            || p.vehicle().id().raw() == 0
+                            || (p.initial_state().team_id() != 0 && p.initial_state().team_id() != 1);
+                        if is_spec { return false; }
+                        if swap { p.initial_state().team_id() == 1 } else { p.initial_state().team_id() == 0 }
+                    })
+                    .map(|p| (p.initial_state().username(), p.initial_state().clan()))
+                    .unzip();
+
+                let (enemy_names, enemy_clans): (Vec<&str>, Vec<&str>) = controller
+                    .player_entities()
+                    .values()
+                    .filter(|p| {
+                        let is_spec = p.relation().value() == 3
+                            || p.vehicle().id().raw() == 0
+                            || (p.initial_state().team_id() != 0 && p.initial_state().team_id() != 1);
+                        if is_spec { return false; }
+                        if swap { p.initial_state().team_id() == 0 } else { p.initial_state().team_id() == 1 }
+                    })
+                    .map(|p| (p.initial_state().username(), p.initial_state().clan()))
+                    .unzip();
+
+                let team0_name = extract_tournament_team_name(
+                    self.options.team0_name.as_deref(),
+                    &friendly_names,
+                    &friendly_clans,
+                    "ALPHA",
+                );
+
+                let team1_name = extract_tournament_team_name(
+                    self.options.team1_name.as_deref(),
+                    &enemy_names,
+                    &enemy_clans,
+                    "BRAVO",
+                );
+
+                let team_advantage_result = self.calculate_team_advantage(controller);
+                let raw_leverage = 1.0 + (team_advantage_result.breakdown.total.0 - team_advantage_result.breakdown.total.1).abs() / 100.0;
+                let leverage_index = raw_leverage.clamp(1.0, 2.5);
+
+                let friendly_game_team = if swap { 1 } else { 0 };
+                let enemy_game_team = if swap { 0 } else { 1 };
+
+                let mut team0_rows: Vec<crate::draw_command::TeammateTableRow> = Vec::new();
+                let mut team1_rows: Vec<crate::draw_command::TeammateTableRow> = Vec::new();
+                let dead = controller.dead_ships();
+
+                for player in controller.player_entities().values() {
+                    let is_spec = player.relation().value() == 3
+                        || player.vehicle().id().raw() == 0
+                        || (player.initial_state().team_id() != 0 && player.initial_state().team_id() != 1);
+                    if is_spec {
+                        continue;
+                    }
+                    let p_team = player.initial_state().team_id() as i64;
+                    let is_team0 = p_team == friendly_game_team;
+                    let is_team1 = p_team == enemy_game_team;
+                    if !is_team0 && !is_team1 {
+                        continue;
+                    }
+
+                    let entity_id = player.initial_state().entity_id();
+                    let vehicle_props = controller.vehicle_props(entity_id);
+                    let hp_max = vehicle_props.as_ref().map(|p| p.max_health()).unwrap_or(0.0);
+                    let hp_cur = vehicle_props.as_ref().map(|p| p.health()).unwrap_or(0.0);
+                    let is_dead = dead.contains_key(&entity_id) || (hp_max > 0.0 && hp_cur <= 0.0);
+
+                    let kills = controller.kills().iter().filter(|k| k.killer == entity_id && k.clock <= clock).count() as u32;
+
+                    let damage_dealt = self
+                        .damage_events
+                        .get(&entity_id)
+                        .map(|events| events.iter().take_while(|e| e.clock <= clock).map(|e| e.amount).sum::<f32>())
+                        .unwrap_or(0.0) as u32;
+
+                    let damage_received = (hp_max - hp_cur).max(0.0) as u32;
+
+                    let player_name = player.initial_state().username().to_string();
+                    let clan_tag = if !player.initial_state().clan().is_empty() {
+                        Some(player.initial_state().clan().to_string())
+                    } else {
+                        None
+                    };
+                    let ship_name = self.game_params.localized_name_from_param(player.vehicle()).unwrap_or_default();
+                    let ship_species = player.vehicle().species().and_then(species_key).map(String::from);
+
+                    let death_clock = controller.kills().iter().find(|k| k.victim == entity_id).map(|k| k.clock);
+                    let is_t_dead = death_clock.map_or(false, |d| clock >= d);
+
+                    let wpa_score = if is_t_dead {
+                        if let Some(&locked) = self.locked_teammates_wpa.get(&entity_id) {
+                            locked
+                        } else {
+                            let eval_clock = death_clock.unwrap_or(clock);
+                            let score = calculate_player_wpa(
+                                entity_id,
+                                eval_clock,
+                                1.0,
+                                &self.damage_events,
+                                controller,
+                                hp_cur,
+                                hp_max,
+                                damage_dealt,
+                                damage_received,
+                                kills,
+                            ) as f32;
+                            self.locked_teammates_wpa.insert(entity_id, score);
+                            score
+                        }
+                    } else {
+                        calculate_player_wpa(
+                            entity_id,
+                            clock,
+                            leverage_index,
+                            &self.damage_events,
+                            controller,
+                            hp_cur,
+                            hp_max,
+                            damage_dealt,
+                            damage_received,
+                            kills,
+                        ) as f32
+                    };
+
+                    let row = crate::draw_command::TeammateTableRow {
+                        player_name,
+                        clan_tag,
+                        ship_name,
+                        ship_species,
+                        wpa: wpa_score,
+                        damage: damage_dealt,
+                        hp_cur: hp_cur.max(0.0) as u32,
+                        hp_max: hp_max.max(0.0) as u32,
+                        received: damage_received,
+                        kills,
+                        is_dead,
+                    };
+
+                    if is_team0 {
+                        team0_rows.push(row);
+                    } else {
+                        team1_rows.push(row);
+                    }
+                }
+
+                team0_rows.sort_by(|a, b| {
+                    let order_a = species_hierarchy(a.ship_species.as_deref());
+                    let order_b = species_hierarchy(b.ship_species.as_deref());
+                    order_a.cmp(&order_b).then_with(|| a.player_name.cmp(&b.player_name))
+                });
+
+                team1_rows.sort_by(|a, b| {
+                    let order_a = species_hierarchy(a.ship_species.as_deref());
+                    let order_b = species_hierarchy(b.ship_species.as_deref());
+                    order_a.cmp(&order_b).then_with(|| a.player_name.cmp(&b.player_name))
+                });
+
+                // Detect North spawn using ship and minimap positions
+                let get_player_y = |entity_id: &EntityId| -> Option<f32> {
+                    if let Some(t) = ship_positions.get(entity_id) {
+                        Some(map_info.world_to_minimap(t.pos, MINIMAP_SIZE).y)
+                    } else if let Some(mm) = minimap_positions.get(entity_id) {
+                        Some(map_info.normalized_to_minimap(&mm.pos, MINIMAP_SIZE).y)
+                    } else {
+                        None
+                    }
+                };
+
+                let mut sum0 = 0.0f32;
+                let mut count0 = 0usize;
+                let mut sum1 = 0.0f32;
+                let mut count1 = 0usize;
+
+                for player in controller.player_entities().values() {
+                    let is_spec = player.relation().value() == 3
+                        || player.vehicle().id().raw() == 0
+                        || (player.initial_state().team_id() != 0 && player.initial_state().team_id() != 1);
+                    if is_spec {
+                        continue;
+                    }
+                    let eid = player.initial_state().entity_id();
+                    if let Some(y) = get_player_y(&eid) {
+                        if player.initial_state().team_id() as i64 == friendly_game_team {
+                            sum0 += y;
+                            count0 += 1;
+                        } else {
+                            sum1 += y;
+                            count1 += 1;
+                        }
+                    }
+                }
+                let avg_y0 = if count0 > 0 { sum0 / count0 as f32 } else { 0.0 };
+                let avg_y1 = if count1 > 0 { sum1 / count1 as f32 } else { 1200.0 };
+                let team0_is_north = if let Some(cached) = self.team0_is_north {
+                    cached
+                } else if count0 > 0 && count1 > 0 {
+                    let is_north = avg_y0 < avg_y1;
+                    self.team0_is_north = Some(is_north);
+                    is_north
+                } else {
+                    avg_y0 < avg_y1
+                };
+
+                commands.push(DrawCommand::KotsDualTables {
+                    x: panel_x,
+                    y: 0,
+                    width: panel_w,
+                    height: 1280,
+                    team0_name,
+                    team1_name,
+                    team0_is_north,
+                    team0_rows,
+                    team1_rows,
+                });
+            } else {
+                // The score bar spans only the minimap width, not this side strip, so
+                // the panel's top is free. Start the header near the top (a small pad
+                // matching the score-bar pill inset) instead of below the HUD, which
+                // moves the block up and frees vertical room for the ribbon grid.
+
+                // Panel background
+                commands.push(DrawCommand::StatsPanel { x: panel_x, width: panel_w });
 
             // Ship silhouette + HP
             let (
@@ -2950,9 +3226,11 @@ impl<'a> MinimapRenderer<'a> {
                 });
             }
         }
-
-        commands
     }
+
+    commands.sort_by_key(|c| c.z_order());
+    commands
+}
 }
 
 /// English fallback name for a ribbon when translation is unavailable.
@@ -3272,6 +3550,91 @@ fn consumable_to_base_icon_key(c: Consumable) -> Option<String> {
         _ => return None,
     };
     Some(key.to_string())
+}
+
+fn species_hierarchy(species: Option<&str>) -> u8 {
+    match species {
+        Some("AirCarrier") => 1,
+        Some("Battleship") => 2,
+        Some("Cruiser") => 3,
+        Some("Destroyer") => 4,
+        Some("Submarine") => 5,
+        _ => 6,
+    }
+}
+
+fn format_team_tag(tag: &str) -> String {
+    let t = tag.trim();
+    if t.is_empty() {
+        return String::new();
+    }
+    if t.starts_with('[') && t.ends_with(']') {
+        t.to_string()
+    } else {
+        format!("[{}]", t)
+    }
+}
+
+fn extract_tournament_team_name(
+    override_name: Option<&str>,
+    combatant_names: &[&str],
+    combatant_clans: &[&str],
+    default_name: &str,
+) -> String {
+    if let Some(name) = override_name {
+        if !name.trim().is_empty() {
+            return format_team_tag(name);
+        }
+    }
+
+    // 1. Check clan tags
+    let mut clan_counts: HashMap<&str, usize> = HashMap::new();
+    for &clan in combatant_clans {
+        if !clan.trim().is_empty() {
+            *clan_counts.entry(clan.trim()).or_insert(0) += 1;
+        }
+    }
+    if let Some((&dominant_clan, &count)) = clan_counts.iter().max_by_key(|(_, c)| *c) {
+        if count >= 2 || count == combatant_clans.len() {
+            return format_team_tag(dominant_clan);
+        }
+    }
+
+    // 2. Check tournament username pattern: <TEAM>_<PLAYER>_<REGION>
+    // e.g. S_D_M_arch_KOTS19EU, BONKZ_Player_KOTS19NA
+    let mut prefix_counts: HashMap<String, usize> = HashMap::new();
+    for &name in combatant_names {
+        let trimmed = name.trim();
+        let parts: Vec<&str> = trimmed.split('_').collect();
+        if parts.len() >= 3 {
+            let last = parts[parts.len() - 1];
+            let is_region = last.eq_ignore_ascii_case("eu")
+                || last.eq_ignore_ascii_case("na")
+                || last.eq_ignore_ascii_case("asia")
+                || last.eq_ignore_ascii_case("cis")
+                || last.to_ascii_uppercase().starts_with("KOTS");
+            if is_region && parts.len() >= 3 {
+                let team_prefix = parts[0..parts.len() - 2].join("_");
+                if !team_prefix.is_empty() {
+                    *prefix_counts.entry(team_prefix).or_insert(0) += 1;
+                }
+            } else if parts.len() >= 2 {
+                let team_prefix = parts[0].to_string();
+                *prefix_counts.entry(team_prefix).or_insert(0) += 1;
+            }
+        } else if parts.len() == 2 {
+            let team_prefix = parts[0].to_string();
+            *prefix_counts.entry(team_prefix).or_insert(0) += 1;
+        }
+    }
+
+    if let Some((dominant_prefix, &count)) = prefix_counts.iter().max_by_key(|(_, c)| *c) {
+        if count >= 2 {
+            return format_team_tag(dominant_prefix);
+        }
+    }
+
+    format_team_tag(default_name)
 }
 
 #[cfg(test)]

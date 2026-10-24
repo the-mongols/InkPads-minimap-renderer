@@ -544,6 +544,10 @@ pub enum DrawCommand {
         /// Which team has the advantage and at what level. None = even or disabled.
         /// Tuple is (level, team_index) where team_index is 0 or 1.
         advantage: Option<(AdvantageLevel, u8)>,
+        /// Optional display name for team 0 (e.g. "[BONKZ]")
+        team0_name: Option<String>,
+        /// Optional display name for team 1 (e.g. "[KITED]")
+        team1_name: Option<String>,
     },
     /// Team advantage indicator (shown in score bar area)
     TeamAdvantage {
@@ -637,6 +641,18 @@ pub enum DrawCommand {
     InkpadsTeammateTable { x: i32, y: i32, width: i32, height: i32, rows: Vec<TeammateTableRow> },
     /// In-line side-by-side Kill Feed (30%) and Chat Feed (70%) in the bottom section of --inkpads-layout
     InkpadsInLineFeeds { x: i32, y: i32, width: i32, height: i32, entries: Vec<ActivityFeedEntry> },
+    /// KOTS Tournament dual team performance tables (both 9-player rosters, North spawn above South spawn)
+    KotsDualTables {
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        team0_name: String,
+        team1_name: String,
+        team0_is_north: bool,
+        team0_rows: Vec<TeammateTableRow>,
+        team1_rows: Vec<TeammateTableRow>,
+    },
 }
 
 /// Single row in the InkPads teammate performance table.
@@ -844,6 +860,7 @@ impl DrawCommand {
                 | Self::StatsActivityFeed { .. }
                 | Self::InkpadsTeammateTable { .. }
                 | Self::InkpadsInLineFeeds { .. }
+                | Self::KotsDualTables { .. }
         )
     }
 
@@ -859,7 +876,58 @@ impl DrawCommand {
                 | Self::StatsActivityFeed { .. }
                 | Self::InkpadsTeammateTable { .. }
                 | Self::InkpadsInLineFeeds { .. }
+                | Self::KotsDualTables { .. }
         )
+    }
+
+    /// Explicit visual layer index for painters algorithm rendering.
+    /// Lower values render underneath higher values:
+    /// - 10: Environmental effects, trails, smoke, radar/hydro shaded circles, config circles, tracers, torpedoes, wrecks, buildings
+    /// - 20: Objective capture zones (rings, progress pie fill, letter labels)
+    /// - 30: Active combatants (planes, aim direction vectors, ship icons, outlines, health bars, player labels, consumable icons)
+    /// - 40: HUD and overlays (scoreboard, timer, advantage indicator, countdowns, stats tables)
+    pub fn z_order(&self) -> u32 {
+        match self {
+            Self::PositionTrail { .. }
+            | Self::BuffZone { .. }
+            | Self::ShotTracer { .. }
+            | Self::ShotTracerTip { .. }
+            | Self::SecondaryShotTracer { .. }
+            | Self::SecondaryShotTracerTip { .. }
+            | Self::Torpedo { .. }
+            | Self::Smoke { .. }
+            | Self::WeatherZone { .. }
+            | Self::Building { .. }
+            | Self::PatrolRadius { .. }
+            | Self::ConsumableRadius { .. }
+            | Self::ShipConfigCircle { .. }
+            | Self::DeadShip { .. } => 10,
+
+            Self::CapturePoint { .. } => 20,
+
+            Self::Plane { .. }
+            | Self::CameraDirection { .. }
+            | Self::Ship { .. }
+            | Self::HealthBar { .. }
+            | Self::ConsumableIcons { .. } => 30,
+
+            Self::ScoreBar { .. }
+            | Self::TeamAdvantage { .. }
+            | Self::Timer { .. }
+            | Self::PreBattleCountdown { .. }
+            | Self::TeamBuffs { .. }
+            | Self::KillFeed { .. }
+            | Self::ChatOverlay { .. }
+            | Self::BattleResultOverlay { .. }
+            | Self::StatsPanel { .. }
+            | Self::StatsSilhouette { .. }
+            | Self::StatsDamage { .. }
+            | Self::StatsRibbons { .. }
+            | Self::StatsActivityFeed { .. }
+            | Self::InkpadsTeammateTable { .. }
+            | Self::InkpadsInLineFeeds { .. }
+            | Self::KotsDualTables { .. } => 40,
+        }
     }
 }
 

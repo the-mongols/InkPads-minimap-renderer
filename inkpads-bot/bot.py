@@ -48,6 +48,7 @@ LAYOUT_CHOICES = [
 ]
 if ENABLE_INKPADS_LAYOUT:
     LAYOUT_CHOICES.append(app_commands.Choice(name="C: InkPads (Clan Battles)", value="C"))
+LAYOUT_CHOICES.append(app_commands.Choice(name="D: KOTS (Dual Render)", value="D"))
 
 
 
@@ -357,22 +358,25 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
             cmd.append(str(green_path))
 
             if red_path and red_path.exists():
-                cmd.extend(["--red-replay", str(red_path), "--no-chat", "--no-kill-feed", "--no-stats-panel"])
-            if FORCE_CPU or data.get("cpu") or data.get("cpu_mode") or data.get("cpuMode"):
-                cmd.append("--cpu")
-
-            if data.get("show_trails") or data.get("showTrails"):
-                cmd.append("--show-trails")
-            if data.get("show_ship_config") or data.get("showShipConfig") or data.get("showConfig"):
-                cmd.append("--show-ship-config")
-
-            layout_opt = str(data.get("layout") or data.get("preset") or ("C" if ENABLE_INKPADS_LAYOUT else "A")).upper()
-            if layout_opt in ("C", "INKPADS"):
-                cmd.extend(["--inkpads-layout", "--aspect-ratio-16-9", "--stats-panel-width", "928"])
-            elif layout_opt in ("B", "WIDESCREEN"):
-                cmd.extend(["--discord-layout", "--aspect-ratio-16-9", "--stats-panel-width", "928"])
+                cmd.extend(["--red-replay", str(red_path), "--kots-layout"])
+                if data.get("team0_name") or data.get("team0Name"):
+                    cmd.extend(["--team0-name", str(data.get("team0_name") or data.get("team0Name")).strip()])
+                if data.get("team1_name") or data.get("team1Name"):
+                    cmd.extend(["--team1-name", str(data.get("team1_name") or data.get("team1Name")).strip()])
             else:
-                cmd.extend(["--discord-layout", "--stats-panel-width", "720"])
+                layout_opt = str(data.get("layout") or data.get("preset") or ("C" if ENABLE_INKPADS_LAYOUT else "A")).upper()
+                if layout_opt in ("C", "INKPADS"):
+                    cmd.extend(["--inkpads-layout", "--aspect-ratio-16-9", "--stats-panel-width", "928"])
+                elif layout_opt in ("B", "WIDESCREEN"):
+                    cmd.extend(["--discord-layout", "--aspect-ratio-16-9", "--stats-panel-width", "928"])
+                elif layout_opt in ("D", "KOTS"):
+                    cmd.extend(["--kots-layout"])
+                    if data.get("team0_name") or data.get("team0Name"):
+                        cmd.extend(["--team0-name", str(data.get("team0_name") or data.get("team0Name")).strip()])
+                    if data.get("team1_name") or data.get("team1Name"):
+                        cmd.extend(["--team1-name", str(data.get("team1_name") or data.get("team1Name")).strip()])
+                else:
+                    cmd.extend(["--discord-layout", "--stats-panel-width", "720"])
 
             logger.info(f"[{session_id}] Executing renderer CLI command (layout: {layout_opt}, target: {target_size_mib} MiB)...")
             process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
@@ -451,13 +455,34 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
 
             # Send callback back to wows-tournaments.com
             async with aiohttp.ClientSession() as session:
+                cb_params = {
+                    "messageId": str(posted_msg.id),
+                    "channelId": str(target_channel_id),
+                }
+                if getattr(posted_msg, "guild", None):
+                    cb_params["guildId"] = str(posted_msg.guild.id)
+
                 payload = {
                     "messageId": str(posted_msg.id),
-                    "channelId": str(target_channel_id)
+                    "channelId": str(target_channel_id),
+                    "guildId": str(posted_msg.guild.id) if getattr(posted_msg, "guild", None) else None,
+                    "messageUrl": posted_msg.jump_url,
+                    "jumpUrl": posted_msg.jump_url,
                 }
-                logger.info(f"[{session_id}] Sending callback to {callback_url} with payload {payload}")
-                async with session.post(callback_url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as cb_resp:
-                    logger.info(f"[{session_id}] Callback HTTP response status: {cb_resp.status}")
+                logger.info(f"[{session_id}] Sending callback to {callback_url} with params {cb_params} and payload {payload}")
+                try:
+                    async with session.post(callback_url, params=cb_params, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as cb_resp:
+                        cb_text = await cb_resp.text()
+                        logger.info(f"[{session_id}] Callback HTTP response status: {cb_resp.status}, body: {cb_text}")
+
+                        # If POST is not supported (405 Method Not Allowed), retry with GET
+                        if cb_resp.status == 405:
+                            logger.warning(f"[{session_id}] Callback POST returned 405 Method Not Allowed. Retrying with GET...")
+                            async with session.get(callback_url, params=cb_params, timeout=aiohttp.ClientTimeout(total=30)) as get_resp:
+                                get_text = await get_resp.text()
+                                logger.info(f"[{session_id}] GET Callback HTTP status: {get_resp.status}, body: {get_text}")
+                except Exception as cb_err:
+                    logger.error(f"[{session_id}] Error sending tournament callback to {callback_url}: {cb_err}")
 
         finally:
             render_semaphore.release()
@@ -1221,7 +1246,9 @@ async def _render_impl(
     show_trails: bool = False,
     show_config: bool = False,
     cpu_mode: bool = False,
-    layout_preset: app_commands.Choice[str] = None
+    layout_preset: app_commands.Choice[str] = None,
+    team0_name: str = None,
+    team1_name: str = None
 ):
     # Acknowledge and defer immediately (Discord requires responses within 3 seconds)
     try:
@@ -1354,13 +1381,19 @@ async def _render_impl(
         cmd.append(str(replay_path))
 
         if red_replay:
-            cmd.extend(["--red-replay", str(red_replay_path), "--no-chat", "--no-kill-feed", "--no-stats-panel"])
+            cmd.extend(["--red-replay", str(red_replay_path)])
         if show_trails: cmd.append("--show-trails")
         if show_config: cmd.append("--show-ship-config")
         if cpu_mode or FORCE_CPU: cmd.append("--cpu")
 
-        preset_val = layout_preset.value if layout_preset else "A"
-        if preset_val == "A":
+        preset_val = layout_preset.value if layout_preset else ("D" if red_replay else "A")
+        if preset_val == "D":
+            cmd.append("--kots-layout")
+            if team0_name and team0_name.strip():
+                cmd.extend(["--team0-name", team0_name.strip()])
+            if team1_name and team1_name.strip():
+                cmd.extend(["--team1-name", team1_name.strip()])
+        elif preset_val == "A":
             # Option A: Standard Default (16:10 side stats panel layout)
             cmd.extend(["--discord-layout", "--stats-panel-width", "720"])
         elif preset_val == "B":
@@ -1569,7 +1602,9 @@ if FORCE_CPU:
         red_replay="(Optional) Attach a .wowsreplay file from the opposing team for a dual-render",
         show_trails="Display ship movement trails (heatmap)",
         show_config="Show detection and weapon range circles",
-        layout_preset="Layout preset (default: A: Default 16:10)"
+        layout_preset="Layout preset (default: D for dual-render, A for single replay)",
+        team0_name="(Optional) Custom name/tag for Green / Team 0 (auto-detected if omitted)",
+        team1_name="(Optional) Custom name/tag for Red / Team 1 (auto-detected if omitted)"
     )
     @app_commands.choices(layout_preset=LAYOUT_CHOICES)
     async def render(
@@ -1578,7 +1613,9 @@ if FORCE_CPU:
         red_replay: discord.Attachment = None,
         show_trails: bool = False,
         show_config: bool = False,
-        layout_preset: app_commands.Choice[str] = None
+        layout_preset: app_commands.Choice[str] = None,
+        team0_name: str = None,
+        team1_name: str = None
     ):
         await _render_impl(
             interaction=interaction,
@@ -1587,7 +1624,9 @@ if FORCE_CPU:
             show_trails=show_trails,
             show_config=show_config,
             cpu_mode=False,
-            layout_preset=layout_preset
+            layout_preset=layout_preset,
+            team0_name=team0_name,
+            team1_name=team1_name
         )
 else:
     @bot.tree.command(name="render", description="Render a WoWS replay into a tactical video")
@@ -1599,7 +1638,9 @@ else:
         show_trails="Display ship movement trails (heatmap)",
         show_config="Show detection and weapon range circles",
         cpu_mode="Use CPU encoding (slower, but safer if GPU is busy)",
-        layout_preset="Layout preset (default: A: Default 16:10)"
+        layout_preset="Layout preset (default: D for dual-render, A for single replay)",
+        team0_name="(Optional) Custom name/tag for Green / Team 0 (auto-detected if omitted)",
+        team1_name="(Optional) Custom name/tag for Red / Team 1 (auto-detected if omitted)"
     )
     @app_commands.choices(layout_preset=LAYOUT_CHOICES)
     async def render(
@@ -1609,7 +1650,9 @@ else:
         show_trails: bool = False,
         show_config: bool = False,
         cpu_mode: bool = False,
-        layout_preset: app_commands.Choice[str] = None
+        layout_preset: app_commands.Choice[str] = None,
+        team0_name: str = None,
+        team1_name: str = None
     ):
         await _render_impl(
             interaction=interaction,
@@ -1618,7 +1661,9 @@ else:
             show_trails=show_trails,
             show_config=show_config,
             cpu_mode=cpu_mode,
-            layout_preset=layout_preset
+            layout_preset=layout_preset,
+            team0_name=team0_name,
+            team1_name=team1_name
         )
 
 @bot.tree.command(name="ping", description="Check bot status")
