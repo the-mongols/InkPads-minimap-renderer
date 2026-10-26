@@ -1642,6 +1642,44 @@ impl<'a> MinimapRenderer<'a> {
         if self.options.show_torpedoes {
             let half_space = map_info.space_size as f32 / 2.0;
             for torp in controller.active_torpedoes() {
+                let total_elapsed = clock - torp.launched_at;
+                if total_elapsed < 0.0 {
+                    continue;
+                }
+                let speed = (torp.torpedo.direction.x * torp.torpedo.direction.x
+                    + torp.torpedo.direction.z * torp.torpedo.direction.z)
+                    .sqrt();
+                if speed < 1e-4 {
+                    continue;
+                }
+
+                // Check torpedo ballistic range / expiration.
+                // WoWs network packets do not transmit torpedo expiration on max range;
+                // clients expire torpedoes locally once distTraveled reaches maxDist.
+                let torp_param = GameParamProvider::game_param_by_id(self.game_params, torp.torpedo.params_id);
+                let max_dist = torp_param
+                    .as_ref()
+                    .and_then(|p| p.projectile())
+                    .and_then(|p| p.max_dist())
+                    .map(|d| d.value());
+
+                let dist_traveled = speed * total_elapsed;
+                match max_dist {
+                    Some(max_d) => {
+                        // Allow a 2% margin for packet timing discretization / server latency
+                        if dist_traveled > max_d * 1.02 {
+                            continue;
+                        }
+                    }
+                    None => {
+                        // Fallback if projectile game param is missing: max WoWs torpedo range is ~20 km (667 BW),
+                        // and no torpedo swims for over 180 seconds.
+                        if dist_traveled > 700.0 || total_elapsed > 180.0 {
+                            continue;
+                        }
+                    }
+                }
+
                 let elapsed = clock - torp.updated_at;
                 if elapsed < 0.0 {
                     continue;
@@ -3881,5 +3919,38 @@ mod availability_tests {
     #[test]
     fn active_wins_even_if_reloading_flag_set() {
         assert_eq!(availability_from(false, true, true, true), ConsumableAvailability::Active);
+    }
+}
+
+#[cfg(test)]
+mod torpedo_range_tests {
+    #[test]
+    fn torpedo_expires_when_exceeding_max_dist() {
+        let speed = 5.0f32; // BW/s
+        let max_dist = 350.0f32; // Gearing Mk 16 10.5 km in BW units
+        let margin_max = max_dist * 1.02;
+
+        let total_elapsed_under = 60.0;
+        let dist_under = speed * total_elapsed_under; // 300.0 BW
+        assert!(dist_under <= margin_max);
+
+        let total_elapsed_over = 75.0;
+        let dist_over = speed * total_elapsed_over; // 375.0 BW
+        assert!(dist_over > margin_max);
+    }
+
+    #[test]
+    fn fallback_expires_unknown_torpedoes() {
+        let speed = 4.0f32;
+        let total_elapsed_under = 120.0;
+        let dist_under = speed * total_elapsed_under; // 480 BW (< 700 BW)
+        assert!(dist_under <= 700.0 && total_elapsed_under <= 180.0);
+
+        let total_elapsed_timeout = 185.0;
+        assert!(total_elapsed_timeout > 180.0);
+
+        let total_elapsed_distance = 160.0;
+        let dist_distance = 5.0 * total_elapsed_distance; // 800 BW
+        assert!(dist_distance > 700.0);
     }
 }
