@@ -3724,7 +3724,7 @@ fn draw_kots_dual_tables(
     team0_rows: &[crate::draw_command::TeammateTableRow],
     team1_rows: &[crate::draw_command::TeammateTableRow],
     fonts: &GameFonts,
-    ship_icons: &HashMap<String, ShipIcon>,
+    _ship_icons: &HashMap<String, ShipIcon>,
 ) {
     // Total panel dimensions: width (928), height (1280)
     // Dark background for whole panel
@@ -3732,7 +3732,11 @@ fn draw_kots_dual_tables(
     // Left boundary line separating map from side panel
     draw_line(pm, x as f32, y as f32, x as f32, (y + height) as f32, [65, 75, 95], 0.9, 2.0);
 
-    let half_h = height / 2; // 640px per table
+    let padding = 14i32;
+    let player_col_w = (width as f32 * 0.30) as i32;
+    let stat_col_w = (width - player_col_w - padding * 2) / 6;
+
+    // Normalize: Top is always North spawn (Friendly green), Bottom is always South spawn (Enemy red)
     let (top_name, top_spawn, top_color, top_rows, bot_name, bot_spawn, bot_color, bot_rows) = if team0_is_north {
         (
             team0_name,
@@ -3748,291 +3752,397 @@ fn draw_kots_dual_tables(
         (
             team1_name,
             "NORTH SPAWN",
-            [220, 70, 70], // Enemy red
+            [60, 180, 100], // Friendly green
             team1_rows,
             team0_name,
             "SOUTH SPAWN",
-            [60, 180, 100], // Friendly green
+            [220, 70, 70], // Enemy red
             team0_rows,
         )
     };
 
-    // Draw Top Table (North Spawn)
-    draw_single_kots_team_table(
+    let banner_h = 44i32;
+    let total_h = 38i32;
+    let col_header_h = 30i32;
+    let mid_y = y + height / 2;
+    let col_header_y = mid_y - col_header_h / 2;
+
+    // ─────────────────────────────────────────────────────────────
+    // 1. TOP TEAM (NORTH SPAWN) - Banner (y: y .. y + 44)
+    // ─────────────────────────────────────────────────────────────
+    draw_filled_rect(pm, x as f32, y as f32, width as f32, banner_h as f32, [24, 29, 40], 0.95);
+    draw_filled_rect(pm, x as f32, y as f32, 6.0, banner_h as f32, top_color, 1.0);
+
+    let team_scale = fonts.scale(22.0);
+    draw_text_shadow(pm, [255, 255, 255], x + padding + 6, y + 10, team_scale, &fonts.primary, top_name);
+    let (top_tnw, _) = text_size(team_scale, &fonts.primary, top_name);
+
+    let spawn_scale = fonts.scale(13.0);
+    let top_spawn_text = format!("({})", top_spawn);
+    draw_text_shadow(
         pm,
-        x,
-        y,
-        width,
-        half_h,
-        top_name,
-        top_spawn,
-        top_color,
-        top_rows,
-        fonts,
-        ship_icons,
+        [170, 185, 210],
+        x + padding + 16 + top_tnw as i32,
+        y + 15,
+        spawn_scale,
+        &fonts.primary,
+        &top_spawn_text,
     );
 
-    // Mid divider line between top and bottom tables
+    let top_alive_count = top_rows.iter().filter(|r| !r.is_dead).count();
+    let top_alive_str = format!("ALIVE: {} / {}", top_alive_count, top_rows.len());
+    let alive_scale = fonts.scale(15.0);
+    let (top_aw, _) = text_size(alive_scale, &fonts.primary, &top_alive_str);
+    draw_text_shadow(
+        pm,
+        top_color,
+        x + width - padding - top_aw as i32,
+        y + 13,
+        alive_scale,
+        &fonts.primary,
+        &top_alive_str,
+    );
+
+    draw_line(pm, x as f32, (y + banner_h) as f32, (x + width) as f32, (y + banner_h) as f32, [55, 65, 80], 0.6, 1.0);
+
+    // ─────────────────────────────────────────────────────────────
+    // 2. TOP TEAM TOTAL ROW (y: y + 44 .. y + 82)
+    // ─────────────────────────────────────────────────────────────
+    let top_total_y = y + banner_h;
+    draw_filled_rect(pm, x as f32, top_total_y as f32, width as f32, total_h as f32, [16, 20, 28], 0.95);
     draw_line(
         pm,
         x as f32,
-        (y + half_h) as f32,
+        (top_total_y + total_h) as f32,
         (x + width) as f32,
-        (y + half_h) as f32,
-        [75, 85, 105],
-        0.9,
-        2.0,
+        (top_total_y + total_h) as f32,
+        [55, 65, 80],
+        0.8,
+        1.5,
     );
 
-    // Draw Bottom Table (South Spawn)
-    draw_single_kots_team_table(
-        pm,
-        x,
-        y + half_h,
-        width,
-        half_h,
-        bot_name,
-        bot_spawn,
-        bot_color,
-        bot_rows,
-        fonts,
-        ship_icons,
-    );
-}
+    let total_scale = fonts.scale(14.0);
+    let top_total_ty = top_total_y + 11;
 
-fn draw_single_kots_team_table(
-    pm: &mut Pixmap,
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-    team_name: &str,
-    spawn_label: &str,
-    team_accent: [u8; 3],
-    rows: &[crate::draw_command::TeammateTableRow],
-    fonts: &GameFonts,
-    _ship_icons: &HashMap<String, ShipIcon>,
-) {
-    let padding = 14i32;
+    let mut t0x = x + padding;
+    draw_text_shadow(pm, [200, 210, 230], t0x, top_total_ty, total_scale, &fonts.primary, "TEAM TOTAL");
+    t0x += player_col_w;
 
-    // 1. Header banner (height: 44px)
-    let header_h = 44i32;
-    draw_filled_rect(pm, x as f32, y as f32, width as f32, header_h as f32, [24, 29, 40], 0.95);
-    // Left team accent indicator strip
-    draw_filled_rect(pm, x as f32, y as f32, 6.0, header_h as f32, team_accent, 1.0);
-
-    // Team name
-    let team_scale = fonts.scale(22.0);
-    draw_text_shadow(pm, [255, 255, 255], x + padding + 6, y + 10, team_scale, &fonts.primary, team_name);
-    let (tnw, _) = text_size(team_scale, &fonts.primary, team_name);
-
-    // Spawn label badge
-    let spawn_scale = fonts.scale(13.0);
-    let spawn_text = format!("({})", spawn_label);
-    draw_text_shadow(pm, [170, 185, 210], x + padding + 16 + tnw as i32, y + 15, spawn_scale, &fonts.primary, &spawn_text);
-
-    // Right side: alive count
-    let alive_count = rows.iter().filter(|r| !r.is_dead).count();
-    let total_count = rows.len();
-    let alive_str = format!("ALIVE: {} / {}", alive_count, total_count);
-    let alive_scale = fonts.scale(15.0);
-    let (aw, _) = text_size(alive_scale, &fonts.primary, &alive_str);
-    draw_text_shadow(pm, team_accent, x + width - padding - aw as i32, y + 13, alive_scale, &fonts.primary, &alive_str);
-
-    draw_line(pm, x as f32, (y + header_h) as f32, (x + width) as f32, (y + header_h) as f32, [55, 65, 80], 0.6, 1.0);
-
-    // 2. Column Headers (height: 30px)
-    let col_header_y = y + header_h;
-    let col_header_h = 30i32;
-    draw_filled_rect(pm, x as f32, col_header_y as f32, width as f32, col_header_h as f32, [20, 24, 33], 0.75);
-
-    let player_col_w = (width as f32 * 0.32) as i32;
-    let stat_col_w = (width - player_col_w - padding * 2) / 6;
-
-    let headers = ["PLAYER / SHIP", "WPA", "DAMAGE", "RECEIVED", "DMG TRADE", "HP", "KILLS"];
-    let header_scale = fonts.scale(13.0);
-    let header_font = &fonts.primary;
-
-    let mut hx = x + padding;
-    draw_text_shadow(pm, [150, 165, 190], hx, col_header_y + 7, header_scale, header_font, headers[0]);
-    hx += player_col_w;
-
-    for &h in &headers[1..] {
-        draw_text_shadow(pm, [150, 165, 190], hx, col_header_y + 7, header_scale, header_font, h);
-        hx += stat_col_w;
-    }
-
-    let rows_start_y = col_header_y + col_header_h;
-    draw_line(pm, x as f32, rows_start_y as f32, (x + width) as f32, rows_start_y as f32, [55, 65, 80], 0.6, 1.0);
-
-    // 3. Rows
-    // Total available height for 9 rows: ~480px -> 52px per row
-    let row_count = rows.len() as i32;
-    let row_h = if row_count > 0 { ((height - header_h - col_header_h - 44) / row_count).clamp(32, 54) } else { 50 };
-
-    let team_avg_wpa = if !rows.is_empty() {
-        rows.iter().map(|r| r.wpa as f64).sum::<f64>() / rows.len() as f64
+    let top_cits: u32 = top_rows.iter().map(|r| r.citadels).sum();
+    let top_torps: u32 = top_rows.iter().map(|r| r.torp_hits).sum();
+    let top_dmg: u32 = top_rows.iter().map(|r| r.damage).sum();
+    let top_rec: u32 = top_rows.iter().map(|r| r.received).sum();
+    let top_kills: u32 = top_rows.iter().map(|r| r.kills).sum();
+    let top_cur_hp: u32 = top_rows.iter().map(|r| r.hp_cur).sum();
+    let top_max_hp: u32 = top_rows.iter().map(|r| r.hp_max).sum();
+    let top_hp_pct = if top_max_hp > 0 {
+        ((top_cur_hp as f64 / top_max_hp as f64 * 100.0).round() as u32).min(100)
     } else {
-        1.0
+        0
     };
+
+    // CITS | TORPS
+    draw_text_shadow(pm, [255, 255, 255], t0x, top_total_ty, total_scale, &fonts.primary, &format!("{} | {}", top_cits, top_torps));
+    t0x += stat_col_w;
+    // DAMAGE
+    draw_text_shadow(pm, [255, 255, 255], t0x, top_total_ty, total_scale, &fonts.primary, &format_number_commas(top_dmg));
+    t0x += stat_col_w;
+    // RECEIVED
+    draw_text_shadow(pm, [255, 255, 255], t0x, top_total_ty, total_scale, &fonts.primary, &format_number_commas(top_rec));
+    t0x += stat_col_w;
+    // F-KEY
+    draw_text_shadow(pm, [170, 180, 195], t0x, top_total_ty, total_scale, &fonts.primary, "-");
+    t0x += stat_col_w;
+    // HP %
+    draw_text_shadow(pm, [255, 255, 255], t0x, top_total_ty, total_scale, &fonts.primary, &format!("{}%", top_hp_pct));
+    t0x += stat_col_w;
+    // KILLS
+    draw_text_shadow(pm, [255, 215, 80], t0x, top_total_ty, total_scale, &fonts.primary, &top_kills.to_string());
+
+    // ─────────────────────────────────────────────────────────────
+    // 3. TOP TEAM LINEUP ROWS (y: top_total_y + total_h .. col_header_y)
+    // ─────────────────────────────────────────────────────────────
+    let t0_start_y = top_total_y + total_h;
+    let t0_avail_h = col_header_y - t0_start_y;
+    let t0_row_count = top_rows.len() as i32;
+    let t0_row_h = if t0_row_count > 0 { (t0_avail_h / t0_row_count).clamp(34, 54) } else { 50 };
 
     let p_name_scale = fonts.scale(15.0);
     let p_ship_scale = fonts.scale(13.0);
     let stat_scale = fonts.scale(15.0);
 
-    let mut ry = rows_start_y;
-    for (i, row) in rows.iter().enumerate() {
-        if ry + row_h > y + height - 44 {
+    let mut ry0 = t0_start_y;
+    for (i, row) in top_rows.iter().enumerate() {
+        if ry0 + t0_row_h > col_header_y {
             break;
         }
-
-        // Zebra striping background
-        let bg_color = if row.is_dead {
-            [17, 20, 27]
-        } else if i % 2 == 0 {
-            [23, 28, 38]
-        } else {
-            [27, 33, 46]
-        };
-        let bg_alpha = if row.is_dead { 0.70 } else { 0.55 };
-        draw_filled_rect(pm, x as f32, ry as f32, width as f32, row_h as f32, bg_color, bg_alpha);
-
-        // Player / Ship column: 2 lines
-        let name_color = if row.is_dead { [120, 125, 135] } else { [240, 245, 255] };
-        let ship_color = if row.is_dead { [95, 100, 110] } else { [160, 175, 195] };
-
-        let player_label = if let Some(ref tag) = row.clan_tag {
-            if !tag.is_empty() {
-                format!("[{}] {}", tag, row.player_name)
-            } else {
-                row.player_name.clone()
-            }
-        } else {
-            row.player_name.clone()
-        };
-
-        let name_disp = truncate_to_fit(&player_label, (player_col_w - 12) as u32, p_name_scale, &fonts.primary);
-        let ship_disp = truncate_to_fit(&row.ship_name, (player_col_w - 12) as u32, p_ship_scale, &fonts.primary);
-
-        let mut rx = x + padding;
-        draw_text_shadow(pm, name_color, rx, ry + 6, p_name_scale, &fonts.primary, &name_disp);
-        draw_text_shadow(pm, ship_color, rx, ry + 27, p_ship_scale, &fonts.primary, &ship_disp);
-        rx += player_col_w;
-
-        // Stat columns
-        let stat_y = ry + (row_h - 15) / 2;
-
-        // WPA
-        let wpa_str = format!("{:.2}", row.wpa);
-        let wpa_col = if row.is_dead {
-            [120, 125, 135]
-        } else {
-            wpa_color(row.wpa as f64, team_avg_wpa)
-        };
-        draw_text_shadow(pm, wpa_col, rx, stat_y, stat_scale, &fonts.primary, &wpa_str);
-        rx += stat_col_w;
-
-        // DAMAGE
-        let dmg_str = format_number_commas(row.damage);
-        draw_text_shadow(pm, name_color, rx, stat_y, stat_scale, &fonts.primary, &dmg_str);
-        rx += stat_col_w;
-
-        // RECEIVED
-        let rec_str = format_number_commas(row.received);
-        draw_text_shadow(pm, name_color, rx, stat_y, stat_scale, &fonts.primary, &rec_str);
-        rx += stat_col_w;
-
-        // DMG TRADE
-        let trade_str = if row.received == 0 {
-            "-".to_string()
-        } else {
-            format!("{:.1}x", row.damage as f64 / row.received as f64)
-        };
-        let trade_col = if row.is_dead {
-            [120, 125, 135]
-        } else if row.received > 0 && row.damage as f64 / row.received as f64 >= 1.5 {
-            [100, 220, 140]
-        } else if row.received > 0 && (row.damage as f64 / row.received as f64) < 0.8 {
-            [235, 120, 100]
-        } else {
-            name_color
-        };
-        draw_text_shadow(pm, trade_col, rx, stat_y, stat_scale, &fonts.primary, &trade_str);
-        rx += stat_col_w;
-
-        // HP
-        let hp_pct = if row.is_dead || row.hp_max == 0 {
-            0
-        } else {
-            ((row.hp_cur as f64 / row.hp_max as f64 * 100.0).round() as u32).min(100)
-        };
-        let (hp_str, hp_col) = if row.is_dead {
-            ("0%".to_string(), [180, 60, 60])
-        } else {
-            (format!("{}%", hp_pct), name_color)
-        };
-        draw_text_shadow(pm, hp_col, rx, stat_y, stat_scale, &fonts.primary, &hp_str);
-        rx += stat_col_w;
-
-        // KILLS
-        let kills_str = if row.kills > 0 { row.kills.to_string() } else { "-".to_string() };
-        let kills_col = if row.kills > 0 && !row.is_dead { [255, 215, 80] } else { name_color };
-        draw_text_shadow(pm, kills_col, rx, stat_y, stat_scale, &fonts.primary, &kills_str);
-
-        // Row border
-        draw_line(pm, x as f32, (ry + row_h) as f32, (x + width) as f32, (ry + row_h) as f32, [45, 52, 65], 0.4, 1.0);
-        ry += row_h;
+        draw_kots_player_row(
+            pm, x, ry0, width, t0_row_h, padding, player_col_w, stat_col_w, i, row, fonts,
+            p_name_scale, p_ship_scale, stat_scale,
+        );
+        ry0 += t0_row_h;
     }
 
-    // 4. Team Total / Summary Row (height: 44px, pinned at bottom)
-    let total_y = y + height - 44;
-    draw_filled_rect(pm, x as f32, total_y as f32, width as f32, 44.0, [16, 20, 28], 0.95);
-    draw_line(pm, x as f32, total_y as f32, (x + width) as f32, total_y as f32, [75, 85, 105], 0.8, 1.5);
+    // ─────────────────────────────────────────────────────────────
+    // 4. SINGLE SHARED COLUMN HEADER (in the center: col_header_y .. col_header_y + 30)
+    // ─────────────────────────────────────────────────────────────
+    draw_filled_rect(pm, x as f32, col_header_y as f32, width as f32, col_header_h as f32, [20, 24, 33], 0.95);
+    draw_line(
+        pm,
+        x as f32,
+        col_header_y as f32,
+        (x + width) as f32,
+        col_header_y as f32,
+        [75, 85, 105],
+        0.8,
+        1.5,
+    );
+    draw_line(
+        pm,
+        x as f32,
+        (col_header_y + col_header_h) as f32,
+        (x + width) as f32,
+        (col_header_y + col_header_h) as f32,
+        [75, 85, 105],
+        0.8,
+        1.5,
+    );
 
-    let total_scale = fonts.scale(14.0);
-    let total_ty = total_y + 14;
+    let headers = ["PLAYER / SHIP", "CITS | TORPS", "DAMAGE", "RECEIVED", "F-KEY", "HP", "KILLS"];
+    let header_scale = fonts.scale(13.0);
+    let mut hx = x + padding;
+    draw_text_shadow(pm, [160, 175, 205], hx, col_header_y + 7, header_scale, &fonts.primary, headers[0]);
+    hx += player_col_w;
+    for &h in &headers[1..] {
+        draw_text_shadow(pm, [160, 175, 205], hx, col_header_y + 7, header_scale, &fonts.primary, h);
+        hx += stat_col_w;
+    }
 
-    let mut tx = x + padding;
-    draw_text_shadow(pm, [200, 210, 230], tx, total_ty, total_scale, &fonts.primary, "TEAM TOTAL");
-    tx += player_col_w;
+    // ─────────────────────────────────────────────────────────────
+    // 5. BOTTOM TEAM LINEUP ROWS (y: col_header_y + col_header_h .. bot_total_y)
+    // ─────────────────────────────────────────────────────────────
+    let bot_banner_y = y + height - banner_h;
+    let bot_total_y = bot_banner_y - total_h;
+    let t1_start_y = col_header_y + col_header_h;
+    let t1_avail_h = bot_total_y - t1_start_y;
+    let t1_row_count = bot_rows.len() as i32;
+    let t1_row_h = if t1_row_count > 0 { (t1_avail_h / t1_row_count).clamp(34, 54) } else { 50 };
 
-    let total_dmg: u32 = rows.iter().map(|r| r.damage).sum();
-    let total_rec: u32 = rows.iter().map(|r| r.received).sum();
-    let total_kills: u32 = rows.iter().map(|r| r.kills).sum();
-    let total_cur_hp: u32 = rows.iter().map(|r| r.hp_cur).sum();
-    let total_max_hp: u32 = rows.iter().map(|r| r.hp_max).sum();
-    let total_hp_pct = if total_max_hp > 0 {
-        ((total_cur_hp as f64 / total_max_hp as f64 * 100.0).round() as u32).min(100)
+    let mut ry1 = t1_start_y;
+    for (i, row) in bot_rows.iter().enumerate() {
+        if ry1 + t1_row_h > bot_total_y {
+            break;
+        }
+        draw_kots_player_row(
+            pm, x, ry1, width, t1_row_h, padding, player_col_w, stat_col_w, i, row, fonts,
+            p_name_scale, p_ship_scale, stat_scale,
+        );
+        ry1 += t1_row_h;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // 6. BOTTOM TEAM TOTAL ROW (y: bot_total_y .. bot_banner_y)
+    // ─────────────────────────────────────────────────────────────
+    draw_filled_rect(pm, x as f32, bot_total_y as f32, width as f32, total_h as f32, [16, 20, 28], 0.95);
+    draw_line(
+        pm,
+        x as f32,
+        bot_total_y as f32,
+        (x + width) as f32,
+        bot_total_y as f32,
+        [55, 65, 80],
+        0.8,
+        1.5,
+    );
+    draw_line(
+        pm,
+        x as f32,
+        (bot_total_y + total_h) as f32,
+        (x + width) as f32,
+        (bot_total_y + total_h) as f32,
+        [55, 65, 80],
+        0.6,
+        1.0,
+    );
+
+    let bot_total_ty = bot_total_y + 11;
+    let mut t1x = x + padding;
+    draw_text_shadow(pm, [200, 210, 230], t1x, bot_total_ty, total_scale, &fonts.primary, "TEAM TOTAL");
+    t1x += player_col_w;
+
+    let bot_cits: u32 = bot_rows.iter().map(|r| r.citadels).sum();
+    let bot_torps: u32 = bot_rows.iter().map(|r| r.torp_hits).sum();
+    let bot_dmg: u32 = bot_rows.iter().map(|r| r.damage).sum();
+    let bot_rec: u32 = bot_rows.iter().map(|r| r.received).sum();
+    let bot_kills: u32 = bot_rows.iter().map(|r| r.kills).sum();
+    let bot_cur_hp: u32 = bot_rows.iter().map(|r| r.hp_cur).sum();
+    let bot_max_hp: u32 = bot_rows.iter().map(|r| r.hp_max).sum();
+    let bot_hp_pct = if bot_max_hp > 0 {
+        ((bot_cur_hp as f64 / bot_max_hp as f64 * 100.0).round() as u32).min(100)
     } else {
         0
     };
-    let total_trade_str = if total_rec == 0 {
-        "-".to_string()
+
+    // CITS | TORPS
+    draw_text_shadow(pm, [255, 255, 255], t1x, bot_total_ty, total_scale, &fonts.primary, &format!("{} | {}", bot_cits, bot_torps));
+    t1x += stat_col_w;
+    // DAMAGE
+    draw_text_shadow(pm, [255, 255, 255], t1x, bot_total_ty, total_scale, &fonts.primary, &format_number_commas(bot_dmg));
+    t1x += stat_col_w;
+    // RECEIVED
+    draw_text_shadow(pm, [255, 255, 255], t1x, bot_total_ty, total_scale, &fonts.primary, &format_number_commas(bot_rec));
+    t1x += stat_col_w;
+    // F-KEY
+    draw_text_shadow(pm, [170, 180, 195], t1x, bot_total_ty, total_scale, &fonts.primary, "-");
+    t1x += stat_col_w;
+    // HP %
+    draw_text_shadow(pm, [255, 255, 255], t1x, bot_total_ty, total_scale, &fonts.primary, &format!("{}%", bot_hp_pct));
+    t1x += stat_col_w;
+    // KILLS
+    draw_text_shadow(pm, [255, 215, 80], t1x, bot_total_ty, total_scale, &fonts.primary, &bot_kills.to_string());
+
+    // ─────────────────────────────────────────────────────────────
+    // 7. BOTTOM TEAM BANNER (y: bot_banner_y .. y + height)
+    // ─────────────────────────────────────────────────────────────
+    draw_filled_rect(pm, x as f32, bot_banner_y as f32, width as f32, banner_h as f32, [24, 29, 40], 0.95);
+    draw_filled_rect(pm, x as f32, bot_banner_y as f32, 6.0, banner_h as f32, bot_color, 1.0);
+
+    draw_text_shadow(pm, [255, 255, 255], x + padding + 6, bot_banner_y + 10, team_scale, &fonts.primary, bot_name);
+    let (bot_tnw, _) = text_size(team_scale, &fonts.primary, bot_name);
+
+    let bot_spawn_text = format!("({})", bot_spawn);
+    draw_text_shadow(
+        pm,
+        [170, 185, 210],
+        x + padding + 16 + bot_tnw as i32,
+        bot_banner_y + 15,
+        spawn_scale,
+        &fonts.primary,
+        &bot_spawn_text,
+    );
+
+    let bot_alive_count = bot_rows.iter().filter(|r| !r.is_dead).count();
+    let bot_alive_str = format!("ALIVE: {} / {}", bot_alive_count, bot_rows.len());
+    let (bot_aw, _) = text_size(alive_scale, &fonts.primary, &bot_alive_str);
+    draw_text_shadow(
+        pm,
+        bot_color,
+        x + width - padding - bot_aw as i32,
+        bot_banner_y + 13,
+        alive_scale,
+        &fonts.primary,
+        &bot_alive_str,
+    );
+}
+
+fn draw_kots_player_row(
+    pm: &mut Pixmap,
+    x: i32,
+    ry: i32,
+    width: i32,
+    row_h: i32,
+    padding: i32,
+    player_col_w: i32,
+    stat_col_w: i32,
+    i: usize,
+    row: &crate::draw_command::TeammateTableRow,
+    fonts: &GameFonts,
+    p_name_scale: PxScale,
+    p_ship_scale: PxScale,
+    stat_scale: PxScale,
+) {
+    // Zebra striping background
+    let bg_color = if row.is_dead {
+        [17, 20, 27]
+    } else if i % 2 == 0 {
+        [23, 28, 38]
     } else {
-        format!("{:.1}x", total_dmg as f64 / total_rec as f64)
+        [27, 33, 46]
+    };
+    let bg_alpha = if row.is_dead { 0.70 } else { 0.55 };
+    draw_filled_rect(pm, x as f32, ry as f32, width as f32, row_h as f32, bg_color, bg_alpha);
+
+    // Player / Ship column: 2 lines
+    let name_color = if row.is_dead { [120, 125, 135] } else { [240, 245, 255] };
+    let ship_color = if row.is_dead { [95, 100, 110] } else { [160, 175, 195] };
+
+    let player_label = if let Some(ref tag) = row.clan_tag {
+        if !tag.is_empty() {
+            format!("[{}] {}", tag, row.player_name)
+        } else {
+            row.player_name.clone()
+        }
+    } else {
+        row.player_name.clone()
     };
 
-    // WPA avg
-    let avg_wpa_str = format!("{:.2}", team_avg_wpa);
-    draw_text_shadow(pm, [255, 255, 255], tx, total_ty, total_scale, &fonts.primary, &avg_wpa_str);
-    tx += stat_col_w;
+    let name_disp = truncate_to_fit(&player_label, (player_col_w - 12) as u32, p_name_scale, &fonts.primary);
+    let ship_disp = truncate_to_fit(&row.ship_name, (player_col_w - 12) as u32, p_ship_scale, &fonts.primary);
 
-    // Damage sum
-    draw_text_shadow(pm, [255, 255, 255], tx, total_ty, total_scale, &fonts.primary, &format_number_commas(total_dmg));
-    tx += stat_col_w;
+    let mut rx = x + padding;
+    draw_text_shadow(pm, name_color, rx, ry + 6, p_name_scale, &fonts.primary, &name_disp);
+    draw_text_shadow(pm, ship_color, rx, ry + 27, p_ship_scale, &fonts.primary, &ship_disp);
+    rx += player_col_w;
 
-    // Received sum
-    draw_text_shadow(pm, [255, 255, 255], tx, total_ty, total_scale, &fonts.primary, &format_number_commas(total_rec));
-    tx += stat_col_w;
+    // Stat columns
+    let stat_y = ry + (row_h - 15) / 2;
 
-    // Trade ratio
-    draw_text_shadow(pm, [255, 255, 255], tx, total_ty, total_scale, &fonts.primary, &total_trade_str);
-    tx += stat_col_w;
+    // CITS | TORPS
+    let cits_torps_str = format!("{} | {}", row.citadels, row.torp_hits);
+    let cits_torps_col = if row.is_dead {
+        [120, 125, 135]
+    } else if row.citadels > 0 || row.torp_hits > 0 {
+        [130, 230, 255]
+    } else {
+        name_color
+    };
+    draw_text_shadow(pm, cits_torps_col, rx, stat_y, stat_scale, &fonts.primary, &cits_torps_str);
+    rx += stat_col_w;
 
-    // HP %
-    draw_text_shadow(pm, [255, 255, 255], tx, total_ty, total_scale, &fonts.primary, &format!("{}%", total_hp_pct));
-    tx += stat_col_w;
+    // DAMAGE
+    let dmg_str = format_number_commas(row.damage);
+    draw_text_shadow(pm, name_color, rx, stat_y, stat_scale, &fonts.primary, &dmg_str);
+    rx += stat_col_w;
 
-    // Kills sum
-    draw_text_shadow(pm, [255, 215, 80], tx, total_ty, total_scale, &fonts.primary, &total_kills.to_string());
+    // RECEIVED
+    let rec_str = format_number_commas(row.received);
+    draw_text_shadow(pm, name_color, rx, stat_y, stat_scale, &fonts.primary, &rec_str);
+    rx += stat_col_w;
+
+    // F-KEY
+    let (f_key_str, f_key_col) = if let Some(ref st) = row.f_key_status {
+        if st == "ACTIVE" {
+            (st.as_str(), [255, 215, 60]) // Gold active
+        } else if st == "SEC" {
+            (st.as_str(), [80, 220, 255]) // Cyan manual secondaries
+        } else {
+            (st.as_str(), [255, 255, 255])
+        }
+    } else {
+        ("-", [120, 125, 135])
+    };
+    draw_text_shadow(pm, f_key_col, rx, stat_y, stat_scale, &fonts.primary, f_key_str);
+    rx += stat_col_w;
+
+    // HP
+    let hp_pct = if row.is_dead || row.hp_max == 0 {
+        0
+    } else {
+        ((row.hp_cur as f64 / row.hp_max as f64 * 100.0).round() as u32).min(100)
+    };
+    let (hp_str, hp_col) = if row.is_dead {
+        ("0%".to_string(), [180, 60, 60])
+    } else {
+        (format!("{}%", hp_pct), name_color)
+    };
+    draw_text_shadow(pm, hp_col, rx, stat_y, stat_scale, &fonts.primary, &hp_str);
+    rx += stat_col_w;
+
+    // KILLS
+    let kills_str = if row.kills > 0 { row.kills.to_string() } else { "-".to_string() };
+    let kills_col = if row.kills > 0 && !row.is_dead { [255, 215, 80] } else { name_color };
+    draw_text_shadow(pm, kills_col, rx, stat_y, stat_scale, &fonts.primary, &kills_str);
+
+    // Row border
+    draw_line(pm, x as f32, (ry + row_h) as f32, (x + width) as f32, (ry + row_h) as f32, [45, 52, 65], 0.4, 1.0);
 }

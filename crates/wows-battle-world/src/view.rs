@@ -430,6 +430,11 @@ impl<'w> BattleView<'w> {
         &self.world.resource::<crate::resources::ShotHitLog>().0
     }
 
+    /// Combat hit records (citadels and torpedo hits) recorded across the match.
+    pub fn combat_hit_ledger(&self) -> &'w HashMap<EntityId, Vec<crate::resources::CombatHitRecord>> {
+        &self.world.resource::<crate::resources::CombatHitLedger>().0
+    }
+
     /// Scoring rules from BattleLogic.
     pub fn scoring_rules(&self) -> Option<&'w ScoringRules> {
         self.world.resource::<ScoringRulesResource>().0.as_ref()

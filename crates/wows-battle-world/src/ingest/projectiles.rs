@@ -136,7 +136,22 @@ pub fn handle_shot_kills(
     };
 
     for hit in hits {
-        remove_matching_torpedo(world, hit.owner_id, hit.shot_id);
+        let was_torpedo = remove_matching_torpedo(world, hit.owner_id, hit.shot_id);
+        let is_citadel = hit.hit_type.shell_hit
+            == wows_replays::analyzer::decoder::Recognized::Known(wowsunpack::game_types::ShellHitType::MajorHit);
+        let is_torpedo_hit = was_torpedo
+            && hit.hit_type.collision
+                == wows_replays::analyzer::decoder::Recognized::Known(wowsunpack::game_types::CollisionType::HitEntity);
+
+        if is_citadel || is_torpedo_hit {
+            if let Some(mut ledger) = world.get_resource_mut::<crate::resources::CombatHitLedger>() {
+                ledger.0.entry(hit.owner_id).or_default().push(crate::resources::CombatHitRecord {
+                    clock,
+                    is_citadel,
+                    is_torpedo: is_torpedo_hit,
+                });
+            }
+        }
 
         if !record {
             continue;
@@ -172,7 +187,8 @@ fn torpedo_matches(state: &ProjectileState, owner_id: EntityId, shot_id: ShotId)
 }
 
 /// Remove the first torpedo matching owner/shot, mirroring `Vec::swap_remove`.
-fn remove_matching_torpedo(world: &mut World, owner_id: EntityId, shot_id: ShotId) {
+/// Returns true if a matching torpedo was found and removed.
+fn remove_matching_torpedo(world: &mut World, owner_id: EntityId, shot_id: ShotId) -> bool {
     let order = world.resource::<ActiveTorpedoOrder>().0.clone();
     let idx = order.iter().position(|&e| {
         world
@@ -186,6 +202,9 @@ fn remove_matching_torpedo(world: &mut World, owner_id: EntityId, shot_id: ShotI
         if world.get_entity(removed).is_ok() {
             world.despawn(removed);
         }
+        true
+    } else {
+        false
     }
 }
 

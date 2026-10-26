@@ -499,6 +499,9 @@ pub struct MinimapRenderer<'a> {
     /// primary perspective never spotted. Empty until populated.
     damage_events: HashMap<EntityId, Vec<wows_replays::analyzer::battle_controller::DamageEvent>>,
 
+    /// Per-entity merged combat hit events (citadels and torpedo hits) from all perspectives.
+    combat_hits: HashMap<EntityId, Vec<wows_battle_world::merged::CombatHitRecord>>,
+
     /// True when this renderer is driving a session with one or more alt
     /// perspectives merged in. Enables the spotted outline on enemy icons,
     /// which conveys real information only when enemy positions are visible
@@ -562,6 +565,7 @@ impl<'a> MinimapRenderer<'a> {
             self_dog_tag_resolved: false,
             vehicle_facts: HashMap::new(),
             damage_events: HashMap::new(),
+            combat_hits: HashMap::new(),
             has_merged_perspectives: false,
             render_clock: None,
             position_timeline: None,
@@ -706,6 +710,14 @@ impl<'a> MinimapRenderer<'a> {
         events: HashMap<EntityId, Vec<wows_replays::analyzer::battle_controller::DamageEvent>>,
     ) {
         self.damage_events = events;
+    }
+
+    /// Install a pre-merged per-entity combat hit event list (citadels and torpedo hits).
+    pub fn set_combat_hits(
+        &mut self,
+        hits: HashMap<EntityId, Vec<wows_battle_world::merged::CombatHitRecord>>,
+    ) {
+        self.combat_hits = hits;
     }
 
     /// Set the flag icons for base-type capture points.
@@ -1184,6 +1196,57 @@ impl<'a> MinimapRenderer<'a> {
         result
     }
 
+    /// Determine whether game team 0 spawned North (avg Y < avg Y of team 1).
+    /// In KOTS layout, the North spawn team is ALWAYS normalized to Alpha (Team 0, Green, Left, Top).
+    pub fn is_team0_north(&mut self, controller: &BattleView<'_>, map_info: &map_data::MapInfo) -> bool {
+        if let Some(cached) = self.team0_is_north {
+            return cached;
+        }
+        let ship_positions = controller.positions();
+        let minimap_positions = controller.minimap_positions();
+        let get_player_y = |entity_id: &EntityId| -> Option<f32> {
+            if let Some(t) = ship_positions.get(entity_id) {
+                Some(map_info.world_to_minimap(t.pos, MINIMAP_SIZE).y)
+            } else if let Some(mm) = minimap_positions.get(entity_id) {
+                Some(map_info.normalized_to_minimap(&mm.pos, MINIMAP_SIZE).y)
+            } else {
+                None
+            }
+        };
+
+        let mut sum0 = 0.0f32;
+        let mut count0 = 0usize;
+        let mut sum1 = 0.0f32;
+        let mut count1 = 0usize;
+
+        for player in controller.player_entities().values() {
+            let is_spec = player.relation().value() == 3
+                || player.vehicle().id().raw() == 0
+                || (player.initial_state().team_id() != 0 && player.initial_state().team_id() != 1);
+            if is_spec {
+                continue;
+            }
+            let eid = player.initial_state().entity_id();
+            if let Some(y) = get_player_y(&eid) {
+                if player.initial_state().team_id() == 0 {
+                    sum0 += y;
+                    count0 += 1;
+                } else {
+                    sum1 += y;
+                    count1 += 1;
+                }
+            }
+        }
+
+        if count0 > 0 && count1 > 0 {
+            let is_north = (sum0 / count0 as f32) < (sum1 / count1 as f32);
+            self.team0_is_north = Some(is_north);
+            is_north
+        } else {
+            true
+        }
+    }
+
     /// Produce draw commands for the current frame from controller state.
     pub fn draw_frame(&mut self, controller: &BattleView<'_>) -> Vec<DrawCommand> {
         let Some(map_info) = self.map_info.clone() else {
@@ -1200,8 +1263,14 @@ impl<'a> MinimapRenderer<'a> {
         if self.options.show_score {
             let scores = controller.team_scores();
             if scores.len() >= 2 || self.options.kots_layout {
-                // Show friendly score on left (green), enemy on right (red)
-                let swap = self.self_team_id == Some(1);
+                // For KOTS, we determine North vs South spawn.
+                // If team 0 spawned South, we swap so that team 0 in the UI is ALWAYS North spawn!
+                let swap = if self.options.kots_layout {
+                    let team0_is_north = self.is_team0_north(controller, &map_info);
+                    !team0_is_north
+                } else {
+                    self.self_team_id == Some(1)
+                };
                 let (friendly_idx, enemy_idx) = if swap { (1, 0) } else { (0, 1) };
                 let friendly_score = scores.get(friendly_idx).map(|s| s.score).unwrap_or(0);
                 let enemy_score = scores.get(enemy_idx).map(|s| s.score).unwrap_or(0);
@@ -2395,7 +2464,10 @@ impl<'a> MinimapRenderer<'a> {
             };
 
             if self.options.kots_layout {
-                let swap = self.self_team_id == Some(1);
+                let swap = {
+                    let team0_is_north = self.is_team0_north(controller, &map_info);
+                    !team0_is_north
+                };
                 let (friendly_names, friendly_clans): (Vec<&str>, Vec<&str>) = controller
                     .player_entities()
                     .values()
@@ -2524,6 +2596,28 @@ impl<'a> MinimapRenderer<'a> {
                         ) as f32
                     };
 
+                    let (cits, torps) = self.combat_hits.get(&entity_id).map(|hits| {
+                        let mut c = 0u32;
+                        let mut t = 0u32;
+                        for h in hits.iter().take_while(|h| h.clock <= clock) {
+                            if h.is_citadel { c += 1; }
+                            if h.is_torpedo { t += 1; }
+                        }
+                        (c, t)
+                    }).unwrap_or((0, 0));
+
+                    let f_key_status = if let Some(props) = vehicle_props.as_ref() {
+                        if props.is_in_rage_mode() {
+                            Some("ACTIVE".to_string())
+                        } else if props.selected_weapon() == &wows_replays::analyzer::decoder::Recognized::Known(wowsunpack::game_types::WeaponType::Secondaries) {
+                            Some("SEC".to_string())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
                     let row = crate::draw_command::TeammateTableRow {
                         player_name,
                         clan_tag,
@@ -2536,6 +2630,9 @@ impl<'a> MinimapRenderer<'a> {
                         received: damage_received,
                         kills,
                         is_dead,
+                        citadels: cits,
+                        torp_hits: torps,
+                        f_key_status,
                     };
 
                     if is_team0 {
@@ -2557,52 +2654,6 @@ impl<'a> MinimapRenderer<'a> {
                     order_a.cmp(&order_b).then_with(|| a.player_name.cmp(&b.player_name))
                 });
 
-                // Detect North spawn using ship and minimap positions
-                let get_player_y = |entity_id: &EntityId| -> Option<f32> {
-                    if let Some(t) = ship_positions.get(entity_id) {
-                        Some(map_info.world_to_minimap(t.pos, MINIMAP_SIZE).y)
-                    } else if let Some(mm) = minimap_positions.get(entity_id) {
-                        Some(map_info.normalized_to_minimap(&mm.pos, MINIMAP_SIZE).y)
-                    } else {
-                        None
-                    }
-                };
-
-                let mut sum0 = 0.0f32;
-                let mut count0 = 0usize;
-                let mut sum1 = 0.0f32;
-                let mut count1 = 0usize;
-
-                for player in controller.player_entities().values() {
-                    let is_spec = player.relation().value() == 3
-                        || player.vehicle().id().raw() == 0
-                        || (player.initial_state().team_id() != 0 && player.initial_state().team_id() != 1);
-                    if is_spec {
-                        continue;
-                    }
-                    let eid = player.initial_state().entity_id();
-                    if let Some(y) = get_player_y(&eid) {
-                        if player.initial_state().team_id() as i64 == friendly_game_team {
-                            sum0 += y;
-                            count0 += 1;
-                        } else {
-                            sum1 += y;
-                            count1 += 1;
-                        }
-                    }
-                }
-                let avg_y0 = if count0 > 0 { sum0 / count0 as f32 } else { 0.0 };
-                let avg_y1 = if count1 > 0 { sum1 / count1 as f32 } else { 1200.0 };
-                let team0_is_north = if let Some(cached) = self.team0_is_north {
-                    cached
-                } else if count0 > 0 && count1 > 0 {
-                    let is_north = avg_y0 < avg_y1;
-                    self.team0_is_north = Some(is_north);
-                    is_north
-                } else {
-                    avg_y0 < avg_y1
-                };
-
                 commands.push(DrawCommand::KotsDualTables {
                     x: panel_x,
                     y: 0,
@@ -2610,7 +2661,7 @@ impl<'a> MinimapRenderer<'a> {
                     height: 1280,
                     team0_name,
                     team1_name,
-                    team0_is_north,
+                    team0_is_north: true,
                     team0_rows,
                     team1_rows,
                 });
@@ -3142,6 +3193,28 @@ impl<'a> MinimapRenderer<'a> {
                         ) as f32
                     };
 
+                    let (cits, torps) = self.combat_hits.get(&t.entity_id).map(|hits| {
+                        let mut c = 0u32;
+                        let mut t = 0u32;
+                        for h in hits.iter().take_while(|h| h.clock <= clock) {
+                            if h.is_citadel { c += 1; }
+                            if h.is_torpedo { t += 1; }
+                        }
+                        (c, t)
+                    }).unwrap_or((0, 0));
+
+                    let f_key_status = if let Some(props) = controller.vehicle_props(t.entity_id) {
+                        if props.is_in_rage_mode() {
+                            Some("ACTIVE".to_string())
+                        } else if props.selected_weapon() == &wows_replays::analyzer::decoder::Recognized::Known(wowsunpack::game_types::WeaponType::Secondaries) {
+                            Some("SEC".to_string())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
                     table_rows.push(TeammateTableRow {
                         player_name: t.player_name,
                         clan_tag: t.clan_tag,
@@ -3154,6 +3227,9 @@ impl<'a> MinimapRenderer<'a> {
                         received: t.damage_received,
                         kills: t.kills,
                         is_dead: t.is_dead,
+                        citadels: cits,
+                        torp_hits: torps,
+                        f_key_status,
                     });
                 }
 

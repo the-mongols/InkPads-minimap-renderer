@@ -28,6 +28,7 @@ use wowsunpack::data::ResourceLoader;
 use wowsunpack::data::Version;
 use wowsunpack::rpc::entitydefs::EntitySpec;
 
+pub use crate::resources::CombatHitRecord;
 pub use wows_replays::analyzer::battle_controller::merged::VehicleFacts;
 pub use wows_replays::analyzer::battle_controller::merged::gather_replay_facts;
 
@@ -418,6 +419,43 @@ pub fn gather_damage_events<G: ResourceLoader>(
                     continue;
                 }
                 combined.entry(*aggressor).or_default().push(*event);
+            }
+        }
+    }
+
+    for events in combined.values_mut() {
+        events.sort_by(|a, b| a.clock.0.partial_cmp(&b.clock.0).unwrap_or(std::cmp::Ordering::Equal));
+    }
+    combined
+}
+
+/// Gather combat hit events (citadels and torpedo hits) from every replay perspective and union them.
+pub fn gather_combat_hits<G: ResourceLoader>(
+    game_resources: &G,
+    constants: &GameConstants,
+    version: Version,
+    specs: &[EntitySpec],
+    replays: &[&ReplayFile],
+) -> HashMap<EntityId, Vec<CombatHitRecord>> {
+    let mut combined: HashMap<EntityId, Vec<CombatHitRecord>> = HashMap::new();
+    let mut seen: std::collections::HashSet<(EntityId, u64, bool, bool)> = std::collections::HashSet::new();
+
+    for replay in replays {
+        let mut world = BattleWorld::new(&replay.meta, game_resources, Some(constants));
+        let mut parser = Parser::with_version(specs, version);
+        let mut remaining = &replay.packet_data[..];
+        while !remaining.is_empty() {
+            let Ok(packet) = parser.parse_packet(&mut remaining) else { break };
+            world.process(&packet);
+        }
+        world.finish();
+        for (owner, events) in world.combat_hit_ledger() {
+            for event in events {
+                let key = (*owner, event.clock.0.to_bits() as u64, event.is_citadel, event.is_torpedo);
+                if !seen.insert(key) {
+                    continue;
+                }
+                combined.entry(*owner).or_default().push(*event);
             }
         }
     }

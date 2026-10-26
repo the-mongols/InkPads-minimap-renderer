@@ -81,6 +81,18 @@ pub struct KillLog(pub Vec<KillRecord>);
 #[derive(Resource, Debug, Clone, Default)]
 pub struct DamageLedger(pub HashMap<EntityId, Vec<DamageEvent>>);
 
+/// Combat hit records (citadels and torpedo hits) per owner entity id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CombatHitRecord {
+    pub clock: GameClock,
+    pub is_citadel: bool,
+    pub is_torpedo: bool,
+}
+
+/// Ledger of combat hit events (citadels and torpedo hits) keyed by owner entity ID.
+#[derive(Resource, Debug, Clone, Default)]
+pub struct CombatHitLedger(pub HashMap<EntityId, Vec<CombatHitRecord>>);
+
 /// Resolved projectile hits (shells matched to salvos).
 #[derive(Resource, Debug, Clone, Default)]
 pub struct ShotHitLog(pub Vec<ResolvedShotHit>);

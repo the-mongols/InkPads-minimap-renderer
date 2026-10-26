@@ -519,6 +519,13 @@ fn main() -> Result<(), Report> {
         &specs,
         &primary_with_alts,
     );
+    let combat_hits = wows_battle_world::merged::gather_combat_hits(
+        &controller_game_params,
+        &game_constants,
+        replay_version,
+        &specs,
+        &primary_with_alts,
+    );
 
     let mut renderer = MinimapRenderer::new(map_info.clone(), &game_params, replay_version, options);
     renderer.set_fonts(game_fonts);
@@ -526,6 +533,7 @@ fn main() -> Result<(), Report> {
     renderer.set_merged_perspectives(!merge_replays.is_empty());
     renderer.set_vehicle_facts(vehicle_facts.clone());
     renderer.set_damage_events(damage_events);
+    renderer.set_combat_hits(combat_hits);
     let salvo_flight_times = wows_battle_world::scan::scan_salvo_flight_times(
         &replay_file.meta,
         &controller_game_params,
