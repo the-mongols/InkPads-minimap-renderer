@@ -475,6 +475,10 @@ pub struct MinimapRenderer<'a> {
     fonts: Option<GameFonts>,
     /// Cached spawn orientation for KOTS layout (true if team 0 spawned North).
     pub team0_is_north: Option<bool>,
+    /// Resolved Alpha team name (North spawn in KOTS).
+    pub team0_name_resolved: Option<String>,
+    /// Resolved Bravo team name (South spawn in KOTS).
+    pub team1_name_resolved: Option<String>,
 
     /// Flag icons for base-type capture points, keyed by "ally"/"enemy"/"neutral".
     flag_icons: HashMap<String, RgbaImage>,
@@ -573,7 +577,17 @@ impl<'a> MinimapRenderer<'a> {
             locked_self_wpa: None,
             locked_teammates_wpa: HashMap::new(),
             team0_is_north: None,
+            team0_name_resolved: None,
+            team1_name_resolved: None,
         }
+    }
+
+    /// Returns the resolved (Alpha/North, Bravo/South) team names.
+    pub fn resolved_team_names(&self) -> (String, String) {
+        (
+            self.team0_name_resolved.clone().unwrap_or_else(|| "[ALPHA]".to_string()),
+            self.team1_name_resolved.clone().unwrap_or_else(|| "[BRAVO]".to_string()),
+        )
     }
 
     /// Set the continuous render clock for the next frame. Live playback calls
@@ -1341,6 +1355,9 @@ impl<'a> MinimapRenderer<'a> {
                     &enemy_clans,
                     "BRAVO",
                 );
+
+                self.team0_name_resolved = Some(team0_name.clone());
+                self.team1_name_resolved = Some(team1_name.clone());
 
                 commands.push(DrawCommand::ScoreBar {
                     team0: friendly_score as i32,
@@ -2507,6 +2524,9 @@ impl<'a> MinimapRenderer<'a> {
                     &enemy_clans,
                     "BRAVO",
                 );
+
+                self.team0_name_resolved = Some(team0_name.clone());
+                self.team1_name_resolved = Some(team1_name.clone());
 
                 let team_advantage_result = self.calculate_team_advantage(controller);
                 let raw_leverage = 1.0 + (team_advantage_result.breakdown.total.0 - team_advantage_result.breakdown.total.1).abs() / 100.0;

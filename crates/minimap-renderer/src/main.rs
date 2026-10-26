@@ -708,10 +708,22 @@ fn main() -> Result<(), Report> {
     }
 
     session.finish();
+    let (t0_name, t1_name) = renderer.resolved_team_names();
+    info!("TEAM_ALPHA: {}", t0_name);
+    info!("TEAM_BRAVO: {}", t1_name);
+
     if let Some(wt) = session.world_mut().view().winning_team() {
+        let alpha_is_game_team0 = renderer.team0_is_north.unwrap_or(true);
+        let winning_team_is_alpha = if alpha_is_game_team0 { wt == 0 } else { wt == 1 };
+
         let winner_str = match wt {
-            0 => "Alpha Team",
-            1 => "Bravo Team",
+            0 | 1 => {
+                if winning_team_is_alpha {
+                    t0_name.as_str()
+                } else {
+                    t1_name.as_str()
+                }
+            }
             _ => "Draw",
         };
         info!("WINNING_TEAM: {}", winner_str);
