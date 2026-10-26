@@ -3702,6 +3702,7 @@ fn extract_tournament_team_name(
     for &name in combatant_names {
         let trimmed = name.trim();
         let parts: Vec<&str> = trimmed.split('_').collect();
+        let mut candidates = Vec::new();
         if parts.len() >= 3 {
             let last = parts[parts.len() - 1];
             let is_region = last.eq_ignore_ascii_case("eu")
@@ -3709,22 +3710,28 @@ fn extract_tournament_team_name(
                 || last.eq_ignore_ascii_case("asia")
                 || last.eq_ignore_ascii_case("cis")
                 || last.to_ascii_uppercase().starts_with("KOTS");
-            if is_region && parts.len() >= 3 {
+            if is_region {
                 let team_prefix = parts[0..parts.len() - 2].join("_");
                 if !team_prefix.is_empty() {
-                    *prefix_counts.entry(team_prefix).or_insert(0) += 1;
+                    candidates.push(team_prefix);
                 }
-            } else if parts.len() >= 2 {
-                let team_prefix = parts[0].to_string();
-                *prefix_counts.entry(team_prefix).or_insert(0) += 1;
             }
-        } else if parts.len() == 2 {
-            let team_prefix = parts[0].to_string();
-            *prefix_counts.entry(team_prefix).or_insert(0) += 1;
+        }
+        if parts.len() >= 2 {
+            let first = parts[0].to_string();
+            if !first.is_empty() && !candidates.contains(&first) {
+                candidates.push(first);
+            }
+        }
+        for cand in candidates {
+            *prefix_counts.entry(cand).or_insert(0) += 1;
         }
     }
 
-    if let Some((dominant_prefix, &count)) = prefix_counts.iter().max_by_key(|(_, c)| *c) {
+    // Sort by count descending, then by length descending (prefer fuller prefix on tie)
+    if let Some((dominant_prefix, &count)) = prefix_counts.iter().max_by(|(a_str, a_cnt), (b_str, b_cnt)| {
+        a_cnt.cmp(b_cnt).then_with(|| a_str.len().cmp(&b_str.len()))
+    }) {
         if count >= 2 {
             return format_team_tag(dominant_prefix);
         }

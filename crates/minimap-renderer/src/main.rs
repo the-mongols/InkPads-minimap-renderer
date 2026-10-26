@@ -255,7 +255,7 @@ struct Args {
 fn main() -> Result<(), Report> {
     let args = Args::parse();
 
-    tracing_subscriber::fmt().with_target(false).with_writer(std::io::stderr).init();
+    tracing_subscriber::fmt().with_target(false).with_ansi(false).with_writer(std::io::stderr).init();
 
     // Handle --generate-config before anything else
     if args.generate_config {
