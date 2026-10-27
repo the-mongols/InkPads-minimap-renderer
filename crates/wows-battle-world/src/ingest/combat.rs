@@ -122,17 +122,17 @@ pub fn handle_ship_destroyed(
 ) {
     world.resource_mut::<KillLog>().0.push(KillRecord { clock, killer, victim, cause: cause.clone() });
 
-    if cause == Recognized::Known(DeathCause::Torpedo) {
-        if let Some(mut hits) = world.get_resource_mut::<CombatHitLedger>() {
-            let entries = hits.0.entry(killer).or_default();
-            let recent = entries.iter().any(|h| h.is_torpedo && (clock.0 - h.clock.0).abs() < 3.0);
-            if !recent {
-                entries.push(CombatHitRecord {
-                    clock,
-                    is_citadel: false,
-                    is_torpedo: true,
-                });
-            }
+    if cause == Recognized::Known(DeathCause::Torpedo)
+        && let Some(mut hits) = world.get_resource_mut::<CombatHitLedger>()
+    {
+        let entries = hits.0.entry(killer).or_default();
+        let recent = entries.iter().any(|h| h.is_torpedo && (clock.0 - h.clock.0).abs() < 3.0);
+        if !recent {
+            entries.push(CombatHitRecord {
+                clock,
+                is_citadel: false,
+                is_torpedo: true,
+            });
         }
     }
 

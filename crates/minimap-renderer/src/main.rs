@@ -709,10 +709,10 @@ fn main() -> Result<(), Report> {
         if safe_clock.0 > prev_render_clock.0 {
             let view = session.world_mut().view();
             renderer.populate_players(&view);
-            if !dog_tag_resolved {
-                if renderer.resolve_self_dog_tag_emblem(vfs) {
-                    dog_tag_resolved = true;
-                }
+            if !dog_tag_resolved
+                && renderer.resolve_self_dog_tag_emblem(vfs)
+            {
+                dog_tag_resolved = true;
             }
             renderer.update_squadron_info(&view);
             renderer.update_ship_abilities(&view);
@@ -792,10 +792,11 @@ fn load_from_game_dir(game_dir: &std::path::Path, replay_version: &Version) -> R
         replay_version.build_number().ok_or_else(|| report!("replay version carries no build number"))?;
 
     // Validate the build early so we can categorize mismatches for the runner
-    if let Ok(available_builds) = wowsunpack::game_data::list_available_builds(game_dir) {
-        if !available_builds.contains(&replay_build) {
-            let is_newer = available_builds.iter().all(|&b| replay_build > b);
-            let is_older = available_builds.iter().all(|&b| replay_build < b);
+    if let Ok(available_builds) = wowsunpack::game_data::list_available_builds(game_dir)
+        && !available_builds.contains(&replay_build)
+    {
+        let is_newer = available_builds.iter().all(|&b| replay_build > b);
+        let is_older = available_builds.iter().all(|&b| replay_build < b);
             if is_newer {
                 bail!(
                     "REPLAY_VERSION_NEWER: Replay build {} is newer than the latest supported build ({}).",
@@ -815,7 +816,6 @@ fn load_from_game_dir(game_dir: &std::path::Path, replay_version: &Version) -> R
                     available_builds
                 );
             }
-        }
     }
 
     info!(build = replay_build, "Loading game data");

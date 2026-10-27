@@ -143,14 +143,14 @@ pub fn handle_shot_kills(
             && hit.hit_type.collision
                 == wows_replays::analyzer::decoder::Recognized::Known(wowsunpack::game_types::CollisionType::HitEntity);
 
-        if is_citadel || is_torpedo_hit {
-            if let Some(mut ledger) = world.get_resource_mut::<crate::resources::CombatHitLedger>() {
-                ledger.0.entry(hit.owner_id).or_default().push(crate::resources::CombatHitRecord {
-                    clock,
-                    is_citadel,
-                    is_torpedo: is_torpedo_hit,
-                });
-            }
+        if (is_citadel || is_torpedo_hit)
+            && let Some(mut ledger) = world.get_resource_mut::<crate::resources::CombatHitLedger>()
+        {
+            ledger.0.entry(hit.owner_id).or_default().push(crate::resources::CombatHitRecord {
+                clock,
+                is_citadel,
+                is_torpedo: is_torpedo_hit,
+            });
         }
 
         if !record {

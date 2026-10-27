@@ -11,7 +11,7 @@ pub struct GameVersionManifest {
     pub versions: BTreeMap<String, GameVersionEntry>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GameVersionEntry {
     pub version: String,
     #[serde(alias = "client_depot_id", default)]
@@ -110,11 +110,21 @@ mod test {
         let mut versions = BTreeMap::new();
         versions.insert(
             "11791718".to_string(),
-            GameVersionEntry { version: "15.0.0".to_string(), depot_id: 552991, manifest_id: "aaa".to_string() },
+            GameVersionEntry {
+                version: "15.0.0".to_string(),
+                depot_id: 552991,
+                manifest_id: "aaa".to_string(),
+                ..Default::default()
+            },
         );
         versions.insert(
             "11965230".to_string(),
-            GameVersionEntry { version: "15.1.0".to_string(), depot_id: 552991, manifest_id: "bbb".to_string() },
+            GameVersionEntry {
+                version: "15.1.0".to_string(),
+                depot_id: 552991,
+                manifest_id: "bbb".to_string(),
+                ..Default::default()
+            },
         );
         let manifest = GameVersionManifest { versions };
 

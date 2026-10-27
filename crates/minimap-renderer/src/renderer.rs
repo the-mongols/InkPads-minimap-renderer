@@ -1266,10 +1266,8 @@ impl<'a> MinimapRenderer<'a> {
         let get_player_y = |entity_id: &EntityId| -> Option<f32> {
             if let Some(t) = ship_positions.get(entity_id) {
                 Some(map_info.world_to_minimap(t.pos, MINIMAP_SIZE).y)
-            } else if let Some(mm) = minimap_positions.get(entity_id) {
-                Some(map_info.normalized_to_minimap(&mm.pos, MINIMAP_SIZE).y)
             } else {
-                None
+                minimap_positions.get(entity_id).map(|mm| map_info.normalized_to_minimap(&mm.pos, MINIMAP_SIZE).y)
             }
         };
 
@@ -2154,10 +2152,10 @@ impl<'a> MinimapRenderer<'a> {
                     let past_start = clock.seconds() >= active.activated_at.seconds();
                     if still_active && past_start {
                         // Collect icon key (avoid duplicate icons in merged replays)
-                        if let Some(icon_key) = self.consumable_icon_key(*entity_id, active.consumable.clone()) {
-                            if !icon_keys.contains(&icon_key) {
-                                icon_keys.push(icon_key);
-                            }
+                        if let Some(icon_key) = self.consumable_icon_key(*entity_id, active.consumable.clone())
+                            && !icon_keys.contains(&icon_key)
+                        {
+                            icon_keys.push(icon_key);
                         }
 
                         // Emit radius for detection consumables (radar, hydro, hydrophone)
@@ -2650,7 +2648,7 @@ impl<'a> MinimapRenderer<'a> {
                     if is_spec {
                         continue;
                     }
-                    let p_team = player.initial_state().team_id() as i64;
+                    let p_team = player.initial_state().team_id();
                     let is_team0 = p_team == friendly_game_team;
                     let is_team1 = p_team == enemy_game_team;
                     if !is_team0 && !is_team1 {
@@ -2679,10 +2677,10 @@ impl<'a> MinimapRenderer<'a> {
                         if !c.is_empty() { Some(c.to_string()) } else { None }
                     });
                     let ship_name = self.game_params.localized_name_from_param(player.vehicle()).unwrap_or_default();
-                    let ship_species = player.vehicle().species().and_then(species_key).map(String::from);
+                    let ship_species = player.vehicle().species().and_then(species_key);
 
                     let death_clock = controller.kills().iter().find(|k| k.victim == entity_id).map(|k| k.clock);
-                    let is_t_dead = death_clock.map_or(false, |d| clock >= d);
+                    let is_t_dead = death_clock.is_some_and(|d| clock >= d);
 
                     let wpa_score = if is_t_dead {
                         if let Some(&locked) = self.locked_teammates_wpa.get(&entity_id) {
@@ -2917,7 +2915,7 @@ impl<'a> MinimapRenderer<'a> {
             // Calculate live Sabermetric WPA for self player
             let self_wpa = if let Some(self_eid) = self.self_entity_id {
                 let death_clock = controller.kills().iter().find(|k| k.victim == self_eid).map(|k| k.clock);
-                let is_self_dead = death_clock.map_or(false, |d| clock >= d);
+                let is_self_dead = death_clock.is_some_and(|d| clock >= d);
 
                 if is_self_dead {
                     if let Some(locked) = self.locked_self_wpa {
@@ -3002,8 +3000,7 @@ impl<'a> MinimapRenderer<'a> {
                         let is_active = self_active
                             .map(|list| {
                                 list.iter()
-                                    .filter(|a| a.consumable == inv.consumable)
-                                    .last()
+                                    .rfind(|a| a.consumable == inv.consumable)
                                     .map(|a| {
                                         let now = clock.seconds();
                                         let work_end = a.activated_at.seconds() + a.duration;
@@ -3070,28 +3067,28 @@ impl<'a> MinimapRenderer<'a> {
                 .into_iter()
                 .filter(|(ribbon, _)| {
                     use wowsunpack::game_types::Ribbon;
-                    match ribbon {
+                    matches!(
+                        ribbon,
                         Ribbon::Destroyed
-                        | Ribbon::MainCaliber
-                        | Ribbon::Citadel
-                        | Ribbon::Incapacitation
-                        | Ribbon::SetFire
-                        | Ribbon::SecondaryHit
-                        | Ribbon::PlaneShotDown
-                        | Ribbon::ShotDownByAircraft
-                        | Ribbon::TorpedoHit
-                        | Ribbon::Flooding
-                        | Ribbon::Bomb
-                        | Ribbon::Rocket
-                        | Ribbon::DepthChargeHit
-                        | Ribbon::SonarOneHit
-                        | Ribbon::SonarTwoHits
-                        | Ribbon::Spotted
-                        | Ribbon::Defended
-                        | Ribbon::AssistedInCapture
-                        | Ribbon::Captured => true,
-                        _ => false,
-                    }
+                            | Ribbon::MainCaliber
+                            | Ribbon::Citadel
+                            | Ribbon::Incapacitation
+                            | Ribbon::SetFire
+                            | Ribbon::SecondaryHit
+                            | Ribbon::PlaneShotDown
+                            | Ribbon::ShotDownByAircraft
+                            | Ribbon::TorpedoHit
+                            | Ribbon::Flooding
+                            | Ribbon::Bomb
+                            | Ribbon::Rocket
+                            | Ribbon::DepthChargeHit
+                            | Ribbon::SonarOneHit
+                            | Ribbon::SonarTwoHits
+                            | Ribbon::Spotted
+                            | Ribbon::Defended
+                            | Ribbon::AssistedInCapture
+                            | Ribbon::Captured
+                    )
                 })
                 .map(|(ribbon, count)| {
                     let translation = ribbon.translation_key().and_then(|key| {
@@ -3259,7 +3256,7 @@ impl<'a> MinimapRenderer<'a> {
                         if !c.is_empty() { Some(c.to_string()) } else { None }
                     });
                     let ship_name = self.game_params.localized_name_from_param(player.vehicle()).unwrap_or_default();
-                    let ship_species = player.vehicle().species().and_then(species_key).map(String::from);
+                    let ship_species = player.vehicle().species().and_then(species_key);
 
                     raw_teammates.push(RawTeammateData {
                         entity_id,
@@ -3285,7 +3282,7 @@ impl<'a> MinimapRenderer<'a> {
                 let mut table_rows: Vec<TeammateTableRow> = Vec::new();
                 for t in raw_teammates {
                     let death_clock = controller.kills().iter().find(|k| k.victim == t.entity_id).map(|k| k.clock);
-                    let is_t_dead = death_clock.map_or(false, |d| clock >= d);
+                    let is_t_dead = death_clock.is_some_and(|d| clock >= d);
 
                     let wpa_score = if is_t_dead {
                         if let Some(&locked) = self.locked_teammates_wpa.get(&t.entity_id) {
@@ -3793,10 +3790,10 @@ fn extract_tournament_team_name(
     combatant_clans: &[&str],
     default_name: &str,
 ) -> String {
-    if let Some(name) = override_name {
-        if !name.trim().is_empty() {
-            return format_team_tag(name);
-        }
+    if let Some(name) = override_name
+        && !name.trim().is_empty()
+    {
+        return format_team_tag(name);
     }
 
     // 1. Check clan tags
@@ -3847,10 +3844,10 @@ fn extract_tournament_team_name(
     // Sort by count descending, then by length descending (prefer fuller prefix on tie)
     if let Some((dominant_prefix, &count)) = prefix_counts.iter().max_by(|(a_str, a_cnt), (b_str, b_cnt)| {
         a_cnt.cmp(b_cnt).then_with(|| a_str.len().cmp(&b_str.len()))
-    }) {
-        if count >= 2 {
-            return format_team_tag(dominant_prefix);
-        }
+    })
+        && count >= 2
+    {
+        return format_team_tag(dominant_prefix);
     }
 
     format_team_tag(default_name)

@@ -51,7 +51,7 @@ pub fn handle_vehicle_property(
         let clock = world.resource::<crate::resources::Clock>().0;
         if let Some(mut ledger) = world.get_resource_mut::<crate::resources::CombatInstructionLedger>() {
             let list = ledger.0.entry(entity_id).or_default();
-            if list.last().map_or(true, |last_clk| (clock.0 - last_clk.0).abs() > 3.0) {
+            if list.last().is_none_or(|last_clk| (clock.0 - last_clk.0).abs() > 3.0) {
                 list.push(clock);
             }
         }

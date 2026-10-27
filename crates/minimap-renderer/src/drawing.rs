@@ -2622,7 +2622,7 @@ impl RenderTarget for ImageTarget {
                 // Draw emblem (dog tag) centered in right 43% starting at emblem_y
                 let emblem_y = start_y + (4.0 * scale_factor).round() as i32;
                 if let Some(emb_img) = emblem {
-                    let emblem_x = right_center_x - (emblem_size as i32) / 2;
+                    let emblem_x = right_center_x - emblem_size / 2;
                     let resized = image::imageops::resize(
                         emb_img,
                         emblem_size as u32,
@@ -3384,19 +3384,19 @@ impl RenderTarget for ImageTarget {
                         }
 
                         // Ship Name
-                        if ship_name_w > 0 {
-                            if let Some(ref ship_name) = chat.ship_name {
-                                let (ship_font, ship_scale) = self.fonts.font_and_scale(ship_name, 14.0);
-                                draw_text_shadow(
-                                    &mut self.canvas,
-                                    chat.team_color,
-                                    cx,
-                                    cy,
-                                    ship_scale,
-                                    ship_font,
-                                    ship_name,
-                                );
-                            }
+                        if ship_name_w > 0
+                            && let Some(ref ship_name) = chat.ship_name
+                        {
+                            let (ship_font, ship_scale) = self.fonts.font_and_scale(ship_name, 14.0);
+                            draw_text_shadow(
+                                &mut self.canvas,
+                                chat.team_color,
+                                cx,
+                                cy,
+                                ship_scale,
+                                ship_font,
+                                ship_name,
+                            );
                         }
 
                         cy += chat_header_h;
@@ -3745,7 +3745,7 @@ fn format_number_commas(n: u32) -> String {
     let mut result = String::new();
     let len = s.len();
     for (i, c) in s.chars().enumerate() {
-        if i > 0 && (len - i) % 3 == 0 {
+        if i > 0 && (len - i).is_multiple_of(3) {
             result.push(',');
         }
         result.push(c);
@@ -4261,7 +4261,7 @@ fn hp_percentage_color(hp_pct: u32, is_dead: bool) -> [u8; 3] {
         let f = t * 2.0;
         let r = (235.0 + f * (245.0 - 235.0)).round() as u8;
         let g = (70.0 + f * (175.0 - 70.0)).round() as u8;
-        let b = (50.0 + f * (50.0 - 50.0)).round() as u8;
+        let b = 50;
         [r, g, b]
     } else {
         // Amber to Lime Green
@@ -4294,7 +4294,7 @@ fn draw_kots_player_row(
     // Zebra striping background
     let bg_color = if row.is_dead {
         [17, 20, 27]
-    } else if i % 2 == 0 {
+    } else if i.is_multiple_of(2) {
         [23, 28, 38]
     } else {
         [27, 33, 46]

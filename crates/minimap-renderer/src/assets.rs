@@ -1288,12 +1288,11 @@ pub fn compose_dog_tag_emblem<GP: GameParamProvider>(
     let shape_index = shape_layer.map(|l| l.index.as_str()).unwrap_or("PCNA001");
 
     // Tint shape with BackgroundColor
-    if let Some(bg_color_layer) = layers.iter().find(|l| l.species == "BackgroundColor") {
-        if let Some(hex) = &bg_color_layer.color_hex {
-            if let Some(rgb) = parse_hex_color(hex) {
-                tint_image(&mut canvas, rgb);
-            }
-        }
+    if let Some(bg_color_layer) = layers.iter().find(|l| l.species == "BackgroundColor")
+        && let Some(hex) = &bg_color_layer.color_hex
+        && let Some(rgb) = parse_hex_color(hex)
+    {
+        tint_image(&mut canvas, rgb);
     }
 
     // Overlay BackgroundTexture (tinted with its baseColorHEX)
@@ -1307,10 +1306,10 @@ pub fn compose_dog_tag_emblem<GP: GameParamProvider>(
             .map(|i| i.into_rgba8());
 
         if let Some(mut tex_img) = tex_img {
-            if let Some(hex) = &tex_layer.color_hex {
-                if let Some(rgb) = parse_hex_color(hex) {
-                    tint_image(&mut tex_img, rgb);
-                }
+            if let Some(hex) = &tex_layer.color_hex
+                && let Some(rgb) = parse_hex_color(hex)
+            {
+                tint_image(&mut tex_img, rgb);
             }
             composite_over(&mut canvas, &tex_img);
         } else {

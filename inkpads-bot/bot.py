@@ -153,10 +153,11 @@ async def on_message(message: discord.Message):
     if message.author == bot.user:
         return
 
-    # If TOURNAMENT_LISTEN_CHANNEL_ID is set, filter by channel ID
+    # If TOURNAMENT_LISTEN_CHANNEL_ID is set, filter by channel ID (supports comma-separated list)
     if TOURNAMENT_LISTEN_CHANNEL_ID:
         try:
-            if str(message.channel.id) != str(TOURNAMENT_LISTEN_CHANNEL_ID).strip():
+            listen_ids = [c.strip() for c in str(TOURNAMENT_LISTEN_CHANNEL_ID).split(',') if c.strip()]
+            if str(message.channel.id) not in listen_ids:
                 return
         except Exception:
             return
@@ -165,7 +166,7 @@ async def on_message(message: discord.Message):
 
     # Also check if JSON is attached as a file
     json_text = content
-    if (not json_text or ("{" not in json_text and "callbackUrl" not in json_text and "callback_url" not in json_text)) and message.attachments:
+    if (not json_text or ("{" not in json_text and "replays" not in json_text and "callbackUrl" not in json_text and "callback_url" not in json_text)) and message.attachments:
         for att in message.attachments:
             if att.filename.endswith('.json') or att.content_type == 'application/json':
                 try:
@@ -179,7 +180,7 @@ async def on_message(message: discord.Message):
         return
 
     # If TOURNAMENT_LISTEN_CHANNEL_ID is not configured, avoid processing ordinary chat messages
-    if not TOURNAMENT_LISTEN_CHANNEL_ID and "{" not in json_text and "callbackUrl" not in json_text and "callback_url" not in json_text:
+    if not TOURNAMENT_LISTEN_CHANNEL_ID and "{" not in json_text and "replays" not in json_text and "callbackUrl" not in json_text and "callback_url" not in json_text:
         return
 
     # 1. Check code blocks first
@@ -206,9 +207,9 @@ async def on_message(message: discord.Message):
     target_channel_id = data.get("targetChannelId") or data.get("target_channel_id")
     replays = data.get("replays", [])
 
-    if not callback_url or not target_channel_id or not replays:
+    if not target_channel_id or not replays:
         if TOURNAMENT_LISTEN_CHANNEL_ID:
-            logger.warning("Tournament payload missing required fields (callbackUrl, targetChannelId, replays)")
+            logger.warning("Tournament payload missing required fields (targetChannelId, replays)")
         return
 
     logger.info(f"Received valid tournament render payload for target channel {target_channel_id} with {len(replays)} replays.")
@@ -243,14 +244,39 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
     roster_path = None
     output_path = TEMP_DIR / f"{session_id}.mp4"
 
+    async def _notify_failure(reason: str):
+        try:
+            await message.remove_reaction("⏳", bot.user)
+        except Exception:
+            pass
+        try:
+            await message.add_reaction("❌")
+        except Exception:
+            pass
+        if target_channel:
+            try:
+                err_embed = discord.Embed(
+                    title="Tournament Render Failed",
+                    description=f"**Error:** {reason}",
+                    color=0xE74C3C
+                )
+                await target_channel.send(embed=err_embed)
+            except Exception as se:
+                logger.warning(f"[{session_id}] Could not post failure embed to target channel: {se}")
+
     try:
+        try:
+            await message.add_reaction("⏳")
+        except Exception:
+            pass
+
         async with aiohttp.ClientSession() as session:
             async def _download_replay(idx: int, rdata: Any) -> tuple[int, Optional[Path]]:
                 if isinstance(rdata, str):
                     url = rdata
                     tag = ""
                 elif isinstance(rdata, dict):
-                    url = rdata.get("replay") or rdata.get("url")
+                    url = rdata.get("replay") or rdata.get("url") or rdata.get("replay_url") or rdata.get("download_url") or rdata.get("file")
                     tag = str(rdata.get("tag", "")).upper()
                 else:
                     return idx, None
@@ -289,18 +315,21 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
 
         if not green_path or not green_path.exists():
             logger.error(f"[{session_id}] Primary replay download failed or empty.")
+            await _notify_failure("Failed to download primary replay file from URL.")
             return
 
         # Pre-flight header inspection & version validation
         header = parse_replay_header(green_path)
         if not header:
             logger.error(f"[{session_id}] Primary replay {green_path} header is corrupted or unreadable.")
+            await _notify_failure("Primary replay file header is corrupted or unreadable.")
             return
 
         version_str = header.get("clientVersionFromExe", "")
         is_supported, err_msg, is_newer = validate_replay_version(version_str)
         if not is_supported:
             logger.warning(f"[{session_id}] Replay version unsupported: {version_str} - {err_msg}")
+            await _notify_failure(err_msg or f"Replay version {version_str} is not supported.")
             return
 
         # Validate secondary (red) replay if present
@@ -376,6 +405,12 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
             cmd.extend(["-o", str(output_path), "--max-size-mib", str(target_size_mib), "--codec", codec])
             if RENDERER_FONT_PATH:
                 cmd.extend(["--font", RENDERER_FONT_PATH])
+            if FORCE_CPU or data.get("cpu_mode") or data.get("force_cpu") or data.get("cpu"):
+                cmd.append("--cpu")
+            if data.get("show_trails") or data.get("trails"):
+                cmd.append("--show-trails")
+            if data.get("show_ship_config") or data.get("show_config"):
+                cmd.append("--show-ship-config")
             cmd.append(str(green_path))
 
             if red_path and red_path.exists():
@@ -405,24 +440,39 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
             stdout, stderr = await process.communicate()
 
             if process.returncode != 0:
-                logger.error(f"[{session_id}] Tournament render failed with code {process.returncode}: {stderr.decode('utf-8', errors='ignore')}")
+                err_text = stderr.decode('utf-8', errors='ignore')
+                logger.error(f"[{session_id}] Tournament render failed with code {process.returncode}: {err_text}")
+                if "ArenaIdMismatch" in err_text or "arena ID mismatch" in err_text:
+                    fail_msg = "Replays are not from the same match (Arena ID mismatch)."
+                elif "REPLAY_VERSION_NEWER" in err_text:
+                    fail_msg = "Replay version is newer than supported by the renderer."
+                elif "REPLAY_VERSION_OLDER" in err_text:
+                    fail_msg = "Replay version is older than supported by the renderer."
+                else:
+                    fail_msg = f"Renderer exited with code {process.returncode}."
+                await _notify_failure(fail_msg)
                 return
 
             # Safety compression check if output exceeds guild limit
             if output_path.exists() and output_path.stat().st_size > int(guild_limit_bytes * 0.98):
                 logger.info(f"[{session_id}] Output size {output_path.stat().st_size} exceeds guild limit threshold {int(guild_limit_bytes * 0.98)}. Compressing with ffmpeg...")
                 compressed_path = TEMP_DIR / f"{session_id}_compressed.mp4"
-                c_proc = await asyncio.create_subprocess_exec(
-                    "ffmpeg", "-y", "-i", str(output_path),
-                    "-vcodec", "libx264", "-crf", "22", "-preset", "fast",
-                    str(compressed_path),
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL
-                )
-                await c_proc.communicate()
-                if compressed_path.exists() and compressed_path.stat().st_size > 0:
-                    output_path.unlink()
-                    output_path = compressed_path
+                try:
+                    c_proc = await asyncio.create_subprocess_exec(
+                        "ffmpeg", "-y", "-i", str(output_path),
+                        "-vcodec", "libx264", "-crf", "22", "-preset", "fast",
+                        str(compressed_path),
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL
+                    )
+                    await c_proc.communicate()
+                    if compressed_path.exists() and compressed_path.stat().st_size > 0:
+                        output_path.unlink()
+                        output_path = compressed_path
+                except FileNotFoundError:
+                    logger.warning(f"[{session_id}] ffmpeg not found on system PATH; skipping secondary recompression.")
+                except Exception as ff_err:
+                    logger.warning(f"[{session_id}] ffmpeg recompression failed: {ff_err}")
 
             # Format embed details
             raw_ship = header.get("playerVehicle", "")
@@ -448,6 +498,7 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
             team_alpha = extract_team_alpha(err_text)
             team_bravo = extract_team_bravo(err_text)
             f_clan, e_clan = get_team_clans(header)
+
             if not e_clan and opponent_clan and opponent_clan != "N/A":
                 e_clan = opponent_clan
 
@@ -494,45 +545,57 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
             posted_msg = await target_channel.send(embed=embed, file=file)
             logger.info(f"[{session_id}] Posted rendered match to target channel {target_channel_id}, message ID: {posted_msg.id}")
 
-            # Send callback back to wows-tournaments.com
-            async with aiohttp.ClientSession() as session:
-                cb_params = {
-                    "messageId": str(posted_msg.id),
-                    "channelId": str(target_channel_id),
-                }
-                if getattr(posted_msg, "guild", None):
-                    cb_params["guildId"] = str(posted_msg.guild.id)
+            try:
+                await message.remove_reaction("⏳", bot.user)
+            except Exception:
+                pass
+            try:
+                await message.add_reaction("✅")
+            except Exception:
+                pass
 
-                payload = {
-                    "messageId": str(posted_msg.id),
-                    "channelId": str(target_channel_id),
-                    "guildId": str(posted_msg.guild.id) if getattr(posted_msg, "guild", None) else None,
-                    "messageUrl": posted_msg.jump_url,
-                    "jumpUrl": posted_msg.jump_url,
-                }
-                logger.info(f"[{session_id}] Sending callback to {callback_url} with params {cb_params} and payload {payload}")
-                try:
-                    async with session.post(callback_url, params=cb_params, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as cb_resp:
-                        cb_text = await cb_resp.text()
-                        logger.info(f"[{session_id}] Callback HTTP response status: {cb_resp.status}, body: {cb_text}")
+            # Send callback back to wows-tournaments.com (if callback_url provided)
+            if callback_url:
+                async with aiohttp.ClientSession() as session:
+                    cb_params = {
+                        "messageId": str(posted_msg.id),
+                        "channelId": str(target_channel_id),
+                    }
+                    if getattr(posted_msg, "guild", None):
+                        cb_params["guildId"] = str(posted_msg.guild.id)
 
-                        # If POST is not supported (405 Method Not Allowed), retry with GET
-                        if cb_resp.status == 405:
-                            logger.warning(f"[{session_id}] Callback POST returned 405 Method Not Allowed. Retrying with GET...")
-                            async with session.get(callback_url, params=cb_params, timeout=aiohttp.ClientTimeout(total=30)) as get_resp:
-                                get_text = await get_resp.text()
-                                logger.info(f"[{session_id}] GET Callback HTTP status: {get_resp.status}, body: {get_text}")
-                except Exception as cb_err:
-                    logger.error(f"[{session_id}] Error sending tournament callback to {callback_url}: {cb_err}")
+                    payload = {
+                        "messageId": str(posted_msg.id),
+                        "channelId": str(target_channel_id),
+                        "guildId": str(posted_msg.guild.id) if getattr(posted_msg, "guild", None) else None,
+                        "messageUrl": posted_msg.jump_url,
+                        "jumpUrl": posted_msg.jump_url,
+                    }
+                    logger.info(f"[{session_id}] Sending callback to {callback_url} with params {cb_params} and payload {payload}")
+                    try:
+                        async with session.post(callback_url, params=cb_params, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as cb_resp:
+                            cb_text = await cb_resp.text()
+                            logger.info(f"[{session_id}] Callback HTTP response status: {cb_resp.status}, body: {cb_text}")
+
+                            # If POST is not supported (405 Method Not Allowed), retry with GET
+                            if cb_resp.status == 405:
+                                logger.warning(f"[{session_id}] Callback POST returned 405 Method Not Allowed. Retrying with GET...")
+                                async with session.get(callback_url, params=cb_params, timeout=aiohttp.ClientTimeout(total=30)) as get_resp:
+                                    get_text = await get_resp.text()
+                                    logger.info(f"[{session_id}] GET Callback HTTP status: {get_resp.status}, body: {get_text}")
+                    except Exception as cb_err:
+                        logger.error(f"[{session_id}] Error sending tournament callback to {callback_url}: {cb_err}")
 
         finally:
             render_semaphore.release()
 
     except Exception as e:
         logger.exception(f"[{session_id}] Exception in tournament render pipeline: {e}")
+        await _notify_failure(f"Internal error: {e}")
     finally:
         # Temp files cleanup
-        for p in (green_path, red_path, output_path, roster_path):
+        compressed_cleanup = TEMP_DIR / f"{session_id}_compressed.mp4"
+        for p in (green_path, red_path, output_path, roster_path, compressed_cleanup):
             if p and p.exists():
                 try:
                     p.unlink()
