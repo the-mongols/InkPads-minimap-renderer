@@ -435,6 +435,11 @@ impl<'w> BattleView<'w> {
         &self.world.resource::<crate::resources::CombatHitLedger>().0
     }
 
+    /// Combat instruction activations recorded across the match.
+    pub fn combat_instruction_ledger(&self) -> &'w HashMap<EntityId, Vec<GameClock>> {
+        &self.world.resource::<crate::resources::CombatInstructionLedger>().0
+    }
+
     /// Scoring rules from BattleLogic.
     pub fn scoring_rules(&self) -> Option<&'w ScoringRules> {
         self.world.resource::<ScoringRulesResource>().0.as_ref()

@@ -326,6 +326,46 @@ fn draw_rounded_rect(pm: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, radius: f3
     pm.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
 }
 
+fn draw_rounded_rect_stroke(
+    pm: &mut Pixmap,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    radius: f32,
+    color: [u8; 3],
+    alpha: f32,
+    stroke_w: f32,
+) {
+    if w <= 0.0 || h <= 0.0 {
+        return;
+    }
+    let r = radius.min(w / 2.0).min(h / 2.0);
+    let mut pb = PathBuilder::new();
+    pb.move_to(x + r, y);
+    pb.line_to(x + w - r, y);
+    pb.quad_to(x + w, y, x + w, y + r);
+    pb.line_to(x + w, y + h - r);
+    pb.quad_to(x + w, y + h, x + w - r, y + h);
+    pb.line_to(x + r, y + h);
+    pb.quad_to(x, y + h, x, y + h - r);
+    pb.line_to(x, y + r);
+    pb.quad_to(x, y, x + r, y);
+    pb.close();
+    let Some(path) = pb.finish() else {
+        return;
+    };
+    let paint = color_paint(color, alpha);
+    let stroke = Stroke {
+        width: stroke_w,
+        line_cap: LineCap::Round,
+        line_join: LineJoin::Round,
+        miter_limit: 4.0,
+        dash: None,
+    };
+    pm.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+}
+
 // ── Composite drawing functions ────────────────────────────────────────────
 
 /// Draw a capture point zone: filled circle + progress pie + outline + label.
@@ -3529,8 +3569,9 @@ fn draw_inkpads_teammate_table(
 
         // Player Name & Clan Tag
         let player_label = if let Some(ref tag) = row.clan_tag {
-            if !tag.is_empty() {
-                format!("[{}] {}", tag, row.player_name)
+            let clean = tag.trim().trim_start_matches('[').trim_end_matches(']').trim();
+            if !clean.is_empty() {
+                format!("[{}] {}", clean, row.player_name)
             } else {
                 row.player_name.clone()
             }
@@ -3712,6 +3753,56 @@ fn format_number_commas(n: u32) -> String {
     result
 }
 
+/// Draw a ship class icon for the player table, upright (no rotation), tinted with team color or gray if dead.
+fn draw_table_ship_class_icon(
+    pm: &mut Pixmap,
+    icon: &RgbaImage,
+    x: i32,
+    y: i32,
+    size: i32,
+    color: [u8; 3],
+    opacity: f32,
+) {
+    let iw = icon.width();
+    let ih = icon.height();
+    if iw == 0 || ih == 0 {
+        return;
+    }
+    let scale = size as f32 / iw.max(ih) as f32;
+
+    let mut icon_pm = Pixmap::new(iw, ih).expect("failed to create icon pixmap");
+    let data = icon_pm.data_mut();
+    for iy in 0..ih {
+        for ix in 0..iw {
+            let px = icon.get_pixel(ix, iy).0;
+            let idx = (iy * iw + ix) as usize * 4;
+            let a = (px[3] as f32 / 255.0) * opacity;
+            if a < 0.01 {
+                continue;
+            }
+            let luminance = (px[0] as f32 * 0.299 + px[1] as f32 * 0.587 + px[2] as f32 * 0.114) / 255.0;
+            let r = (color[0] as f32 * luminance) as u8;
+            let g = (color[1] as f32 * luminance) as u8;
+            let b = (color[2] as f32 * luminance) as u8;
+            data[idx] = (r as f32 * a) as u8;
+            data[idx + 1] = (g as f32 * a) as u8;
+            data[idx + 2] = (b as f32 * a) as u8;
+            data[idx + 3] = (px[3] as f32 * a) as u8;
+        }
+    }
+
+    let cx = iw as f32 / 2.0;
+    let cy = ih as f32 / 2.0;
+    let dest_cx = x as f32 + size as f32 / 2.0;
+    let dest_cy = y as f32 + size as f32 / 2.0;
+
+    let transform = Transform::from_translate(dest_cx - cx * scale, dest_cy - cy * scale)
+        .pre_scale(scale, scale)
+        .post_rotate_at(90.0, dest_cx, dest_cy);
+    let paint = PixmapPaint { opacity: 1.0, blend_mode: BlendMode::SourceOver, quality: FilterQuality::Bilinear };
+    pm.draw_pixmap(0, 0, icon_pm.as_ref(), &paint, transform, None);
+}
+
 fn draw_kots_dual_tables(
     pm: &mut Pixmap,
     x: i32,
@@ -3724,7 +3815,7 @@ fn draw_kots_dual_tables(
     team0_rows: &[crate::draw_command::TeammateTableRow],
     team1_rows: &[crate::draw_command::TeammateTableRow],
     fonts: &GameFonts,
-    _ship_icons: &HashMap<String, ShipIcon>,
+    ship_icons: &HashMap<String, ShipIcon>,
 ) {
     // Total panel dimensions: width (928), height (1280)
     // Dark background for whole panel
@@ -3732,9 +3823,9 @@ fn draw_kots_dual_tables(
     // Left boundary line separating map from side panel
     draw_line(pm, x as f32, y as f32, x as f32, (y + height) as f32, [65, 75, 95], 0.9, 2.0);
 
-    let padding = 14i32;
-    let player_col_w = (width as f32 * 0.30) as i32;
-    let stat_col_w = (width - player_col_w - padding * 2) / 6;
+    let padding = 12i32;
+    let player_col_w = 286i32;
+    let stat_col_w = (width - player_col_w - padding * 2) / 6; // 103px
 
     // Normalize: Top is always North spawn (Friendly green), Bottom is always South spawn (Enemy red)
     let (top_name, top_spawn, top_color, top_rows, bot_name, bot_spawn, bot_color, bot_rows) = if team0_is_north {
@@ -3762,12 +3853,12 @@ fn draw_kots_dual_tables(
     };
 
     let banner_h = 44i32;
-    let total_h = 44i32;
-    let col_header_h = 28i32;
+    let total_h = 48i32;
+    let col_header_h = 32i32;
     let center_y = y + height / 2;
 
     let draw_col_header = |pm: &mut Pixmap, hy: i32| {
-        draw_filled_rect(pm, x as f32, hy as f32, width as f32, col_header_h as f32, [20, 24, 33], 0.95);
+        draw_filled_rect(pm, x as f32, hy as f32, width as f32, col_header_h as f32, [20, 24, 33], 0.96);
         draw_line(pm, x as f32, hy as f32, (x + width) as f32, hy as f32, [75, 85, 105], 0.8, 1.5);
         draw_line(
             pm,
@@ -3780,14 +3871,30 @@ fn draw_kots_dual_tables(
             1.5,
         );
 
-        let headers = ["PLAYER / SHIP", "CITS | TORPS", "DAMAGE", "RECEIVED", "KILLS", "F-KEY", "HP"];
-        let header_scale = fonts.scale(13.0);
-        let mut hx = x + padding;
-        draw_text_shadow(pm, [160, 175, 205], hx, hy + 6, header_scale, &fonts.primary, headers[0]);
-        hx += player_col_w;
-        for &h in &headers[1..] {
-            draw_text_shadow(pm, [160, 175, 205], hx, hy + 6, header_scale, &fonts.primary, h);
-            hx += stat_col_w;
+        // Alternating column shading on header: columns 1, 3, 5
+        for col_idx in [1, 3, 5] {
+            let cx = x + padding + player_col_w + (col_idx - 1) * stat_col_w;
+            draw_filled_rect(pm, cx as f32, hy as f32, stat_col_w as f32, col_header_h as f32, [255, 255, 255], 0.035);
+        }
+        // Vertical column dividers in header
+        for col_idx in 0..6 {
+            let cx = x + padding + player_col_w + col_idx * stat_col_w;
+            draw_line(pm, cx as f32, hy as f32, cx as f32, (hy + col_header_h) as f32, [60, 72, 95], 0.45, 1.0);
+        }
+
+        let headers = ["PLAYER / SHIP", "CIT / TRP", "DMG", "RCVD", "KILLS", "F-KEY", "HP"];
+        let header_scale = fonts.scale(15.5);
+        let header_y = hy + (col_header_h - 16) / 2;
+
+        // Player / Ship header (left aligned with small inset)
+        draw_text_shadow(pm, [185, 200, 225], x + padding + 6, header_y, header_scale, &fonts.primary, headers[0]);
+
+        // Stat headers: center-aligned over each column
+        for (col_idx, &h) in headers[1..].iter().enumerate() {
+            let cx = x + padding + player_col_w + col_idx as i32 * stat_col_w;
+            let (hw, _) = text_size(header_scale, &fonts.primary, h);
+            let hx = cx + (stat_col_w - hw as i32) / 2;
+            draw_text_shadow(pm, [185, 200, 225], hx, header_y, header_scale, &fonts.primary, h);
         }
     };
 
@@ -3839,14 +3946,14 @@ fn draw_kots_dual_tables(
     // 3. TOP TEAM LINEUP ROWS (Aligned against Team 0 Header)
     // ─────────────────────────────────────────────────────────────
     let t0_start_y = t0_header_y + col_header_h;
-    let t0_total_y = center_y - total_h - 1;
+    let t0_total_y = center_y - total_h - 2;
     let t0_avail_h = t0_total_y - t0_start_y;
     let t0_row_count = top_rows.len() as i32;
     let t0_row_h = if t0_row_count > 0 { (t0_avail_h / t0_row_count).clamp(36, 62) } else { 50 };
 
-    let p_name_scale = fonts.scale(15.0);
-    let p_ship_scale = fonts.scale(13.0);
-    let stat_scale = fonts.scale(15.0);
+    let p_name_scale = fonts.scale(16.0);
+    let p_ship_scale = fonts.scale(13.5);
+    let stat_scale = fonts.scale(18.5);
 
     let mut ry0 = t0_start_y;
     for (i, row) in top_rows.iter().enumerate() {
@@ -3855,127 +3962,220 @@ fn draw_kots_dual_tables(
         }
         draw_kots_player_row(
             pm, x, ry0, width, t0_row_h, padding, player_col_w, stat_col_w, i, row, fonts,
-            p_name_scale, p_ship_scale, stat_scale,
+            ship_icons, top_color, p_name_scale, p_ship_scale, stat_scale,
         );
         ry0 += t0_row_h;
     }
 
     // ─────────────────────────────────────────────────────────────
-    // 4. TOP TEAM TOTAL ROW (Meets in Center: t0_total_y .. center_y - 1)
+    // 4. TOP TEAM TOTAL ROW (Meets in Center: t0_total_y .. center_y - 2)
     // ─────────────────────────────────────────────────────────────
+    let total_scale = fonts.scale(21.0);
+    let label_scale = fonts.scale(18.0);
+
+    let draw_stat_chip_text = |pm: &mut Pixmap, col_x: i32, row_y: i32, text: &str, color: [u8; 3]| {
+        let chip_margin = 4;
+        let chip_w = stat_col_w - chip_margin * 2;
+        let chip_h = 36;
+        let chip_x = col_x + chip_margin;
+        let chip_y = row_y + (total_h - chip_h) / 2;
+        draw_rounded_rect(pm, chip_x as f32, chip_y as f32, chip_w as f32, chip_h as f32, 6.0, [24, 30, 42], 0.70);
+        draw_rounded_rect_stroke(pm, chip_x as f32, chip_y as f32, chip_w as f32, chip_h as f32, 6.0, [70, 82, 105], 0.40, 1.0);
+
+        let (tw, _) = text_size(total_scale, &fonts.primary, text);
+        let tx = col_x + (stat_col_w - tw as i32) / 2;
+        let ty = row_y + (total_h - 20) / 2;
+        draw_text_shadow(pm, color, tx, ty, total_scale, &fonts.primary, text);
+        draw_text_shadow(pm, color, tx + 1, ty, total_scale, &fonts.primary, text);
+    };
+
+    // Dark base row background without row-wide color tint
     draw_filled_rect(pm, x as f32, t0_total_y as f32, width as f32, total_h as f32, [18, 23, 33], 0.96);
     draw_line(pm, x as f32, t0_total_y as f32, (x + width) as f32, t0_total_y as f32, [60, 72, 92], 0.8, 1.5);
-    draw_line(pm, x as f32, (t0_total_y + total_h) as f32, (x + width) as f32, (t0_total_y + total_h) as f32, [60, 72, 92], 0.8, 1.5);
 
-    let total_scale = fonts.scale(16.5);
-    let top_total_ty = t0_total_y + 12;
+    // Subtle alternating column shading on total row
+    for col_idx in [1, 3, 5] {
+        let cx = x + padding + player_col_w + (col_idx - 1) * stat_col_w;
+        draw_filled_rect(pm, cx as f32, t0_total_y as f32, stat_col_w as f32, total_h as f32, [255, 255, 255], 0.035);
+    }
+    // Vertical column dividers on total row
+    for col_idx in 0..6 {
+        let cx = x + padding + player_col_w + col_idx * stat_col_w;
+        draw_line(pm, cx as f32, t0_total_y as f32, cx as f32, (t0_total_y + total_h) as f32, [60, 72, 92], 0.45, 1.0);
+    }
 
-    let mut t0x = x + padding;
-    draw_text_shadow(pm, [220, 230, 245], t0x, top_total_ty, total_scale, &fonts.primary, "TEAM TOTAL");
-    t0x += player_col_w;
+    // Top Team Total clean label (no pill container, with team tag)
+    let top_team_label = if top_name.trim().is_empty() {
+        "TEAM TOTAL".to_string()
+    } else {
+        format!("{} TOTAL", top_name.trim())
+    };
+    let top_label_y = t0_total_y + (total_h - 18) / 2;
+    draw_text_shadow(pm, [230, 238, 250], x + padding + 6, top_label_y, label_scale, &fonts.primary, &top_team_label);
+    draw_text_shadow(pm, [230, 238, 250], x + padding + 7, top_label_y, label_scale, &fonts.primary, &top_team_label);
 
     let top_cits: u32 = top_rows.iter().map(|r| r.citadels).sum();
     let top_torps: u32 = top_rows.iter().map(|r| r.torp_hits).sum();
     let top_dmg: u32 = top_rows.iter().map(|r| r.damage).sum();
     let top_rec: u32 = top_rows.iter().map(|r| r.received).sum();
     let top_kills: u32 = top_rows.iter().map(|r| r.kills).sum();
-    let top_cur_hp: u32 = top_rows.iter().map(|r| r.hp_cur).sum();
-    let top_max_hp: u32 = top_rows.iter().map(|r| r.hp_max).sum();
-    let top_hp_pct = if top_max_hp > 0 {
-        ((top_cur_hp as f64 / top_max_hp as f64 * 100.0).round() as u32).min(100)
+    let top_f_keys: u32 = top_rows.iter().map(|r| r.f_key_activations).sum();
+
+    // HP percentage arithmetic mean including dead players at 0%
+    let top_hp_pct = if !top_rows.is_empty() {
+        let sum_pct: u32 = top_rows.iter().map(|r| {
+            if r.is_dead || r.hp_max == 0 {
+                0
+            } else {
+                ((r.hp_cur as f64 / r.hp_max as f64 * 100.0).round() as u32).min(100)
+            }
+        }).sum();
+        ((sum_pct as f64 / top_rows.len() as f64).round() as u32).min(100)
     } else {
         0
     };
 
-    // 2. CITS | TORPS
+    let col1_x = x + padding + player_col_w;
+    let col2_x = col1_x + stat_col_w;
+    let col3_x = col2_x + stat_col_w;
+    let col4_x = col3_x + stat_col_w;
+    let col5_x = col4_x + stat_col_w;
+    let col6_x = col5_x + stat_col_w;
+
+    // Col 1: CIT / TRP
     let t0_cits_torps_col = if top_cits > 0 || top_torps > 0 { [130, 230, 255] } else { [240, 245, 255] };
-    draw_text_shadow(pm, t0_cits_torps_col, t0x, top_total_ty, total_scale, &fonts.primary, &format!("{} | {}", top_cits, top_torps));
-    t0x += stat_col_w;
-    // 3. DAMAGE
-    draw_text_shadow(pm, [255, 255, 255], t0x, top_total_ty, total_scale, &fonts.primary, &format_number_commas(top_dmg));
-    t0x += stat_col_w;
-    // 4. RECEIVED
-    draw_text_shadow(pm, [210, 220, 235], t0x, top_total_ty, total_scale, &fonts.primary, &format_number_commas(top_rec));
-    t0x += stat_col_w;
-    // 5. KILLS
-    draw_text_shadow(pm, [255, 215, 80], t0x, top_total_ty, total_scale, &fonts.primary, &top_kills.to_string());
-    t0x += stat_col_w;
-    // 6. F-KEY
-    draw_text_shadow(pm, [150, 160, 175], t0x, top_total_ty, total_scale, &fonts.primary, "-");
-    t0x += stat_col_w;
-    // 7. HP %
+    draw_stat_chip_text(pm, col1_x, t0_total_y, &format!("{} | {}", top_cits, top_torps), t0_cits_torps_col);
+
+    // Col 2: DMG
+    draw_stat_chip_text(pm, col2_x, t0_total_y, &format_number_commas(top_dmg), [255, 255, 255]);
+
+    // Col 3: RCVD
+    draw_stat_chip_text(pm, col3_x, t0_total_y, &format_number_commas(top_rec), [210, 220, 235]);
+
+    // Col 4: KILLS
+    draw_stat_chip_text(pm, col4_x, t0_total_y, &top_kills.to_string(), [255, 215, 80]);
+
+    // Col 5: F-KEY
+    let (top_f_key_str, top_f_key_col) = if top_f_keys > 0 {
+        (top_f_keys.to_string(), [255, 215, 60])
+    } else {
+        ("-".to_string(), [150, 160, 175])
+    };
+    draw_stat_chip_text(pm, col5_x, t0_total_y, &top_f_key_str, top_f_key_col);
+
+    // Col 6: HP % (Returned to dynamic color coding)
     let t0_hp_col = hp_percentage_color(top_hp_pct, false);
-    draw_text_shadow(pm, t0_hp_col, t0x, top_total_ty, total_scale, &fonts.primary, &format!("{}%", top_hp_pct));
+    draw_stat_chip_text(pm, col6_x, t0_total_y, &format!("{}%", top_hp_pct), t0_hp_col);
 
     // ─────────────────────────────────────────────────────────────
-    // 5. PROMINENT CENTER DIVIDER (Between Team 0 and Team 1 Totals)
+    // 5. PROMINENT METALLIC / BROADCAST CENTER DIVIDER
     // ─────────────────────────────────────────────────────────────
+    draw_filled_rect(pm, x as f32, (center_y - 2) as f32, width as f32, 4.0, [32, 40, 56], 1.0);
     draw_line(
         pm,
         x as f32,
-        (center_y - 1) as f32,
+        (center_y - 2) as f32,
         (x + width) as f32,
-        (center_y - 1) as f32,
-        [90, 105, 130],
+        (center_y - 2) as f32,
+        [80, 95, 125],
         0.9,
         1.5,
     );
     draw_line(
         pm,
         x as f32,
-        (center_y + 1) as f32,
+        (center_y + 2) as f32,
         (x + width) as f32,
-        (center_y + 1) as f32,
-        [90, 105, 130],
+        (center_y + 2) as f32,
+        [80, 95, 125],
         0.9,
         1.5,
+    );
+    draw_line(
+        pm,
+        (x + 24) as f32,
+        center_y as f32,
+        (x + width - 24) as f32,
+        center_y as f32,
+        [50, 62, 85],
+        0.8,
+        1.0,
     );
 
     // ─────────────────────────────────────────────────────────────
     // 6. BOTTOM TEAM TOTAL ROW (Meets in Center: center_y + 2 .. center_y + 2 + total_h)
     // ─────────────────────────────────────────────────────────────
     let t1_total_y = center_y + 2;
+    // Dark base row background without row-wide color tint
     draw_filled_rect(pm, x as f32, t1_total_y as f32, width as f32, total_h as f32, [18, 23, 33], 0.96);
-    draw_line(pm, x as f32, t1_total_y as f32, (x + width) as f32, t1_total_y as f32, [60, 72, 92], 0.8, 1.5);
     draw_line(pm, x as f32, (t1_total_y + total_h) as f32, (x + width) as f32, (t1_total_y + total_h) as f32, [60, 72, 92], 0.8, 1.5);
 
-    let bot_total_ty = t1_total_y + 12;
-    let mut t1x = x + padding;
-    draw_text_shadow(pm, [220, 230, 245], t1x, bot_total_ty, total_scale, &fonts.primary, "TEAM TOTAL");
-    t1x += player_col_w;
+    // Subtle alternating column shading on total row
+    for col_idx in [1, 3, 5] {
+        let cx = x + padding + player_col_w + (col_idx - 1) * stat_col_w;
+        draw_filled_rect(pm, cx as f32, t1_total_y as f32, stat_col_w as f32, total_h as f32, [255, 255, 255], 0.035);
+    }
+    // Vertical column dividers on total row
+    for col_idx in 0..6 {
+        let cx = x + padding + player_col_w + col_idx * stat_col_w;
+        draw_line(pm, cx as f32, t1_total_y as f32, cx as f32, (t1_total_y + total_h) as f32, [60, 72, 92], 0.45, 1.0);
+    }
+
+    // Bottom Team Total clean label (no pill container, with team tag)
+    let bot_team_label = if bot_name.trim().is_empty() {
+        "TEAM TOTAL".to_string()
+    } else {
+        format!("{} TOTAL", bot_name.trim())
+    };
+    let bot_label_y = t1_total_y + (total_h - 18) / 2;
+    draw_text_shadow(pm, [230, 238, 250], x + padding + 6, bot_label_y, label_scale, &fonts.primary, &bot_team_label);
+    draw_text_shadow(pm, [230, 238, 250], x + padding + 7, bot_label_y, label_scale, &fonts.primary, &bot_team_label);
 
     let bot_cits: u32 = bot_rows.iter().map(|r| r.citadels).sum();
     let bot_torps: u32 = bot_rows.iter().map(|r| r.torp_hits).sum();
     let bot_dmg: u32 = bot_rows.iter().map(|r| r.damage).sum();
     let bot_rec: u32 = bot_rows.iter().map(|r| r.received).sum();
     let bot_kills: u32 = bot_rows.iter().map(|r| r.kills).sum();
-    let bot_cur_hp: u32 = bot_rows.iter().map(|r| r.hp_cur).sum();
-    let bot_max_hp: u32 = bot_rows.iter().map(|r| r.hp_max).sum();
-    let bot_hp_pct = if bot_max_hp > 0 {
-        ((bot_cur_hp as f64 / bot_max_hp as f64 * 100.0).round() as u32).min(100)
+    let bot_f_keys: u32 = bot_rows.iter().map(|r| r.f_key_activations).sum();
+
+    // HP percentage arithmetic mean including dead players at 0%
+    let bot_hp_pct = if !bot_rows.is_empty() {
+        let sum_pct: u32 = bot_rows.iter().map(|r| {
+            if r.is_dead || r.hp_max == 0 {
+                0
+            } else {
+                ((r.hp_cur as f64 / r.hp_max as f64 * 100.0).round() as u32).min(100)
+            }
+        }).sum();
+        ((sum_pct as f64 / bot_rows.len() as f64).round() as u32).min(100)
     } else {
         0
     };
 
-    // 2. CITS | TORPS
+    // Col 1: CIT / TRP
     let t1_cits_torps_col = if bot_cits > 0 || bot_torps > 0 { [130, 230, 255] } else { [240, 245, 255] };
-    draw_text_shadow(pm, t1_cits_torps_col, t1x, bot_total_ty, total_scale, &fonts.primary, &format!("{} | {}", bot_cits, bot_torps));
-    t1x += stat_col_w;
-    // 3. DAMAGE
-    draw_text_shadow(pm, [255, 255, 255], t1x, bot_total_ty, total_scale, &fonts.primary, &format_number_commas(bot_dmg));
-    t1x += stat_col_w;
-    // 4. RECEIVED
-    draw_text_shadow(pm, [210, 220, 235], t1x, bot_total_ty, total_scale, &fonts.primary, &format_number_commas(bot_rec));
-    t1x += stat_col_w;
-    // 5. KILLS
-    draw_text_shadow(pm, [255, 215, 80], t1x, bot_total_ty, total_scale, &fonts.primary, &bot_kills.to_string());
-    t1x += stat_col_w;
-    // 6. F-KEY
-    draw_text_shadow(pm, [150, 160, 175], t1x, bot_total_ty, total_scale, &fonts.primary, "-");
-    t1x += stat_col_w;
-    // 7. HP %
+    draw_stat_chip_text(pm, col1_x, t1_total_y, &format!("{} | {}", bot_cits, bot_torps), t1_cits_torps_col);
+
+    // Col 2: DMG
+    draw_stat_chip_text(pm, col2_x, t1_total_y, &format_number_commas(bot_dmg), [255, 255, 255]);
+
+    // Col 3: RCVD
+    draw_stat_chip_text(pm, col3_x, t1_total_y, &format_number_commas(bot_rec), [210, 220, 235]);
+
+    // Col 4: KILLS
+    draw_stat_chip_text(pm, col4_x, t1_total_y, &bot_kills.to_string(), [255, 215, 80]);
+
+    // Col 5: F-KEY
+    let (bot_f_key_str, bot_f_key_col) = if bot_f_keys > 0 {
+        (bot_f_keys.to_string(), [255, 215, 60])
+    } else {
+        ("-".to_string(), [150, 160, 175])
+    };
+    draw_stat_chip_text(pm, col5_x, t1_total_y, &bot_f_key_str, bot_f_key_col);
+
+    // Col 6: HP % (Returned to dynamic color coding)
     let t1_hp_col = hp_percentage_color(bot_hp_pct, false);
-    draw_text_shadow(pm, t1_hp_col, t1x, bot_total_ty, total_scale, &fonts.primary, &format!("{}%", bot_hp_pct));
+    draw_stat_chip_text(pm, col6_x, t1_total_y, &format!("{}%", bot_hp_pct), t1_hp_col);
 
     // ─────────────────────────────────────────────────────────────
     // 7. BOTTOM TEAM BANNER & HEADER COORDINATES
@@ -4001,7 +4201,7 @@ fn draw_kots_dual_tables(
         }
         draw_kots_player_row(
             pm, x, ry1, width, t1_row_h, padding, player_col_w, stat_col_w, i, row, fonts,
-            p_name_scale, p_ship_scale, stat_scale,
+            ship_icons, bot_color, p_name_scale, p_ship_scale, stat_scale,
         );
         ry1 += t1_row_h;
     }
@@ -4085,6 +4285,8 @@ fn draw_kots_player_row(
     i: usize,
     row: &crate::draw_command::TeammateTableRow,
     fonts: &GameFonts,
+    ship_icons: &HashMap<String, ShipIcon>,
+    team_color: [u8; 3],
     p_name_scale: PxScale,
     p_ship_scale: PxScale,
     stat_scale: PxScale,
@@ -4100,13 +4302,57 @@ fn draw_kots_player_row(
     let bg_alpha = if row.is_dead { 0.70 } else { 0.55 };
     draw_filled_rect(pm, x as f32, ry as f32, width as f32, row_h as f32, bg_color, bg_alpha);
 
-    // 1. Player / Ship column: 2 lines
+    // Alternating column shading: columns 1, 3, 5 (CIT/TRP, RCVD, F-KEY)
+    for col_idx in [1, 3, 5] {
+        let cx = x + padding + player_col_w + (col_idx - 1) * stat_col_w;
+        draw_filled_rect(pm, cx as f32, ry as f32, stat_col_w as f32, row_h as f32, [255, 255, 255], 0.035);
+    }
+    // Subtle vertical column dividers
+    for col_idx in 0..6 {
+        let cx = x + padding + player_col_w + col_idx * stat_col_w;
+        draw_line(pm, cx as f32, ry as f32, cx as f32, (ry + row_h) as f32, [55, 65, 82], 0.35, 1.0);
+    }
+
+    // 1. Player / Ship column with Ship Class Icon
     let name_color = if row.is_dead { [120, 125, 135] } else { [240, 245, 255] };
     let ship_color = if row.is_dead { [95, 100, 110] } else { [160, 175, 195] };
 
+    let icon_size = 28i32;
+    let icon_x = x + padding + 4;
+    let icon_y = ry + (row_h - icon_size) / 2;
+
+    if let Some(ref sp) = row.ship_species {
+        let key_sp = sp.as_str();
+        let dead_key = format!("{}_dead", key_sp);
+        let icon = if row.is_dead {
+            ship_icons.get(&dead_key).or_else(|| ship_icons.get(key_sp))
+        } else {
+            ship_icons.get(key_sp)
+        };
+        let icon = icon.or_else(|| {
+            let mut chars = key_sp.chars();
+            let pascal = match chars.next() {
+                None => String::new(),
+                Some(f) => f.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase(),
+            };
+            if row.is_dead {
+                let d = format!("{}_dead", pascal);
+                ship_icons.get(&d).or_else(|| ship_icons.get(&pascal))
+            } else {
+                ship_icons.get(&pascal)
+            }
+        });
+        if let Some(icon) = icon {
+            let icon_col = if row.is_dead { [120, 125, 135] } else { team_color };
+            let icon_op = if row.is_dead { 0.65 } else { 0.95 };
+            draw_table_ship_class_icon(pm, icon, icon_x, icon_y, icon_size, icon_col, icon_op);
+        }
+    }
+
     let player_label = if let Some(ref tag) = row.clan_tag {
-        if !tag.is_empty() {
-            format!("[{}] {}", tag, row.player_name)
+        let clean = tag.trim().trim_start_matches('[').trim_end_matches(']').trim();
+        if !clean.is_empty() {
+            format!("[{}] {}", clean, row.player_name)
         } else {
             row.player_name.clone()
         }
@@ -4114,18 +4360,20 @@ fn draw_kots_player_row(
         row.player_name.clone()
     };
 
-    let name_disp = truncate_to_fit(&player_label, (player_col_w - 12) as u32, p_name_scale, &fonts.primary);
-    let ship_disp = truncate_to_fit(&row.ship_name, (player_col_w - 12) as u32, p_ship_scale, &fonts.primary);
+    let text_x = icon_x + icon_size + 8;
+    let max_text_w = (player_col_w - (icon_size + 16)).max(40) as u32;
+    let name_disp = truncate_to_fit(&player_label, max_text_w, p_name_scale, &fonts.primary);
+    let ship_disp = truncate_to_fit(&row.ship_name, max_text_w, p_ship_scale, &fonts.primary);
 
-    let mut rx = x + padding;
-    draw_text_shadow(pm, name_color, rx, ry + 6, p_name_scale, &fonts.primary, &name_disp);
-    draw_text_shadow(pm, ship_color, rx, ry + 27, p_ship_scale, &fonts.primary, &ship_disp);
-    rx += player_col_w;
+    let text_y_offset = (row_h - 42) / 2;
+    draw_text_shadow(pm, name_color, text_x, ry + 4 + text_y_offset, p_name_scale, &fonts.primary, &name_disp);
+    draw_text_shadow(pm, ship_color, text_x, ry + 25 + text_y_offset, p_ship_scale, &fonts.primary, &ship_disp);
 
-    // Stat columns
-    let stat_y = ry + (row_h - 15) / 2;
+    // Stat columns: centered vertically and horizontally
+    let stat_y = ry + (row_h - 18) / 2;
 
-    // 2. CITS | TORPS
+    // 2. CIT / TRP (col 1)
+    let col1_x = x + padding + player_col_w;
     let cits_torps_str = format!("{} | {}", row.citadels, row.torp_hits);
     let cits_torps_col = if row.is_dead {
         [120, 125, 135]
@@ -4134,26 +4382,34 @@ fn draw_kots_player_row(
     } else {
         name_color
     };
-    draw_text_shadow(pm, cits_torps_col, rx, stat_y, stat_scale, &fonts.primary, &cits_torps_str);
-    rx += stat_col_w;
+    let (tw, _) = text_size(stat_scale, &fonts.primary, &cits_torps_str);
+    let tx = col1_x + (stat_col_w - tw as i32) / 2;
+    draw_text_shadow(pm, cits_torps_col, tx, stat_y, stat_scale, &fonts.primary, &cits_torps_str);
 
-    // 3. DAMAGE
+    // 3. DMG (col 2)
+    let col2_x = col1_x + stat_col_w;
     let dmg_str = format_number_commas(row.damage);
-    draw_text_shadow(pm, name_color, rx, stat_y, stat_scale, &fonts.primary, &dmg_str);
-    rx += stat_col_w;
+    let (tw, _) = text_size(stat_scale, &fonts.primary, &dmg_str);
+    let tx = col2_x + (stat_col_w - tw as i32) / 2;
+    draw_text_shadow(pm, name_color, tx, stat_y, stat_scale, &fonts.primary, &dmg_str);
 
-    // 4. RECEIVED
+    // 4. RCVD (col 3)
+    let col3_x = col2_x + stat_col_w;
     let rec_str = format_number_commas(row.received);
-    draw_text_shadow(pm, name_color, rx, stat_y, stat_scale, &fonts.primary, &rec_str);
-    rx += stat_col_w;
+    let (tw, _) = text_size(stat_scale, &fonts.primary, &rec_str);
+    let tx = col3_x + (stat_col_w - tw as i32) / 2;
+    draw_text_shadow(pm, name_color, tx, stat_y, stat_scale, &fonts.primary, &rec_str);
 
-    // 5. KILLS (reordered)
+    // 5. KILLS (col 4)
+    let col4_x = col3_x + stat_col_w;
     let kills_str = if row.kills > 0 { row.kills.to_string() } else { "-".to_string() };
     let kills_col = if row.kills > 0 && !row.is_dead { [255, 215, 80] } else { name_color };
-    draw_text_shadow(pm, kills_col, rx, stat_y, stat_scale, &fonts.primary, &kills_str);
-    rx += stat_col_w;
+    let (tw, _) = text_size(stat_scale, &fonts.primary, &kills_str);
+    let tx = col4_x + (stat_col_w - tw as i32) / 2;
+    draw_text_shadow(pm, kills_col, tx, stat_y, stat_scale, &fonts.primary, &kills_str);
 
-    // 6. F-KEY (reordered)
+    // 6. F-KEY (col 5)
+    let col5_x = col4_x + stat_col_w;
     let (f_key_str, f_key_col) = if let Some(ref st) = row.f_key_status {
         if st == "ACTIVE" {
             (st.as_str(), [255, 215, 60]) // Gold active
@@ -4165,10 +4421,12 @@ fn draw_kots_player_row(
     } else {
         ("-", [120, 125, 135])
     };
-    draw_text_shadow(pm, f_key_col, rx, stat_y, stat_scale, &fonts.primary, f_key_str);
-    rx += stat_col_w;
+    let (tw, _) = text_size(stat_scale, &fonts.primary, f_key_str);
+    let tx = col5_x + (stat_col_w - tw as i32) / 2;
+    draw_text_shadow(pm, f_key_col, tx, stat_y, stat_scale, &fonts.primary, f_key_str);
 
-    // 7. HP (reordered, color coded with smooth gradient)
+    // 7. HP (col 6)
+    let col6_x = col5_x + stat_col_w;
     let hp_pct = if row.is_dead || row.hp_max == 0 {
         0
     } else {
@@ -4176,7 +4434,9 @@ fn draw_kots_player_row(
     };
     let hp_str = if row.is_dead { "0%".to_string() } else { format!("{}%", hp_pct) };
     let hp_col = hp_percentage_color(hp_pct, row.is_dead);
-    draw_text_shadow(pm, hp_col, rx, stat_y, stat_scale, &fonts.primary, &hp_str);
+    let (tw, _) = text_size(stat_scale, &fonts.primary, &hp_str);
+    let tx = col6_x + (stat_col_w - tw as i32) / 2;
+    draw_text_shadow(pm, hp_col, tx, stat_y, stat_scale, &fonts.primary, &hp_str);
 
     // Row border
     draw_line(pm, x as f32, (ry + row_h) as f32, (x + width) as f32, (ry + row_h) as f32, [45, 52, 65], 0.4, 1.0);

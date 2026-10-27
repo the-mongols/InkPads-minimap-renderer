@@ -93,6 +93,10 @@ pub struct CombatHitRecord {
 #[derive(Resource, Debug, Clone, Default)]
 pub struct CombatHitLedger(pub HashMap<EntityId, Vec<CombatHitRecord>>);
 
+/// Ledger of combat instruction (rage mode) activations keyed by entity ID.
+#[derive(Resource, Debug, Clone, Default)]
+pub struct CombatInstructionLedger(pub HashMap<EntityId, Vec<GameClock>>);
+
 /// Resolved projectile hits (shells matched to salvos).
 #[derive(Resource, Debug, Clone, Default)]
 pub struct ShotHitLog(pub Vec<ResolvedShotHit>);

@@ -26,6 +26,7 @@ use crate::resources::CapturedBuffs;
 use crate::resources::ChatLog;
 use crate::resources::Clock;
 use crate::resources::CombatHitLedger;
+use crate::resources::CombatInstructionLedger;
 use crate::resources::DamageLedger;
 use crate::resources::DeadShips;
 use crate::resources::EntityIndex;
@@ -223,6 +224,7 @@ fn insert_empty_resources(world: &mut World) {
     world.insert_resource(KillLog::default());
     world.insert_resource(DamageLedger::default());
     world.insert_resource(CombatHitLedger::default());
+    world.insert_resource(CombatInstructionLedger::default());
     world.insert_resource(ShotHitLog::default());
     world.insert_resource(ActiveShotOrder::default());
     world.insert_resource(ActiveTorpedoOrder::default());

@@ -60,6 +60,7 @@ use crate::resources::CapturePointOrder;
 use crate::resources::CapturedBuffs;
 use crate::resources::ChatLog;
 use crate::resources::CombatHitLedger;
+use crate::resources::CombatInstructionLedger;
 use crate::resources::CombatHitRecord;
 use crate::resources::DamageLedger;
 use crate::resources::DeadShips;
@@ -135,6 +136,11 @@ impl<'res, 'replay, G: ResourceLoader> BattleWorld<'res, 'replay, G> {
     /// Combat hit records (citadels and torpedo hits) per owner entity id.
     pub fn combat_hit_ledger(&self) -> &HashMap<EntityId, Vec<CombatHitRecord>> {
         &self.world().resource::<CombatHitLedger>().0
+    }
+
+    /// Combat instruction activations per owner entity id.
+    pub fn combat_instruction_ledger(&self) -> &HashMap<EntityId, Vec<GameClock>> {
+        &self.world().resource::<CombatInstructionLedger>().0
     }
 
     /// Ribbon counts for the self player.

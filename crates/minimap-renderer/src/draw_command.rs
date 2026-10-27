@@ -673,6 +673,7 @@ pub struct TeammateTableRow {
     pub citadels: u32,
     pub torp_hits: u32,
     pub f_key_status: Option<String>,
+    pub f_key_activations: u32,
 }
 
 /// Which gutter a [`DrawCommand::TeamRoster`] sits in.

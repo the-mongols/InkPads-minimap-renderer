@@ -250,6 +250,10 @@ struct Args {
     /// Arena IDs must match across all replays.
     #[arg(long = "merge")]
     merge: Vec<PathBuf>,
+
+    /// Path to a JSON file containing tournament roster / player mappings (maps PA account IDs to real player names and team tags)
+    #[arg(long = "roster-json")]
+    roster_json: Option<PathBuf>,
 }
 
 fn main() -> Result<(), Report> {
@@ -526,14 +530,36 @@ fn main() -> Result<(), Report> {
         &specs,
         &primary_with_alts,
     );
+    let combat_instructions = wows_battle_world::merged::gather_combat_instructions(
+        &controller_game_params,
+        &game_constants,
+        replay_version,
+        &specs,
+        &primary_with_alts,
+    );
+
+    let roster_map = match args.roster_json.as_deref() {
+        Some(path) => match wows_minimap_renderer::roster::load_roster_map(path) {
+            Ok(map) => Some(map),
+            Err(e) => {
+                warn!(error = ?e, path = %path.display(), "Failed to load tournament roster JSON; proceeding without roster overrides");
+                None
+            }
+        },
+        None => None,
+    };
 
     let mut renderer = MinimapRenderer::new(map_info.clone(), &game_params, replay_version, options);
+    if let Some(roster) = roster_map {
+        renderer.set_roster_overrides(roster);
+    }
     renderer.set_fonts(game_fonts);
     renderer.set_flag_icons(flag_icons);
     renderer.set_merged_perspectives(!merge_replays.is_empty());
     renderer.set_vehicle_facts(vehicle_facts.clone());
     renderer.set_damage_events(damage_events);
     renderer.set_combat_hits(combat_hits);
+    renderer.set_combat_instructions(combat_instructions);
     let salvo_flight_times = wows_battle_world::scan::scan_salvo_flight_times(
         &replay_file.meta,
         &controller_game_params,

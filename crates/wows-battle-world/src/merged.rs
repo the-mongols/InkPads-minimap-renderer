@@ -466,6 +466,41 @@ pub fn gather_combat_hits<G: ResourceLoader>(
     combined
 }
 
+/// Gather combat instruction (rage mode) activations across replay perspectives and union them.
+pub fn gather_combat_instructions<G: ResourceLoader>(
+    game_resources: &G,
+    constants: &GameConstants,
+    version: Version,
+    specs: &[EntitySpec],
+    replays: &[&ReplayFile],
+) -> HashMap<EntityId, Vec<GameClock>> {
+    let mut combined: HashMap<EntityId, Vec<GameClock>> = HashMap::new();
+
+    for replay in replays {
+        let mut world = BattleWorld::new(&replay.meta, game_resources, Some(constants));
+        let mut parser = Parser::with_version(specs, version);
+        let mut remaining = &replay.packet_data[..];
+        while !remaining.is_empty() {
+            let Ok(packet) = parser.parse_packet(&mut remaining) else { break };
+            world.process(&packet);
+        }
+        world.finish();
+        for (owner, events) in world.combat_instruction_ledger() {
+            let list = combined.entry(*owner).or_default();
+            for event in events {
+                if list.iter().all(|existing| (existing.0 - event.0).abs() > 3.0) {
+                    list.push(*event);
+                }
+            }
+        }
+    }
+
+    for events in combined.values_mut() {
+        events.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    }
+    combined
+}
+
 /// Snapshot per-vehicle facts from a world that has finished processing
 /// every packet in its packet stream. Each vehicle entity becomes one
 /// `VehicleFacts` entry.

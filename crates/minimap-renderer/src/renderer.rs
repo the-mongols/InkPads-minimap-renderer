@@ -479,6 +479,8 @@ pub struct MinimapRenderer<'a> {
     pub team0_name_resolved: Option<String>,
     /// Resolved Bravo team name (South spawn in KOTS).
     pub team1_name_resolved: Option<String>,
+    /// Mapping of PA account ID to tournament roster override info (real player name, team tag).
+    pub roster_overrides: HashMap<i64, crate::roster::RosterEntry>,
 
     /// Flag icons for base-type capture points, keyed by "ally"/"enemy"/"neutral".
     flag_icons: HashMap<String, RgbaImage>,
@@ -505,6 +507,9 @@ pub struct MinimapRenderer<'a> {
 
     /// Per-entity merged combat hit events (citadels and torpedo hits) from all perspectives.
     combat_hits: HashMap<EntityId, Vec<wows_battle_world::merged::CombatHitRecord>>,
+
+    /// Per-entity merged combat instruction (rage mode) activations from all perspectives.
+    combat_instructions: HashMap<EntityId, Vec<GameClock>>,
 
     /// True when this renderer is driving a session with one or more alt
     /// perspectives merged in. Enables the spotted outline on enemy icons,
@@ -570,6 +575,7 @@ impl<'a> MinimapRenderer<'a> {
             vehicle_facts: HashMap::new(),
             damage_events: HashMap::new(),
             combat_hits: HashMap::new(),
+            combat_instructions: HashMap::new(),
             has_merged_perspectives: false,
             render_clock: None,
             position_timeline: None,
@@ -579,6 +585,7 @@ impl<'a> MinimapRenderer<'a> {
             team0_is_north: None,
             team0_name_resolved: None,
             team1_name_resolved: None,
+            roster_overrides: HashMap::new(),
         }
     }
 
@@ -734,9 +741,22 @@ impl<'a> MinimapRenderer<'a> {
         self.combat_hits = hits;
     }
 
+    /// Install a pre-merged per-entity combat instruction activation list.
+    pub fn set_combat_instructions(
+        &mut self,
+        instructions: HashMap<EntityId, Vec<GameClock>>,
+    ) {
+        self.combat_instructions = instructions;
+    }
+
     /// Set the flag icons for base-type capture points.
     pub fn set_flag_icons(&mut self, icons: HashMap<String, RgbaImage>) {
         self.flag_icons = icons;
+    }
+
+    /// Set tournament roster overrides (maps PA account ID to real name & clan tag).
+    pub fn set_roster_overrides(&mut self, overrides: HashMap<i64, crate::roster::RosterEntry>) {
+        self.roster_overrides = overrides;
     }
 
     /// Set the game fonts for CJK fallback selection on chat messages.
@@ -801,7 +821,23 @@ impl<'a> MinimapRenderer<'a> {
                 self.player_species.insert(*entity_id, species.name().to_string());
             }
 
-            let player_name = {
+            let db_id = player.initial_state().db_id().raw();
+            let roster_override = self.roster_overrides.get(&db_id);
+
+            let player_name = if let Some(entry) = roster_override {
+                if !entry.name.trim().is_empty() {
+                    entry.name.trim().to_string()
+                } else {
+                    let raw_name = player.initial_state().username();
+                    if player.is_bot() && raw_name.starts_with("IDS_") {
+                        self.game_params
+                            .localized_name_from_id(&TranslationKey::new(raw_name))
+                            .unwrap_or_else(|| raw_name.to_string())
+                    } else {
+                        raw_name.to_string()
+                    }
+                }
+            } else {
                 let raw_name = player.initial_state().username();
                 if player.is_bot() && raw_name.starts_with("IDS_") {
                     self.game_params
@@ -813,7 +849,16 @@ impl<'a> MinimapRenderer<'a> {
             };
             self.player_names.insert(*entity_id, player_name);
             // Cache clan info
-            let clan_tag = player.initial_state().clan().to_string();
+            let clan_tag = if let Some(entry) = roster_override && let Some(ref tag) = entry.tag {
+                let clean = crate::roster::clean_tag(tag);
+                if !clean.is_empty() {
+                    clean
+                } else {
+                    player.initial_state().clan().to_string()
+                }
+            } else {
+                player.initial_state().clan().to_string()
+            };
             if !clan_tag.is_empty() {
                 self.player_clan_tags.insert(*entity_id, clan_tag);
             }
@@ -1270,6 +1315,7 @@ impl<'a> MinimapRenderer<'a> {
         // During live playback the continuous render clock paces motion between
         // packets; timelapse/video leaves it unset and uses the packet clock.
         let clock = self.render_clock.unwrap_or_else(|| controller.clock());
+        self.populate_players(controller);
         let mut commands = Vec::new();
 
         // 1. Score bar
@@ -1326,7 +1372,12 @@ impl<'a> MinimapRenderer<'a> {
                         if is_spec { return false; }
                         if swap { p.initial_state().team_id() == 1 } else { p.initial_state().team_id() == 0 }
                     })
-                    .map(|p| (p.initial_state().username(), p.initial_state().clan()))
+                    .map(|p| {
+                        let eid = p.initial_state().entity_id();
+                        let name = self.player_names.get(&eid).map(|s| s.as_str()).unwrap_or(p.initial_state().username());
+                        let clan = self.player_clan_tags.get(&eid).map(|s| s.as_str()).unwrap_or(p.initial_state().clan());
+                        (name, clan)
+                    })
                     .unzip();
 
                 let (enemy_names, enemy_clans): (Vec<&str>, Vec<&str>) = controller
@@ -1339,7 +1390,12 @@ impl<'a> MinimapRenderer<'a> {
                         if is_spec { return false; }
                         if swap { p.initial_state().team_id() == 0 } else { p.initial_state().team_id() == 1 }
                     })
-                    .map(|p| (p.initial_state().username(), p.initial_state().clan()))
+                    .map(|p| {
+                        let eid = p.initial_state().entity_id();
+                        let name = self.player_names.get(&eid).map(|s| s.as_str()).unwrap_or(p.initial_state().username());
+                        let clan = self.player_clan_tags.get(&eid).map(|s| s.as_str()).unwrap_or(p.initial_state().clan());
+                        (name, clan)
+                    })
                     .unzip();
 
                 let team0_name = extract_tournament_team_name(
@@ -2533,7 +2589,12 @@ impl<'a> MinimapRenderer<'a> {
                         if is_spec { return false; }
                         if swap { p.initial_state().team_id() == 1 } else { p.initial_state().team_id() == 0 }
                     })
-                    .map(|p| (p.initial_state().username(), p.initial_state().clan()))
+                    .map(|p| {
+                        let eid = p.initial_state().entity_id();
+                        let name = self.player_names.get(&eid).map(|s| s.as_str()).unwrap_or(p.initial_state().username());
+                        let clan = self.player_clan_tags.get(&eid).map(|s| s.as_str()).unwrap_or(p.initial_state().clan());
+                        (name, clan)
+                    })
                     .unzip();
 
                 let (enemy_names, enemy_clans): (Vec<&str>, Vec<&str>) = controller
@@ -2546,7 +2607,12 @@ impl<'a> MinimapRenderer<'a> {
                         if is_spec { return false; }
                         if swap { p.initial_state().team_id() == 0 } else { p.initial_state().team_id() == 1 }
                     })
-                    .map(|p| (p.initial_state().username(), p.initial_state().clan()))
+                    .map(|p| {
+                        let eid = p.initial_state().entity_id();
+                        let name = self.player_names.get(&eid).map(|s| s.as_str()).unwrap_or(p.initial_state().username());
+                        let clan = self.player_clan_tags.get(&eid).map(|s| s.as_str()).unwrap_or(p.initial_state().clan());
+                        (name, clan)
+                    })
                     .unzip();
 
                 let team0_name = extract_tournament_team_name(
@@ -2607,12 +2673,11 @@ impl<'a> MinimapRenderer<'a> {
 
                     let damage_received = (hp_max - hp_cur).max(0.0) as u32;
 
-                    let player_name = player.initial_state().username().to_string();
-                    let clan_tag = if !player.initial_state().clan().is_empty() {
-                        Some(player.initial_state().clan().to_string())
-                    } else {
-                        None
-                    };
+                    let player_name = self.player_names.get(&entity_id).cloned().unwrap_or_else(|| player.initial_state().username().to_string());
+                    let clan_tag = self.player_clan_tags.get(&entity_id).cloned().or_else(|| {
+                        let c = player.initial_state().clan();
+                        if !c.is_empty() { Some(c.to_string()) } else { None }
+                    });
                     let ship_name = self.game_params.localized_name_from_param(player.vehicle()).unwrap_or_default();
                     let ship_species = player.vehicle().species().and_then(species_key).map(String::from);
 
@@ -2676,6 +2741,12 @@ impl<'a> MinimapRenderer<'a> {
                         None
                     };
 
+                    let f_activations = self
+                        .combat_instructions
+                        .get(&entity_id)
+                        .map(|clks| clks.iter().filter(|c| c.0 <= clock.0).count() as u32)
+                        .unwrap_or(0);
+
                     let row = crate::draw_command::TeammateTableRow {
                         player_name,
                         clan_tag,
@@ -2691,6 +2762,7 @@ impl<'a> MinimapRenderer<'a> {
                         citadels: cits,
                         torp_hits: torps,
                         f_key_status,
+                        f_key_activations: f_activations,
                     };
 
                     if is_team0 {
@@ -3181,12 +3253,11 @@ impl<'a> MinimapRenderer<'a> {
 
                     let damage_received = (hp_max - hp_cur).max(0.0) as u32;
 
-                    let player_name = player.initial_state().username().to_string();
-                    let clan_tag = if !player.initial_state().clan().is_empty() {
-                        Some(player.initial_state().clan().to_string())
-                    } else {
-                        None
-                    };
+                    let player_name = self.player_names.get(&entity_id).cloned().unwrap_or_else(|| player.initial_state().username().to_string());
+                    let clan_tag = self.player_clan_tags.get(&entity_id).cloned().or_else(|| {
+                        let c = player.initial_state().clan();
+                        if !c.is_empty() { Some(c.to_string()) } else { None }
+                    });
                     let ship_name = self.game_params.localized_name_from_param(player.vehicle()).unwrap_or_default();
                     let ship_species = player.vehicle().species().and_then(species_key).map(String::from);
 
@@ -3273,6 +3344,12 @@ impl<'a> MinimapRenderer<'a> {
                         None
                     };
 
+                    let f_activations = self
+                        .combat_instructions
+                        .get(&t.entity_id)
+                        .map(|clks| clks.iter().filter(|c| c.0 <= clock.0).count() as u32)
+                        .unwrap_or(0);
+
                     table_rows.push(TeammateTableRow {
                         player_name: t.player_name,
                         clan_tag: t.clan_tag,
@@ -3288,6 +3365,7 @@ impl<'a> MinimapRenderer<'a> {
                         citadels: cits,
                         torp_hits: torps,
                         f_key_status,
+                        f_key_activations: f_activations,
                     });
                 }
 
@@ -3728,10 +3806,10 @@ fn extract_tournament_team_name(
             *clan_counts.entry(clan.trim()).or_insert(0) += 1;
         }
     }
-    if let Some((&dominant_clan, &count)) = clan_counts.iter().max_by_key(|(_, c)| *c) {
-        if count >= 2 || count == combatant_clans.len() {
-            return format_team_tag(dominant_clan);
-        }
+    if let Some((&dominant_clan, &count)) = clan_counts.iter().max_by_key(|(_, c)| *c)
+        && (count >= 2 || count == combatant_clans.len() || (count >= 1 && clan_counts.len() == 1))
+    {
+        return format_team_tag(dominant_clan);
     }
 
     // 2. Check tournament username pattern: <TEAM>_<PLAYER>_<REGION>

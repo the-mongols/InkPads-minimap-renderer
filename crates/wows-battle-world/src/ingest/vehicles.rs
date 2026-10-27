@@ -36,10 +36,25 @@ pub fn handle_vehicle_property(
         return;
     }
 
+    let mut rage_transition = false;
     if let Ok(mut er) = world.get_entity_mut(ecs_entity)
         && let Some(mut vs) = er.get_mut::<VehicleState>()
     {
+        let was_rage = vs.0.is_in_rage_mode();
         vs.0.update_by_name(property, value, version, constants);
+        if !was_rage && vs.0.is_in_rage_mode() {
+            rage_transition = true;
+        }
+    }
+
+    if rage_transition {
+        let clock = world.resource::<crate::resources::Clock>().0;
+        if let Some(mut ledger) = world.get_resource_mut::<crate::resources::CombatInstructionLedger>() {
+            let list = ledger.0.entry(entity_id).or_default();
+            if list.last().map_or(true, |last_clk| (clock.0 - last_clk.0).abs() > 3.0) {
+                list.push(clock);
+            }
+        }
     }
 
     // targetLocalPos: lo byte encodes world-space yaw as (lo/256)*TAU - PI.

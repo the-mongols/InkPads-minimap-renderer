@@ -15,6 +15,7 @@ pub mod map_data;
 pub mod panel_math;
 #[cfg(feature = "rendering")]
 pub mod renderer;
+pub mod roster;
 #[cfg(feature = "rendering")]
 pub mod video;
 
@@ -67,6 +68,7 @@ pub use map_data::MapInfo;
 pub use map_data::MinimapPos;
 #[cfg(feature = "rendering")]
 pub use renderer::MinimapRenderer;
+pub use roster::{load_roster_map, parse_roster_json, RosterEntry};
 #[cfg(feature = "rendering")]
 pub use video::DumpMode;
 #[cfg(feature = "rendering")]

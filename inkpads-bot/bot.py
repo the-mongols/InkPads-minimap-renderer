@@ -41,6 +41,7 @@ FORCE_CPU = os.getenv('FORCE_CPU', 'false').lower() in ('true', '1', 'yes')
 RENDERER_CODEC = os.getenv('RENDERER_CODEC')
 ENABLE_INKPADS_LAYOUT = os.getenv('ENABLE_INKPADS_LAYOUT', 'false').lower() in ('true', '1', 'yes')
 TOURNAMENT_LISTEN_CHANNEL_ID = os.getenv('TOURNAMENT_LISTEN_CHANNEL_ID')
+TOURNAMENT_ROSTER_PATH = os.getenv('TOURNAMENT_ROSTER_PATH')
 
 LAYOUT_CHOICES = [
     app_commands.Choice(name="A: Default (16:10)", value="A"),
@@ -239,6 +240,7 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
 
     green_path = None
     red_path = None
+    roster_path = None
     output_path = TEMP_DIR / f"{session_id}.mp4"
 
     try:
@@ -331,12 +333,31 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
                 render_queue.remove(session_id)
 
         try:
+            # Check if payload contains tournament roster data (e.g. PA account ID mappings in replays, or global teams)
+            has_roster = any(isinstance(r, dict) and (r.get("players") or r.get("tag")) for r in replays)
+            if not has_roster and isinstance(data, dict):
+                has_roster = bool(data.get("players") or data.get("teams") or data.get("clans") or data.get("roster"))
+
+            if has_roster:
+                roster_path = TEMP_DIR / f"{session_id}_roster.json"
+                try:
+                    roster_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                    logger.info(f"[{session_id}] Serialized tournament roster mapping to {roster_path}")
+                except Exception as r_err:
+                    logger.warning(f"[{session_id}] Failed to write temporary roster JSON: {r_err}")
+                    roster_path = None
+
             # Build CLI command
             cmd = [str(RENDERER_EXE)]
             if WOWS_EXTRACTED_DIR:
                 cmd.extend(["--extracted-dir", WOWS_EXTRACTED_DIR])
             else:
                 cmd.extend(["-g", str(GAME_DIR)])
+
+            if roster_path and roster_path.exists():
+                cmd.extend(["--roster-json", str(roster_path)])
+            elif TOURNAMENT_ROSTER_PATH and Path(TOURNAMENT_ROSTER_PATH).exists():
+                cmd.extend(["--roster-json", str(TOURNAMENT_ROSTER_PATH)])
 
             # Dynamic guild upload size handling with safety margin
             guild_limit_bytes = 10 * 1024 * 1024
@@ -358,6 +379,7 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
             cmd.append(str(green_path))
 
             if red_path and red_path.exists():
+                layout_opt = "KOTS_DUAL"
                 cmd.extend(["--red-replay", str(red_path), "--kots-layout"])
                 if data.get("team0_name") or data.get("team0Name"):
                     cmd.extend(["--team0-name", str(data.get("team0_name") or data.get("team0Name")).strip()])
@@ -436,8 +458,12 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
                 e_tag = f"[{e_clan}]" if not e_clan.startswith("[") else e_clan
                 embed_title = f"{f_tag} vs. {e_tag}"
             elif is_dual:
-                t1 = f"[{f_clan}]" if f_clan else "[ALPHA]"
-                t2 = f"[{e_clan}]" if e_clan else "[BRAVO]"
+                r0_tag = replays[0].get("tag") if len(replays) > 0 and isinstance(replays[0], dict) else ""
+                r1_tag = replays[1].get("tag") if len(replays) > 1 and isinstance(replays[1], dict) else ""
+                clean_r0 = f"[{r0_tag.strip('[]')}]" if r0_tag else ""
+                clean_r1 = f"[{r1_tag.strip('[]')}]" if r1_tag else ""
+                t1 = f"[{f_clan}]" if f_clan else (clean_r0 or "[ALPHA]")
+                t2 = f"[{e_clan}]" if e_clan else (clean_r1 or "[BRAVO]")
                 embed_title = f"{t1} vs. {t2}"
             else:
                 embed_title = "Tournament Match"
@@ -506,7 +532,7 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
         logger.exception(f"[{session_id}] Exception in tournament render pipeline: {e}")
     finally:
         # Temp files cleanup
-        for p in (green_path, red_path, output_path):
+        for p in (green_path, red_path, output_path, roster_path):
             if p and p.exists():
                 try:
                     p.unlink()
