@@ -196,12 +196,17 @@ async def on_message(message: discord.Message):
         if s_idx != -1 and e_idx != -1 and e_idx > s_idx:
             json_text = json_text[s_idx:e_idx + 1]
 
+    # Clean trailing commas (common in JS/JSON payloads) before parsing
+    clean_json_text = re.sub(r',\s*([\]}])', r'\1', json_text)
     try:
-        data = json.loads(json_text)
-    except Exception as e:
-        if TOURNAMENT_LISTEN_CHANNEL_ID:
-            logger.warning(f"Failed to parse JSON message in tournament channel: {e}. Raw content: {repr(message.content)}")
-        return
+        data = json.loads(clean_json_text)
+    except Exception:
+        try:
+            data = json.loads(json_text)
+        except Exception as e:
+            if TOURNAMENT_LISTEN_CHANNEL_ID:
+                logger.warning(f"Failed to parse JSON message in tournament channel: {e}. Raw content: {repr(message.content)}")
+            return
 
     callback_url = data.get("callbackUrl") or data.get("callback_url")
     target_channel_id = data.get("targetChannelId") or data.get("target_channel_id")
@@ -416,10 +421,6 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
             if red_path and red_path.exists():
                 layout_opt = "KOTS_DUAL"
                 cmd.extend(["--red-replay", str(red_path), "--kots-layout"])
-                if data.get("team0_name") or data.get("team0Name"):
-                    cmd.extend(["--team0-name", str(data.get("team0_name") or data.get("team0Name")).strip()])
-                if data.get("team1_name") or data.get("team1Name"):
-                    cmd.extend(["--team1-name", str(data.get("team1_name") or data.get("team1Name")).strip()])
             else:
                 layout_opt = str(data.get("layout") or data.get("preset") or ("C" if ENABLE_INKPADS_LAYOUT else "A")).upper()
                 if layout_opt in ("C", "INKPADS"):
@@ -428,12 +429,16 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
                     cmd.extend(["--discord-layout", "--aspect-ratio-16-9", "--stats-panel-width", "928"])
                 elif layout_opt in ("D", "KOTS"):
                     cmd.extend(["--kots-layout"])
-                    if data.get("team0_name") or data.get("team0Name"):
-                        cmd.extend(["--team0-name", str(data.get("team0_name") or data.get("team0Name")).strip()])
-                    if data.get("team1_name") or data.get("team1Name"):
-                        cmd.extend(["--team1-name", str(data.get("team1_name") or data.get("team1Name")).strip()])
                 else:
                     cmd.extend(["--discord-layout", "--stats-panel-width", "720"])
+
+            # Explicit team name overrides if specified in payload
+            t0_name = data.get("team0_name") or data.get("team0Name")
+            t1_name = data.get("team1_name") or data.get("team1Name")
+            if t0_name:
+                cmd.extend(["--team0-name", str(t0_name).strip()])
+            if t1_name:
+                cmd.extend(["--team1-name", str(t1_name).strip()])
 
             logger.info(f"[{session_id}] Executing renderer CLI command (layout: {layout_opt}, target: {target_size_mib} MiB)...")
             process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
@@ -508,6 +513,12 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
                 f_tag = f"[{f_clan}]" if not f_clan.startswith("[") else f_clan
                 e_tag = f"[{e_clan}]" if not e_clan.startswith("[") else e_clan
                 embed_title = f"{f_tag} vs. {e_tag}"
+            elif len(replays) >= 2 and isinstance(replays[0], dict) and isinstance(replays[1], dict) and (replays[0].get("tag") or replays[1].get("tag")):
+                r0_tag = replays[0].get("tag") or ""
+                r1_tag = replays[1].get("tag") or ""
+                clean_r0 = f"[{r0_tag.strip('[]')}]" if r0_tag else "[ALPHA]"
+                clean_r1 = f"[{r1_tag.strip('[]')}]" if r1_tag else "[BRAVO]"
+                embed_title = f"{clean_r0} vs. {clean_r1}"
             elif is_dual:
                 r0_tag = replays[0].get("tag") if len(replays) > 0 and isinstance(replays[0], dict) else ""
                 r1_tag = replays[1].get("tag") if len(replays) > 1 and isinstance(replays[1], dict) else ""
