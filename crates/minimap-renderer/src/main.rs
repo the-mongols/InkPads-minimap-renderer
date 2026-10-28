@@ -739,7 +739,11 @@ fn main() -> Result<(), Report> {
     info!("TEAM_BRAVO: {}", t1_name);
 
     if let Some(wt) = session.world_mut().view().winning_team() {
-        let alpha_is_game_team0 = renderer.team0_is_north.unwrap_or(true);
+        let alpha_is_game_team0 = if let Some(north) = renderer.team0_is_north {
+            north
+        } else {
+            renderer.self_team_id() != Some(1)
+        };
         let winning_team_is_alpha = if alpha_is_game_team0 { wt == 0 } else { wt == 1 };
 
         let winner_str = match wt {

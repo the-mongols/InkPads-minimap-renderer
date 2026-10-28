@@ -507,7 +507,13 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
             if not e_clan and opponent_clan and opponent_clan != "N/A":
                 e_clan = opponent_clan
 
-            if team_alpha and team_bravo:
+            has_resolved_tags = bool(
+                team_alpha and team_bravo
+                and team_alpha not in ("[ALPHA]", "Alpha Team")
+                and team_bravo not in ("[BRAVO]", "Bravo Team")
+            )
+
+            if has_resolved_tags:
                 embed_title = f"{team_alpha} vs. {team_bravo}"
             elif f_clan and e_clan:
                 f_tag = f"[{f_clan}]" if not f_clan.startswith("[") else f_clan
@@ -516,16 +522,16 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
             elif len(replays) >= 2 and isinstance(replays[0], dict) and isinstance(replays[1], dict) and (replays[0].get("tag") or replays[1].get("tag")):
                 r0_tag = replays[0].get("tag") or ""
                 r1_tag = replays[1].get("tag") or ""
-                clean_r0 = f"[{r0_tag.strip('[]')}]" if r0_tag else "[ALPHA]"
-                clean_r1 = f"[{r1_tag.strip('[]')}]" if r1_tag else "[BRAVO]"
+                clean_r0 = f"[{r0_tag.strip('[]')}]" if r0_tag else (team_alpha or "[ALPHA]")
+                clean_r1 = f"[{r1_tag.strip('[]')}]" if r1_tag else (team_bravo or "[BRAVO]")
                 embed_title = f"{clean_r0} vs. {clean_r1}"
             elif is_dual:
                 r0_tag = replays[0].get("tag") if len(replays) > 0 and isinstance(replays[0], dict) else ""
                 r1_tag = replays[1].get("tag") if len(replays) > 1 and isinstance(replays[1], dict) else ""
                 clean_r0 = f"[{r0_tag.strip('[]')}]" if r0_tag else ""
                 clean_r1 = f"[{r1_tag.strip('[]')}]" if r1_tag else ""
-                t1 = f"[{f_clan}]" if f_clan else (clean_r0 or "[ALPHA]")
-                t2 = f"[{e_clan}]" if e_clan else (clean_r1 or "[BRAVO]")
+                t1 = team_alpha if (team_alpha and team_alpha not in ("[ALPHA]", "Alpha Team")) else (f"[{f_clan}]" if f_clan else (clean_r0 or "[ALPHA]"))
+                t2 = team_bravo if (team_bravo and team_bravo not in ("[BRAVO]", "Bravo Team")) else (f"[{e_clan}]" if e_clan else (clean_r1 or "[BRAVO]"))
                 embed_title = f"{t1} vs. {t2}"
             else:
                 embed_title = "Tournament Match"
@@ -1072,8 +1078,8 @@ def get_game_mode_display_name(match_group, game_type, scenario="", logic=""):
     # Specific match mode / rule set detection from replay metadata
     if "tournament" in combined or "four areas" in combined or "four_areas" in combined or "kots" in combined:
         return "Tournament Domination"
-    elif "clandomination" in combined or "clan_domination" in combined or "clan domination" in combined:
-        return "ClanDomination"
+    elif "clandomination" in combined or "clan_domination" in combined or "clan domination" in combined or "cvc_domination" in combined or (group in ("clan", "cvc", "cw") and "domination" in combined):
+        return "Clan Domination"
     elif "domination" in combined:
         return "Domination"
     elif "armsrace" in combined or "arms_race" in combined or "arms race" in combined:
@@ -1591,6 +1597,9 @@ async def _render_impl(
                     output_path = compressed_path
 
             # 6. Extract exact clan metadata via analyzer if Clan Battle
+            analyzer_f_clan = None
+            analyzer_e_clan = None
+            analyzer_result = None
             if is_clan_battle:
                 try:
                     from analyzer import ReplayAnalyzer
@@ -1598,9 +1607,15 @@ async def _render_impl(
                     analyzer_inst.run()
                     meta = analyzer_inst.get_metadata()
                     enemy_clan_tag = meta.get("enemy_clan")
+                    friendly_clan_tag = meta.get("friendly_clan")
+                    analyzer_result = meta.get("result")
                     if enemy_clan_tag and enemy_clan_tag != "Unknown":
                         opponent_clan = enemy_clan_tag
+                        analyzer_e_clan = enemy_clan_tag
                         logger.info(f"[{session_id}] Extracted enemy clan from analyzer stream: [{opponent_clan}]")
+                    if friendly_clan_tag and friendly_clan_tag != "Unknown":
+                        analyzer_f_clan = friendly_clan_tag
+                        logger.info(f"[{session_id}] Extracted friendly clan from analyzer stream: [{friendly_clan_tag}]")
                 except Exception as ae:
                     logger.warning(f"[{session_id}] Failed to extract enemy clan via analyzer: {ae}")
 
@@ -1609,19 +1624,53 @@ async def _render_impl(
             team_alpha = extract_team_alpha(err_text)
             team_bravo = extract_team_bravo(err_text)
             f_clan, e_clan = get_team_clans(header)
-            if not e_clan and opponent_clan and opponent_clan != "N/A":
+            if not f_clan and analyzer_f_clan:
+                f_clan = analyzer_f_clan
+            elif not f_clan and team_alpha and team_alpha not in ("[ALPHA]", "Alpha Team"):
+                f_clan = team_alpha.strip("[]")
+            if not e_clan and analyzer_e_clan:
+                e_clan = analyzer_e_clan
+            elif not e_clan and opponent_clan and opponent_clan != "N/A":
                 e_clan = opponent_clan
+            elif not e_clan and team_bravo and team_bravo not in ("[BRAVO]", "Bravo Team"):
+                e_clan = team_bravo.strip("[]")
+
+            if not outcome and analyzer_result:
+                res_upper = str(analyzer_result).strip().upper()
+                if res_upper == "VICTORY":
+                    outcome = "Victory"
+                    embed_color = 0x2ECC71
+                elif res_upper == "DEFEAT":
+                    outcome = "Defeat"
+                    embed_color = 0xE74C3C
+                elif res_upper == "DRAW":
+                    outcome = "Draw"
+                    embed_color = 0xF1C40F
+
+            if not winner_name and is_clan_battle:
+                if outcome == "Victory" and f_clan:
+                    winner_name = f"[{f_clan.strip('[]')}]"
+                elif outcome == "Defeat" and e_clan:
+                    winner_name = f"[{e_clan.strip('[]')}]"
+                elif outcome == "Draw":
+                    winner_name = "Draw"
 
             is_tournament = "tournament" in (str(match_group) + " " + str(game_type) + " " + str(scenario)).lower() or "four areas" in str(scenario).lower() or "kots" in str(match_group).lower()
             is_scrim = bool(f_clan and e_clan and f_clan.upper() == e_clan.upper())
 
+            has_resolved_tags = bool(
+                team_alpha and team_bravo
+                and team_alpha not in ("[ALPHA]", "Alpha Team")
+                and team_bravo not in ("[BRAVO]", "Bravo Team")
+            )
+
             details = []
-            if team_alpha and team_bravo:
+            if has_resolved_tags:
                 # Direct authoritative team names from renderer: [TEAM1] vs. [TEAM2]
                 embed_title = f"{team_alpha} vs. {team_bravo}"
             elif is_dual:
-                t1 = f_clan if (f_clan and f_clan.startswith("[")) else (f"[{f_clan}]" if f_clan else "[ALPHA]")
-                t2 = e_clan if (e_clan and e_clan.startswith("[")) else (f"[{e_clan}]" if e_clan else "[BRAVO]")
+                t1 = team_alpha if (team_alpha and team_alpha not in ("[ALPHA]", "Alpha Team")) else (f_clan if (f_clan and f_clan.startswith("[")) else (f"[{f_clan}]" if f_clan else "[ALPHA]"))
+                t2 = team_bravo if (team_bravo and team_bravo not in ("[BRAVO]", "Bravo Team")) else (e_clan if (e_clan and e_clan.startswith("[")) else (f"[{e_clan}]" if e_clan else "[BRAVO]"))
                 embed_title = f"{t1} vs. {t2}"
             elif is_clan_battle or is_tournament or is_scrim or (f_clan and e_clan):
                 # Title format for Clan Battles & Tournaments: [CLAN1] vs. [CLAN2]
@@ -1642,7 +1691,7 @@ async def _render_impl(
                 battle_type_title = get_battle_type_title(match_group, game_type, scenario)
                 embed_title = f"{battle_type_title} Render Complete"
 
-            if is_dual:
+            if is_dual or is_clan_battle:
                 if mode_name and map_name:
                     details.append(f"**{mode_name}:** {map_name}")
                 elif map_name:
@@ -1651,7 +1700,7 @@ async def _render_impl(
                     details.append(f"**Victory:** {winner_name}")
                 elif winner_name == "Draw":
                     details.append("**Outcome:** Draw")
-            elif is_clan_battle or is_tournament or is_scrim or (f_clan and e_clan):
+            elif is_tournament or is_scrim or (f_clan and e_clan):
                 result_label = outcome if outcome else ("Tournament Battle" if is_tournament else "Clan Battle")
                 details.append(f"**{result_label}:** {map_name}")
             else:
@@ -1663,7 +1712,7 @@ async def _render_impl(
                 if is_dual and winner_name:
                     details.append(f"**Victory:** {winner_name}")
 
-            if not is_dual and ship_name:
+            if not is_dual and not is_clan_battle and ship_name:
                 details.append(f"**Ship:** {ship_name}")
             if formatted_dt:
                 details.append(f"**Date:** {formatted_dt}")

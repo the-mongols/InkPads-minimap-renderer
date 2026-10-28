@@ -688,22 +688,19 @@ fn draw_score_bar(
         let pill_h = 62.0f32;
         let pill_y = (bar_height - pill_h) / 2.0;
 
-        let name_scale = fonts.scale(26.0);
-        let score_scale = fonts.scale(22.0);
-        let timer_scale = fonts.scale(16.0);
+        let name_scale = fonts.scale(30.0);
+        let score_scale = fonts.scale(38.0);
+        let eta_scale = fonts.scale(20.0);
         let pill_color = [10, 12, 16];
         let pill_alpha = 0.85f32;
 
-        // ── Left Pill: Team 0 (Name on left, Stacked Score/Timer on right) ──
+        // ── Left Pill: Team 0 ([TAG] + SCORE in-line) ──
         let t0_name = team0_name.unwrap_or("[ALPHA]");
         let t0_score_str = format!("{}", team0_score);
-        let t0_timer_str = team0_timer.unwrap_or("-");
 
         let (t0_nw, t0_nh) = text_size(name_scale, font_bold, t0_name);
-        let (t0_sw, _t0_sh) = text_size(score_scale, font_bold, &t0_score_str);
-        let (t0_tw, _) = text_size(timer_scale, font_regular, t0_timer_str);
-        let t0_stack_w = (t0_sw.max(t0_tw) as f32).max(40.0);
-        let t0_pill_w = t0_nw as f32 + 16.0 + t0_stack_w + 24.0;
+        let (t0_sw, t0_sh) = text_size(score_scale, font_bold, &t0_score_str);
+        let t0_pill_w = 14.0 + t0_nw as f32 + 16.0 + t0_sw as f32 + 16.0;
         let t0_pill_x = 12.0f32;
 
         draw_rounded_rect(pm, t0_pill_x, pill_y, t0_pill_w, pill_h, 6.0, pill_color, pill_alpha);
@@ -713,39 +710,69 @@ fn draw_score_bar(
         let t0_name_y = (pill_y + (pill_h - t0_nh as f32) / 2.0).round() as i32;
         draw_text(pm, [255, 255, 255], (t0_pill_x + 14.0).round() as i32, t0_name_y, name_scale, font_bold, t0_name);
 
-        let t0_stack_x = (t0_pill_x + 14.0 + t0_nw as f32 + 12.0).round() as i32;
-        let t0_score_y = (pill_y + 7.0).round() as i32;
-        let t0_timer_y = (pill_y + 33.0).round() as i32;
-        draw_text(pm, [255, 255, 255], t0_stack_x, t0_score_y, score_scale, font_bold, &t0_score_str);
-        draw_text(pm, [180, 190, 205], t0_stack_x, t0_timer_y, timer_scale, font_regular, t0_timer_str);
+        let t0_score_x = (t0_pill_x + 14.0 + t0_nw as f32 + 16.0).round() as i32;
+        let t0_score_y = (pill_y + (pill_h - t0_sh as f32) / 2.0).round() as i32;
+        draw_text(pm, [255, 255, 255], t0_score_x, t0_score_y, score_scale, font_bold, &t0_score_str);
 
-        // ── Right Pill: Team 1 (Stacked Score/Timer on left, Name on right) ──
+        // ── Right Pill: Team 1 (SCORE + [TAG] in-line) ──
         let t1_name = team1_name.unwrap_or("[BRAVO]");
         let t1_score_str = format!("{}", team1_score);
-        let t1_timer_str = team1_timer.unwrap_or("-");
 
         let (t1_nw, t1_nh) = text_size(name_scale, font_bold, t1_name);
-        let (t1_sw, _t1_sh) = text_size(score_scale, font_bold, &t1_score_str);
-        let (t1_tw, _) = text_size(timer_scale, font_regular, t1_timer_str);
-        let t1_stack_w = (t1_sw.max(t1_tw) as f32).max(40.0);
-        let t1_pill_w = t1_stack_w + 16.0 + t1_nw as f32 + 24.0;
+        let (t1_sw, t1_sh) = text_size(score_scale, font_bold, &t1_score_str);
+        let t1_pill_w = 16.0 + t1_sw as f32 + 16.0 + t1_nw as f32 + 14.0;
         let t1_pill_x = width - 12.0 - t1_pill_w;
 
         draw_rounded_rect(pm, t1_pill_x, pill_y, t1_pill_w, pill_h, 6.0, pill_color, pill_alpha);
         // Colored accent strip on right edge
         draw_filled_rect(pm, t1_pill_x + t1_pill_w - 4.0, pill_y + 6.0, 4.0, pill_h - 12.0, team1_color, 1.0);
 
-        let t1_stack_x = (t1_pill_x + 12.0).round() as i32;
-        let t1_score_y = (pill_y + 7.0).round() as i32;
-        let t1_timer_y = (pill_y + 33.0).round() as i32;
-        let t1_score_draw_x = t1_stack_x + (t1_stack_w - t1_sw as f32) as i32;
-        let t1_timer_draw_x = t1_stack_x + (t1_stack_w - t1_tw as f32) as i32;
-        draw_text(pm, [255, 255, 255], t1_score_draw_x, t1_score_y, score_scale, font_bold, &t1_score_str);
-        draw_text(pm, [180, 190, 205], t1_timer_draw_x, t1_timer_y, timer_scale, font_regular, t1_timer_str);
+        let t1_score_x = (t1_pill_x + 16.0).round() as i32;
+        let t1_score_y = (pill_y + (pill_h - t1_sh as f32) / 2.0).round() as i32;
+        draw_text(pm, [255, 255, 255], t1_score_x, t1_score_y, score_scale, font_bold, &t1_score_str);
 
-        let t1_name_x = (t1_pill_x + 12.0 + t1_stack_w + 12.0).round() as i32;
+        let t1_name_x = (t1_pill_x + 16.0 + t1_sw as f32 + 16.0).round() as i32;
         let t1_name_y = (pill_y + (pill_h - t1_nh as f32) / 2.0).round() as i32;
         draw_text(pm, [255, 255, 255], t1_name_x, t1_name_y, name_scale, font_bold, t1_name);
+
+        // ── Center Match Clock Flanking ETAs ──
+        // The match clock is centered at width / 2.0 (~105px wide for "00:00" at scale 36.0).
+        let (clock_w, _) = text_size(fonts.scale(36.0), font_bold, "00:00");
+        let clock_half = (clock_w as f32 / 2.0).max(52.0);
+        let center_x = width / 2.0;
+
+        let eta_badge_h = 34.0f32;
+        let eta_badge_y = (bar_height - eta_badge_h) / 2.0;
+
+        // Team 0 ETA (flanking left of match clock)
+        if let Some(timer) = team0_timer
+            && timer != "-"
+            && !timer.is_empty()
+        {
+            let (tw, th) = text_size(eta_scale, font_regular, timer);
+            let badge_w = tw as f32 + 20.0;
+            let badge_x = center_x - clock_half - 14.0 - badge_w;
+            draw_rounded_rect(pm, badge_x, eta_badge_y, badge_w, eta_badge_h, 5.0, [10, 14, 20], 0.85);
+            draw_filled_rect(pm, badge_x, eta_badge_y + 4.0, 3.0, eta_badge_h - 8.0, team0_color, 0.95);
+            let ty = (eta_badge_y + (eta_badge_h - th as f32) / 2.0).round() as i32;
+            let tx = (badge_x + 10.0).round() as i32;
+            draw_text(pm, [195, 210, 230], tx, ty, eta_scale, font_regular, timer);
+        }
+
+        // Team 1 ETA (flanking right of match clock)
+        if let Some(timer) = team1_timer
+            && timer != "-"
+            && !timer.is_empty()
+        {
+            let (tw, th) = text_size(eta_scale, font_regular, timer);
+            let badge_w = tw as f32 + 20.0;
+            let badge_x = center_x + clock_half + 14.0;
+            draw_rounded_rect(pm, badge_x, eta_badge_y, badge_w, eta_badge_h, 5.0, [10, 14, 20], 0.85);
+            draw_filled_rect(pm, badge_x + badge_w - 3.0, eta_badge_y + 4.0, 3.0, eta_badge_h - 8.0, team1_color, 0.95);
+            let ty = (eta_badge_y + (eta_badge_h - th as f32) / 2.0).round() as i32;
+            let tx = (badge_x + 10.0).round() as i32;
+            draw_text(pm, [195, 210, 230], tx, ty, eta_scale, font_regular, timer);
+        }
 
         // Subtle bottom border
         draw_line(pm, 0.0, bar_height, width, bar_height, [65, 75, 95], 0.9, 1.5);
