@@ -73,6 +73,7 @@ pub struct MergedReplays<'specs, 'res, 'data, G: ResourceLoader> {
     battle_start_clock: Option<GameClock>,
     position_timeline: Arc<PositionTimeline>,
     vehicle_facts: HashMap<EntityId, VehicleFacts>,
+    clock_offsets: Vec<f32>,
 }
 
 impl<'specs, 'res, 'data, G: ResourceLoader> MergedReplays<'specs, 'res, 'data, G> {
@@ -112,21 +113,23 @@ impl<'specs, 'res, 'data, G: ResourceLoader> MergedReplays<'specs, 'res, 'data, 
 
         let mut self_teams = Vec::with_capacity(replay_count);
         let mut total_duration = GameClock(0.0);
-        let mut timeline_parts: Vec<PositionTimeline> = Vec::with_capacity(replay_count);
         let mut battle_start_clock: Option<GameClock> = None;
         let mut combined_facts: HashMap<EntityId, VehicleFacts> = HashMap::new();
+        let mut scanned_metas = Vec::with_capacity(replay_count);
+        let mut scanned_positions = Vec::with_capacity(replay_count);
+
         for (i, r) in replays.iter().enumerate() {
             let mut meta = MetadataCollector::new(r.meta.playerName.as_str(), game_constants);
             let mut positions = PositionTimelineCollector::default();
             let mut facts = FactsCollector::new(version, game_constants);
             scan_replay(specs, game_constants, version, r, &mut [&mut meta, &mut positions, &mut facts]);
             self_teams.push(meta.self_team);
-            total_duration = GameClock(total_duration.0.max(meta.last_clock.0));
             // battleStage is a primary-owned broadcast; trust only the primary.
             if i == 0 {
                 battle_start_clock = meta.battle_start_clock;
             }
-            timeline_parts.push(positions.timeline);
+            scanned_metas.push(meta);
+            scanned_positions.push(positions);
             for (entity_id, src) in facts.into_facts() {
                 let dst = combined_facts.entry(entity_id).or_default();
                 if dst.vehicle_id.raw() == 0 && src.vehicle_id.raw() != 0 {
@@ -142,6 +145,46 @@ impl<'specs, 'res, 'data, G: ResourceLoader> MergedReplays<'specs, 'res, 'data, 
                     dst.crew = src.crew;
                 }
             }
+        }
+
+        // Align clocks across replay perspectives using battle_start_clock.
+        let primary_start = scanned_metas.first().and_then(|m| m.battle_start_clock);
+        let mut clock_offsets: Vec<f32> = Vec::with_capacity(replay_count);
+        for (i, meta) in scanned_metas.iter().enumerate() {
+            let offset = if i == 0 {
+                0.0
+            } else if let (Some(c0), Some(ci)) = (primary_start, meta.battle_start_clock) {
+                ci.0 - c0.0
+            } else {
+                0.0
+            };
+            if offset.abs() > 0.001 {
+                tracing::info!(
+                    replay = i,
+                    player = %replays[i].meta.playerName,
+                    offset_s = offset,
+                    "Normalized replay clock offset relative to primary"
+                );
+            }
+            clock_offsets.push(offset);
+        }
+
+        let mut timeline_parts: Vec<PositionTimeline> = Vec::with_capacity(replay_count);
+        for (i, mut pos) in scanned_positions.into_iter().enumerate() {
+            let offset = clock_offsets[i];
+            if offset != 0.0 {
+                for track in pos.timeline.values_mut() {
+                    for (c, _) in &mut track.world {
+                        c.0 -= offset;
+                    }
+                    for (c, _) in &mut track.minimap {
+                        c.0 -= offset;
+                    }
+                }
+            }
+            let last_clock = scanned_metas[i].last_clock.0 - offset;
+            total_duration = GameClock(total_duration.0.max(last_clock));
+            timeline_parts.push(pos.timeline);
         }
         let position_timeline = Arc::new(merge_position_timelines(timeline_parts));
 
@@ -161,6 +204,7 @@ impl<'specs, 'res, 'data, G: ResourceLoader> MergedReplays<'specs, 'res, 'data, 
             battle_start_clock,
             position_timeline,
             vehicle_facts: combined_facts,
+            clock_offsets,
         })
     }
 
@@ -204,6 +248,11 @@ impl<'specs, 'res, 'data, G: ResourceLoader> MergedReplays<'specs, 'res, 'data, 
     /// `true` once every replay's stream has been exhausted.
     pub fn is_done(&self) -> bool {
         self.finished.iter().all(|f| *f)
+    }
+
+    /// Per-replay clock offsets relative to primary (replay 0) in seconds.
+    pub fn clock_offsets(&self) -> &[f32] {
+        &self.clock_offsets
     }
 
     /// Read-only access to the merged world state. Renderers call this
@@ -251,9 +300,13 @@ impl<'specs, 'res, 'data, G: ResourceLoader> MergedReplays<'specs, 'res, 'data, 
             return self.step();
         }
 
-        let packet = self.parsers[idx]
+        let mut packet = self.parsers[idx]
             .parse_packet(&mut self.remainings[idx])
             .map_err(|e| MergeError::PacketParse { index: idx, message: format!("{e:?}") })?;
+        let offset = self.clock_offsets[idx];
+        if offset != 0.0 {
+            packet.clock = GameClock((packet.clock.0 - offset).max(0.0));
+        }
         let packet_clock = packet.clock;
 
         let is_primary = idx == 0;
@@ -313,6 +366,38 @@ impl<'specs, 'res, 'data, G: ResourceLoader> MergedReplays<'specs, 'res, 'data, 
     pub fn arena_id(&self) -> Option<ArenaId> {
         self.arena_ids[0]
     }
+}
+
+/// Compute clock offsets for a slice of replays relative to the primary replay (index 0).
+/// Uses the battle start transition (`battleStage == Waiting`) as the primary synchronization anchor.
+pub fn scan_clock_offsets(
+    specs: &[EntitySpec],
+    game_constants: &GameConstants,
+    version: Version,
+    replays: &[&ReplayFile],
+) -> Vec<f32> {
+    if replays.len() <= 1 {
+        return vec![0.0; replays.len()];
+    }
+    let mut starts: Vec<Option<GameClock>> = Vec::with_capacity(replays.len());
+    for r in replays {
+        let mut meta = MetadataCollector::new(r.meta.playerName.as_str(), game_constants);
+        scan_replay(specs, game_constants, version, r, &mut [&mut meta]);
+        starts.push(meta.battle_start_clock);
+    }
+    let primary_start = starts.first().and_then(|&s| s);
+    let mut offsets = Vec::with_capacity(replays.len());
+    for (i, start) in starts.iter().enumerate() {
+        let off = if i == 0 {
+            0.0
+        } else if let (Some(c0), Some(ci)) = (primary_start, start) {
+            ci.0 - c0.0
+        } else {
+            0.0
+        };
+        offsets.push(off);
+    }
+    offsets
 }
 
 /// Walk a replay's stream to find the first `onArenaStateReceived` and
@@ -395,13 +480,15 @@ pub fn gather_damage_events<G: ResourceLoader>(
     version: Version,
     specs: &[EntitySpec],
     replays: &[&ReplayFile],
+    clock_offsets: Option<&[f32]>,
 ) -> HashMap<EntityId, Vec<wows_replays::analyzer::battle_controller::DamageEvent>> {
     use wows_replays::analyzer::battle_controller::DamageEvent;
 
     let mut combined: HashMap<EntityId, Vec<DamageEvent>> = HashMap::new();
     let mut seen: std::collections::HashSet<(EntityId, EntityId, u64)> = std::collections::HashSet::new();
 
-    for replay in replays {
+    for (i, replay) in replays.iter().enumerate() {
+        let offset = clock_offsets.and_then(|o| o.get(i)).copied().unwrap_or(0.0);
         let mut world = BattleWorld::new(&replay.meta, game_resources, Some(constants));
         let mut parser = Parser::with_version(specs, version);
         let mut remaining = &replay.packet_data[..];
@@ -412,13 +499,17 @@ pub fn gather_damage_events<G: ResourceLoader>(
         world.finish();
         for (aggressor, events) in world.damage_ledger() {
             for event in events {
+                let mut ev = *event;
+                if offset != 0.0 {
+                    ev.clock = GameClock((ev.clock.0 - offset).max(0.0));
+                }
                 // Same physical damage hit may be reported by multiple
                 // perspectives; key by aggressor + victim + clock-bits.
-                let key = (*aggressor, event.victim, event.clock.0.to_bits() as u64);
+                let key = (*aggressor, ev.victim, ev.clock.0.to_bits() as u64);
                 if !seen.insert(key) {
                     continue;
                 }
-                combined.entry(*aggressor).or_default().push(*event);
+                combined.entry(*aggressor).or_default().push(ev);
             }
         }
     }
@@ -436,11 +527,13 @@ pub fn gather_combat_hits<G: ResourceLoader>(
     version: Version,
     specs: &[EntitySpec],
     replays: &[&ReplayFile],
+    clock_offsets: Option<&[f32]>,
 ) -> HashMap<EntityId, Vec<CombatHitRecord>> {
     let mut combined: HashMap<EntityId, Vec<CombatHitRecord>> = HashMap::new();
     let mut seen: std::collections::HashSet<(EntityId, u64, bool, bool)> = std::collections::HashSet::new();
 
-    for replay in replays {
+    for (i, replay) in replays.iter().enumerate() {
+        let offset = clock_offsets.and_then(|o| o.get(i)).copied().unwrap_or(0.0);
         let mut world = BattleWorld::new(&replay.meta, game_resources, Some(constants));
         let mut parser = Parser::with_version(specs, version);
         let mut remaining = &replay.packet_data[..];
@@ -451,11 +544,15 @@ pub fn gather_combat_hits<G: ResourceLoader>(
         world.finish();
         for (owner, events) in world.combat_hit_ledger() {
             for event in events {
-                let key = (*owner, event.clock.0.to_bits() as u64, event.is_citadel, event.is_torpedo);
+                let mut ev = *event;
+                if offset != 0.0 {
+                    ev.clock = GameClock((ev.clock.0 - offset).max(0.0));
+                }
+                let key = (*owner, ev.clock.0.to_bits() as u64, ev.is_citadel, ev.is_torpedo);
                 if !seen.insert(key) {
                     continue;
                 }
-                combined.entry(*owner).or_default().push(*event);
+                combined.entry(*owner).or_default().push(ev);
             }
         }
     }
@@ -473,10 +570,12 @@ pub fn gather_combat_instructions<G: ResourceLoader>(
     version: Version,
     specs: &[EntitySpec],
     replays: &[&ReplayFile],
+    clock_offsets: Option<&[f32]>,
 ) -> HashMap<EntityId, Vec<GameClock>> {
     let mut combined: HashMap<EntityId, Vec<GameClock>> = HashMap::new();
 
-    for replay in replays {
+    for (i, replay) in replays.iter().enumerate() {
+        let offset = clock_offsets.and_then(|o| o.get(i)).copied().unwrap_or(0.0);
         let mut world = BattleWorld::new(&replay.meta, game_resources, Some(constants));
         let mut parser = Parser::with_version(specs, version);
         let mut remaining = &replay.packet_data[..];
@@ -488,8 +587,12 @@ pub fn gather_combat_instructions<G: ResourceLoader>(
         for (owner, events) in world.combat_instruction_ledger() {
             let list = combined.entry(*owner).or_default();
             for event in events {
-                if list.iter().all(|existing| (existing.0 - event.0).abs() > 3.0) {
-                    list.push(*event);
+                let mut ev = *event;
+                if offset != 0.0 {
+                    ev.0 = (ev.0 - offset).max(0.0);
+                }
+                if list.iter().all(|existing| (existing.0 - ev.0).abs() > 3.0) {
+                    list.push(ev);
                 }
             }
         }

@@ -508,8 +508,13 @@ fn main() -> Result<(), Report> {
     // renderer does the same in playback.rs). Without this, team-roster mode
     // ships up with empty inventories and damage stuck at 0 until the live
     // controller catches up.
-    let mut primary_with_alts: Vec<&ReplayFile> = vec![&replay_file];
-    primary_with_alts.extend(merge_replays.iter());
+    let primary_with_alts: Vec<&ReplayFile> = std::iter::once(&replay_file).chain(merge_replays.iter()).collect();
+    let clock_offsets = wows_battle_world::merged::scan_clock_offsets(
+        &specs,
+        &game_constants,
+        replay_version,
+        &primary_with_alts,
+    );
     let vehicle_facts = wows_replays::analyzer::battle_controller::merged::gather_replay_facts(
         &game_constants,
         replay_version,
@@ -522,6 +527,7 @@ fn main() -> Result<(), Report> {
         replay_version,
         &specs,
         &primary_with_alts,
+        Some(&clock_offsets),
     );
     let combat_hits = wows_battle_world::merged::gather_combat_hits(
         &controller_game_params,
@@ -529,6 +535,7 @@ fn main() -> Result<(), Report> {
         replay_version,
         &specs,
         &primary_with_alts,
+        Some(&clock_offsets),
     );
     let combat_instructions = wows_battle_world::merged::gather_combat_instructions(
         &controller_game_params,
@@ -536,6 +543,7 @@ fn main() -> Result<(), Report> {
         replay_version,
         &specs,
         &primary_with_alts,
+        Some(&clock_offsets),
     );
 
     let roster_map = match args.roster_json.as_deref() {

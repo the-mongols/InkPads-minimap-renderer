@@ -757,7 +757,7 @@ impl GameClock {
     }
 
     pub fn to_duration(self) -> std::time::Duration {
-        std::time::Duration::from_secs_f32(self.0)
+        std::time::Duration::from_secs_f32(self.0.max(0.0))
     }
 
     pub fn game_time(self) -> f32 {

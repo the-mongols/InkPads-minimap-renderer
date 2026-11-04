@@ -37,6 +37,22 @@ pub enum SampledPos {
     Minimap(NormalizedPos),
 }
 
+impl SampledPos {
+    pub fn world_pos(&self) -> Option<WorldPos> {
+        match *self {
+            SampledPos::World(pos) => Some(pos),
+            SampledPos::Minimap(_) => None,
+        }
+    }
+
+    pub fn normalized_pos(&self) -> Option<NormalizedPos> {
+        match *self {
+            SampledPos::Minimap(pos) => Some(pos),
+            SampledPos::World(_) => None,
+        }
+    }
+}
+
 /// Per-entity samples split by source. World samples (Position /
 /// PlayerOrientation) are dense; minimap samples (updateMinimapVisionInfo) are
 /// sparse and quantized. They interleave while a ship is both in AOI and
@@ -69,12 +85,13 @@ pub fn merge_position_timelines(parts: Vec<PositionTimeline>) -> PositionTimelin
         smooth_world_track(&mut track.world);
         track.minimap.sort_by(|a, b| a.0.0.total_cmp(&b.0.0));
         track.minimap.dedup_by(|a, b| a.0.0 == b.0.0);
+        smooth_minimap_track(&mut track.minimap);
     }
     out
 }
 
 /// Smooth high-frequency spatial micro-jitter caused by interleaving position
-/// packets from multiple replay perspectives (e.g. Green client view vs Red client view).
+/// packets from multiple replay perspectives.
 fn smooth_world_track(samples: &mut Vec<(GameClock, WorldPos)>) {
     if samples.len() < 3 {
         return;
@@ -95,6 +112,31 @@ fn smooth_world_track(samples: &mut Vec<(GameClock, WorldPos)>) {
             let sy = 0.25 * p_prev.y + 0.5 * p_curr.y + 0.25 * p_next.y;
             let sz = 0.25 * p_prev.z + 0.5 * p_curr.z + 0.25 * p_next.z;
             smoothed[i].1 = WorldPos::new(sx, sy, sz);
+        }
+    }
+    *samples = smoothed;
+}
+
+/// Smooth discrete coordinate steps in sparse minimap tracks.
+fn smooth_minimap_track(samples: &mut Vec<(GameClock, NormalizedPos)>) {
+    if samples.len() < 3 {
+        return;
+    }
+    let len = samples.len();
+    let mut smoothed = samples.clone();
+
+    for i in 1..(len - 1) {
+        let (c_prev, p_prev) = samples[i - 1];
+        let (c_curr, p_curr) = samples[i];
+        let (c_next, p_next) = samples[i + 1];
+
+        let dt1 = c_curr.0 - c_prev.0;
+        let dt2 = c_next.0 - c_curr.0;
+
+        if dt1 > 0.0 && dt2 > 0.0 && dt1 < 1.0 && dt2 < 1.0 {
+            let sx = 0.25 * p_prev.x + 0.5 * p_curr.x + 0.25 * p_next.x;
+            let sy = 0.25 * p_prev.y + 0.5 * p_curr.y + 0.25 * p_next.y;
+            smoothed[i].1 = NormalizedPos::new(sx, sy);
         }
     }
     *samples = smoothed;

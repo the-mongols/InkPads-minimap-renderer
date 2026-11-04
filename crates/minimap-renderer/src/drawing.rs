@@ -438,6 +438,7 @@ fn draw_rounded_rect(pm: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, radius: f3
     pm.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
 }
 
+#[allow(dead_code)]
 fn draw_rounded_rect_stroke(
     pm: &mut Pixmap,
     x: f32,
@@ -797,55 +798,66 @@ fn draw_score_bar(
 
         let font_bold = &fonts.primary;
         let font_regular = &fonts.primary;
-        let pill_h = 62.0f32;
-        let pill_y = (bar_height - pill_h) / 2.0;
 
         let name_size = 30.0f32;
         let score_scale = fonts.scale(38.0);
         let eta_scale = fonts.scale(20.0);
-        let pill_color = [10, 12, 16];
-        let pill_alpha = 0.85f32;
 
-        // ── Left Pill: Team 0 ([TAG] + SCORE in-line) ──
         let t0_name = team0_name.unwrap_or("[ALPHA]");
         let t0_score_str = format!("{}", team0_score);
+        let (t0_nw, _) = text_size_fonts(fonts, name_size, t0_name);
+        let (t0_sw, _) = text_size(score_scale, font_bold, &t0_score_str);
 
-        let (t0_nw, t0_nh) = text_size_fonts(fonts, name_size, t0_name);
-        let (t0_sw, t0_sh) = text_size(score_scale, font_bold, &t0_score_str);
-        let t0_pill_w = 14.0 + t0_nw as f32 + 16.0 + t0_sw as f32 + 16.0;
-        let t0_pill_x = 12.0f32;
-
-        draw_rounded_rect(pm, t0_pill_x, pill_y, t0_pill_w, pill_h, 6.0, pill_color, pill_alpha);
-        // Colored accent strip on left edge
-        draw_filled_rect(pm, t0_pill_x, pill_y + 6.0, 4.0, pill_h - 12.0, team0_color, 1.0);
-
-        let t0_name_y = (pill_y + (pill_h - t0_nh as f32) / 2.0).round() as i32;
-        draw_text_fonts(pm, [255, 255, 255], (t0_pill_x + 14.0).round() as i32, t0_name_y, fonts, name_size, t0_name);
-
-        let t0_score_x = (t0_pill_x + 14.0 + t0_nw as f32 + 16.0).round() as i32;
-        let t0_score_y = (pill_y + (pill_h - t0_sh as f32) / 2.0).round() as i32;
-        draw_text(pm, [255, 255, 255], t0_score_x, t0_score_y, score_scale, font_bold, &t0_score_str);
-
-        // ── Right Pill: Team 1 (SCORE + [TAG] in-line) ──
         let t1_name = team1_name.unwrap_or("[BRAVO]");
         let t1_score_str = format!("{}", team1_score);
+        let (t1_nw, _) = text_size_fonts(fonts, name_size, t1_name);
+        let (t1_sw, _) = text_size(score_scale, font_bold, &t1_score_str);
 
-        let (t1_nw, t1_nh) = text_size_fonts(fonts, name_size, t1_name);
-        let (t1_sw, t1_sh) = text_size(score_scale, font_bold, &t1_score_str);
-        let t1_pill_w = 16.0 + t1_sw as f32 + 16.0 + t1_nw as f32 + 14.0;
-        let t1_pill_x = width - 12.0 - t1_pill_w;
+        // Baseline alignment for score and team name:
+        // Optically center the uppercase team tags and score digits vertically within bar_height (80px).
+        // With visual text bounds spanning ~25px cap height and ~5px descenders (brackets/accents),
+        // placing the baseline at bar_height * 0.625 (50.0px) results in perfectly balanced ~25px top
+        // and bottom margins within the 80px bar.
+        let score_scaled = font_bold.as_scaled(score_scale);
+        let score_ascent = score_scaled.ascent();
 
-        draw_rounded_rect(pm, t1_pill_x, pill_y, t1_pill_w, pill_h, 6.0, pill_color, pill_alpha);
-        // Colored accent strip on right edge
-        draw_filled_rect(pm, t1_pill_x + t1_pill_w - 4.0, pill_y + 6.0, 4.0, pill_h - 12.0, team1_color, 1.0);
+        let (t0_nfont, t0_nscale) = fonts.font_and_scale(t0_name, name_size);
+        let t0_name_ascent = t0_nfont.as_scaled(t0_nscale).ascent();
 
-        let t1_score_x = (t1_pill_x + 16.0).round() as i32;
-        let t1_score_y = (pill_y + (pill_h - t1_sh as f32) / 2.0).round() as i32;
-        draw_text(pm, [255, 255, 255], t1_score_x, t1_score_y, score_scale, font_bold, &t1_score_str);
+        let (t1_nfont, t1_nscale) = fonts.font_and_scale(t1_name, name_size);
+        let t1_name_ascent = t1_nfont.as_scaled(t1_nscale).ascent();
 
-        let t1_name_x = (t1_pill_x + 16.0 + t1_sw as f32 + 16.0).round() as i32;
-        let t1_name_y = (pill_y + (pill_h - t1_nh as f32) / 2.0).round() as i32;
-        draw_text_fonts(pm, [255, 255, 255], t1_name_x, t1_name_y, fonts, name_size, t1_name);
+        let common_baseline = bar_height * 0.6375;
+
+        let score_y = (common_baseline - score_ascent).round() as i32;
+        let t0_name_y = (common_baseline - t0_name_ascent).round() as i32;
+        let t1_name_y = (common_baseline - t1_name_ascent).round() as i32;
+
+        // Subdued translucent background shading behind team tags + score values
+        // for readability over bright progress bars without visual chaos.
+        // Expanded vertically to full bar_height and horizontally flush to the outer edge of each side.
+        let pill_color = [10, 14, 20];
+        let pill_alpha = 0.70f32;
+
+        // ── Team 0 ([TAG] + SCORE in-line) ──
+        let t0_name_x = 22;
+        let t0_score_x = t0_name_x + t0_nw as i32 + 18;
+        let t0_pill_w = (t0_score_x + t0_sw as i32 + 16) as f32;
+        draw_filled_rect(pm, 0.0, 0.0, t0_pill_w, bar_height, pill_color, pill_alpha);
+
+        draw_text_shadow_fonts(pm, [255, 255, 255], t0_name_x, t0_name_y, fonts, name_size, t0_name);
+        draw_text_shadow(pm, [255, 255, 255], t0_score_x, score_y, score_scale, font_bold, &t0_score_str);
+
+        // ── Team 1 (SCORE + [TAG] in-line) ──
+        let t1_inline_w = t1_sw as f32 + 18.0 + t1_nw as f32;
+        let t1_score_x = (width - 22.0 - t1_inline_w).round() as i32;
+        let t1_name_x = t1_score_x + t1_sw as i32 + 18;
+        let t1_pill_x = (t1_score_x - 16) as f32;
+        let t1_pill_w = width - t1_pill_x;
+        draw_filled_rect(pm, t1_pill_x, 0.0, t1_pill_w, bar_height, pill_color, pill_alpha);
+
+        draw_text_shadow(pm, [255, 255, 255], t1_score_x, score_y, score_scale, font_bold, &t1_score_str);
+        draw_text_shadow_fonts(pm, [255, 255, 255], t1_name_x, t1_name_y, fonts, name_size, t1_name);
 
         // ── Center Match Clock Flanking ETAs ──
         // The match clock is centered at width / 2.0 (~105px wide for "00:00" at scale 36.0).
@@ -865,10 +877,9 @@ fn draw_score_bar(
             let badge_w = tw as f32 + 20.0;
             let badge_x = center_x - clock_half - 14.0 - badge_w;
             draw_rounded_rect(pm, badge_x, eta_badge_y, badge_w, eta_badge_h, 5.0, [10, 14, 20], 0.85);
-            draw_filled_rect(pm, badge_x, eta_badge_y + 4.0, 3.0, eta_badge_h - 8.0, team0_color, 0.95);
             let ty = (eta_badge_y + (eta_badge_h - th as f32) / 2.0).round() as i32;
-            let tx = (badge_x + 10.0).round() as i32;
-            draw_text(pm, [195, 210, 230], tx, ty, eta_scale, font_regular, timer);
+            let tx = (badge_x + (badge_w - tw as f32) / 2.0).round() as i32;
+            draw_text_shadow(pm, [195, 210, 230], tx, ty, eta_scale, font_regular, timer);
         }
 
         // Team 1 ETA (flanking right of match clock)
@@ -880,10 +891,9 @@ fn draw_score_bar(
             let badge_w = tw as f32 + 20.0;
             let badge_x = center_x + clock_half + 14.0;
             draw_rounded_rect(pm, badge_x, eta_badge_y, badge_w, eta_badge_h, 5.0, [10, 14, 20], 0.85);
-            draw_filled_rect(pm, badge_x + badge_w - 3.0, eta_badge_y + 4.0, 3.0, eta_badge_h - 8.0, team1_color, 0.95);
             let ty = (eta_badge_y + (eta_badge_h - th as f32) / 2.0).round() as i32;
-            let tx = (badge_x + 10.0).round() as i32;
-            draw_text(pm, [195, 210, 230], tx, ty, eta_scale, font_regular, timer);
+            let tx = (badge_x + (badge_w - tw as f32) / 2.0).round() as i32;
+            draw_text_shadow(pm, [195, 210, 230], tx, ty, eta_scale, font_regular, timer);
         }
 
         // Subtle bottom border
@@ -2205,7 +2215,9 @@ impl RenderTarget for ImageTarget {
                 let y = pos.y + y_off;
                 let dx = *length as f32 * yaw.cos();
                 let dy = -*length as f32 * yaw.sin();
-                draw_line(&mut self.canvas, x, y, x + dx, y + dy, *color, 0.7, 1.0);
+                // Subtle dark halo so the aim barrel pops against both bright islands and dark water
+                draw_line(&mut self.canvas, x, y, x + dx, y + dy, [10, 14, 20], 0.65, 3.50);
+                draw_line(&mut self.canvas, x, y, x + dx, y + dy, *color, 1.0, 2.25);
             }
             DrawCommand::Building { pos, color, icon_type, relation, .. } => {
                 // Try to render an icon; fall back to a dot if no icon is available
@@ -3936,30 +3948,30 @@ fn draw_kots_dual_tables(
     draw_line(pm, x as f32, y as f32, x as f32, (y + height) as f32, [65, 75, 95], 0.9, 2.0);
 
     let padding = 12i32;
-    let player_col_w = 286i32;
-    let stat_col_w = (width - player_col_w - padding * 2) / 6; // 103px
+    let stat_col_w = 103i32;
+    let player_col_w = width - padding * 2 - stat_col_w * 6; // 288px when width=930
 
     // Normalize: Top is always North spawn (Friendly green), Bottom is always South spawn (Enemy red)
     let (top_name, top_spawn, top_color, top_rows, bot_name, bot_spawn, bot_color, bot_rows) = if team0_is_north {
         (
             team0_name,
             "NORTH SPAWN",
-            [60, 180, 100], // Friendly green
+            [76, 232, 170], // Friendly green (#4CE8AA)
             team0_rows,
             team1_name,
             "SOUTH SPAWN",
-            [220, 70, 70], // Enemy red
+            [254, 77, 42], // Enemy red (#FE4D2A)
             team1_rows,
         )
     } else {
         (
             team1_name,
             "NORTH SPAWN",
-            [60, 180, 100], // Friendly green
+            [76, 232, 170], // Friendly green (#4CE8AA)
             team1_rows,
             team0_name,
             "SOUTH SPAWN",
-            [220, 70, 70], // Enemy red
+            [254, 77, 42], // Enemy red (#FE4D2A)
             team0_rows,
         )
     };
@@ -3988,15 +4000,17 @@ fn draw_kots_dual_tables(
             let cx = x + padding + player_col_w + (col_idx - 1) * stat_col_w;
             draw_filled_rect(pm, cx as f32, hy as f32, stat_col_w as f32, col_header_h as f32, [255, 255, 255], 0.035);
         }
-        // Vertical column dividers in header
-        for col_idx in 0..6 {
+        // Vertical column dividers in header (0..=6 closes right edge of HP column)
+        for col_idx in 0..=6 {
             let cx = x + padding + player_col_w + col_idx * stat_col_w;
             draw_line(pm, cx as f32, hy as f32, cx as f32, (hy + col_header_h) as f32, [60, 72, 95], 0.45, 1.0);
         }
 
         let headers = ["PLAYER / SHIP", "CIT / TRP", "DMG", "RCVD", "KILLS", "F-KEY", "HP"];
         let header_scale = fonts.scale(15.5);
-        let header_y = hy + (col_header_h - 16) / 2;
+        let header_scaled = fonts.primary.as_scaled(header_scale);
+        let header_ascent = header_scaled.ascent();
+        let header_y = (hy as f32 + (col_header_h as f32 - header_ascent) / 2.0).round() as i32;
 
         // Player / Ship header (left aligned with small inset)
         draw_text_shadow(pm, [185, 200, 225], x + padding + 6, header_y, header_scale, &fonts.primary, headers[0]);
@@ -4016,16 +4030,22 @@ fn draw_kots_dual_tables(
     draw_filled_rect(pm, x as f32, y as f32, width as f32, banner_h as f32, [24, 29, 40], 0.95);
     draw_filled_rect(pm, x as f32, y as f32, 6.0, banner_h as f32, top_color, 1.0);
 
-    draw_text_shadow_fonts(pm, [255, 255, 255], x + padding + 6, y + 10, fonts, 22.0, top_name);
-    let (top_tnw, _) = text_size_fonts(fonts, 22.0, top_name);
+    let (top_font, top_font_scale) = fonts.font_and_scale(top_name, 22.0);
+    let top_ascent = top_font.as_scaled(top_font_scale).ascent();
+    let top_name_y = (y as f32 + (banner_h as f32 - top_ascent) / 2.0).round() as i32;
+    draw_text_shadow_fonts(pm, [255, 255, 255], x + padding + 6, top_name_y, fonts, 22.0, top_name);
 
+    let (top_tnw, _) = text_size_fonts(fonts, 22.0, top_name);
     let spawn_scale = fonts.scale(13.0);
+    let spawn_scaled = fonts.primary.as_scaled(spawn_scale);
+    let spawn_ascent = spawn_scaled.ascent();
     let top_spawn_text = format!("({})", top_spawn);
+    let top_spawn_y = (y as f32 + (banner_h as f32 - spawn_ascent) / 2.0).round() as i32;
     draw_text_shadow(
         pm,
         [170, 185, 210],
         x + padding + 16 + top_tnw as i32,
-        y + 15,
+        top_spawn_y,
         spawn_scale,
         &fonts.primary,
         &top_spawn_text,
@@ -4034,12 +4054,15 @@ fn draw_kots_dual_tables(
     let top_alive_count = top_rows.iter().filter(|r| !r.is_dead).count();
     let top_alive_str = format!("ALIVE: {} / {}", top_alive_count, top_rows.len());
     let alive_scale = fonts.scale(15.0);
+    let alive_scaled = fonts.primary.as_scaled(alive_scale);
+    let alive_ascent = alive_scaled.ascent();
     let (top_aw, _) = text_size(alive_scale, &fonts.primary, &top_alive_str);
+    let top_alive_y = (y as f32 + (banner_h as f32 - alive_ascent) / 2.0).round() as i32;
     draw_text_shadow(
         pm,
         top_color,
         x + width - padding - top_aw as i32,
-        y + 13,
+        top_alive_y,
         alive_scale,
         &fonts.primary,
         &top_alive_str,
@@ -4080,19 +4103,13 @@ fn draw_kots_dual_tables(
     // 4. TOP TEAM TOTAL ROW (Meets in Center: t0_total_y .. center_y - 2)
     // ─────────────────────────────────────────────────────────────
     let total_scale = fonts.scale(21.0);
+    let total_scaled = fonts.primary.as_scaled(total_scale);
+    let total_ascent = total_scaled.ascent();
 
     let draw_stat_chip_text = |pm: &mut Pixmap, col_x: i32, row_y: i32, text: &str, color: [u8; 3]| {
-        let chip_margin = 4;
-        let chip_w = stat_col_w - chip_margin * 2;
-        let chip_h = 36;
-        let chip_x = col_x + chip_margin;
-        let chip_y = row_y + (total_h - chip_h) / 2;
-        draw_rounded_rect(pm, chip_x as f32, chip_y as f32, chip_w as f32, chip_h as f32, 6.0, [24, 30, 42], 0.70);
-        draw_rounded_rect_stroke(pm, chip_x as f32, chip_y as f32, chip_w as f32, chip_h as f32, 6.0, [70, 82, 105], 0.40, 1.0);
-
         let (tw, _) = text_size(total_scale, &fonts.primary, text);
         let tx = col_x + (stat_col_w - tw as i32) / 2;
-        let ty = row_y + (total_h - 20) / 2;
+        let ty = (row_y as f32 + (total_h as f32 - total_ascent) / 2.0).round() as i32;
         draw_text_shadow(pm, color, tx, ty, total_scale, &fonts.primary, text);
         draw_text_shadow(pm, color, tx + 1, ty, total_scale, &fonts.primary, text);
     };
@@ -4106,8 +4123,8 @@ fn draw_kots_dual_tables(
         let cx = x + padding + player_col_w + (col_idx - 1) * stat_col_w;
         draw_filled_rect(pm, cx as f32, t0_total_y as f32, stat_col_w as f32, total_h as f32, [255, 255, 255], 0.035);
     }
-    // Vertical column dividers on total row
-    for col_idx in 0..6 {
+    // Vertical column dividers on total row (0..=6 closes right edge of HP column)
+    for col_idx in 0..=6 {
         let cx = x + padding + player_col_w + col_idx * stat_col_w;
         draw_line(pm, cx as f32, t0_total_y as f32, cx as f32, (t0_total_y + total_h) as f32, [60, 72, 92], 0.45, 1.0);
     }
@@ -4118,7 +4135,9 @@ fn draw_kots_dual_tables(
     } else {
         format!("{} TOTAL", top_name.trim())
     };
-    let top_label_y = t0_total_y + (total_h - 18) / 2;
+    let (top_lbl_font, top_lbl_scale) = fonts.font_and_scale(&top_team_label, 18.0);
+    let top_l_ascent = top_lbl_font.as_scaled(top_lbl_scale).ascent();
+    let top_label_y = (t0_total_y as f32 + (total_h as f32 - top_l_ascent) / 2.0).round() as i32;
     draw_text_shadow_fonts(pm, [230, 238, 250], x + padding + 6, top_label_y, fonts, 18.0, &top_team_label);
     draw_text_shadow_fonts(pm, [230, 238, 250], x + padding + 7, top_label_y, fonts, 18.0, &top_team_label);
 
@@ -4223,8 +4242,8 @@ fn draw_kots_dual_tables(
         let cx = x + padding + player_col_w + (col_idx - 1) * stat_col_w;
         draw_filled_rect(pm, cx as f32, t1_total_y as f32, stat_col_w as f32, total_h as f32, [255, 255, 255], 0.035);
     }
-    // Vertical column dividers on total row
-    for col_idx in 0..6 {
+    // Vertical column dividers on total row (0..=6 closes right edge of HP column)
+    for col_idx in 0..=6 {
         let cx = x + padding + player_col_w + col_idx * stat_col_w;
         draw_line(pm, cx as f32, t1_total_y as f32, cx as f32, (t1_total_y + total_h) as f32, [60, 72, 92], 0.45, 1.0);
     }
@@ -4235,7 +4254,9 @@ fn draw_kots_dual_tables(
     } else {
         format!("{} TOTAL", bot_name.trim())
     };
-    let bot_label_y = t1_total_y + (total_h - 18) / 2;
+    let (bot_lbl_font, bot_lbl_scale) = fonts.font_and_scale(&bot_team_label, 18.0);
+    let bot_l_ascent = bot_lbl_font.as_scaled(bot_lbl_scale).ascent();
+    let bot_label_y = (t1_total_y as f32 + (total_h as f32 - bot_l_ascent) / 2.0).round() as i32;
     draw_text_shadow_fonts(pm, [230, 238, 250], x + padding + 6, bot_label_y, fonts, 18.0, &bot_team_label);
     draw_text_shadow_fonts(pm, [230, 238, 250], x + padding + 7, bot_label_y, fonts, 18.0, &bot_team_label);
 
@@ -4325,15 +4346,19 @@ fn draw_kots_dual_tables(
     draw_filled_rect(pm, x as f32, bot_banner_y as f32, width as f32, banner_h as f32, [24, 29, 40], 0.95);
     draw_filled_rect(pm, x as f32, bot_banner_y as f32, 6.0, banner_h as f32, bot_color, 1.0);
 
-    draw_text_shadow_fonts(pm, [255, 255, 255], x + padding + 6, bot_banner_y + 10, fonts, 22.0, bot_name);
-    let (bot_tnw, _) = text_size_fonts(fonts, 22.0, bot_name);
+    let (bot_font, bot_font_scale) = fonts.font_and_scale(bot_name, 22.0);
+    let bot_ascent = bot_font.as_scaled(bot_font_scale).ascent();
+    let bot_name_y = (bot_banner_y as f32 + (banner_h as f32 - bot_ascent) / 2.0).round() as i32;
+    draw_text_shadow_fonts(pm, [255, 255, 255], x + padding + 6, bot_name_y, fonts, 22.0, bot_name);
 
+    let (bot_tnw, _) = text_size_fonts(fonts, 22.0, bot_name);
     let bot_spawn_text = format!("({})", bot_spawn);
+    let bot_spawn_y = (bot_banner_y as f32 + (banner_h as f32 - spawn_ascent) / 2.0).round() as i32;
     draw_text_shadow(
         pm,
         [170, 185, 210],
         x + padding + 16 + bot_tnw as i32,
-        bot_banner_y + 15,
+        bot_spawn_y,
         spawn_scale,
         &fonts.primary,
         &bot_spawn_text,
@@ -4342,11 +4367,12 @@ fn draw_kots_dual_tables(
     let bot_alive_count = bot_rows.iter().filter(|r| !r.is_dead).count();
     let bot_alive_str = format!("ALIVE: {} / {}", bot_alive_count, bot_rows.len());
     let (bot_aw, _) = text_size(alive_scale, &fonts.primary, &bot_alive_str);
+    let bot_alive_y = (bot_banner_y as f32 + (banner_h as f32 - alive_ascent) / 2.0).round() as i32;
     draw_text_shadow(
         pm,
         bot_color,
         x + width - padding - bot_aw as i32,
-        bot_banner_y + 13,
+        bot_alive_y,
         alive_scale,
         &fonts.primary,
         &bot_alive_str,
@@ -4413,8 +4439,8 @@ fn draw_kots_player_row(
         let cx = x + padding + player_col_w + (col_idx - 1) * stat_col_w;
         draw_filled_rect(pm, cx as f32, ry as f32, stat_col_w as f32, row_h as f32, [255, 255, 255], 0.035);
     }
-    // Subtle vertical column dividers
-    for col_idx in 0..6 {
+    // Subtle vertical column dividers (0..=6 closes right edge of HP column)
+    for col_idx in 0..=6 {
         let cx = x + padding + player_col_w + col_idx * stat_col_w;
         draw_line(pm, cx as f32, ry as f32, cx as f32, (ry + row_h) as f32, [55, 65, 82], 0.35, 1.0);
     }
@@ -4471,12 +4497,18 @@ fn draw_kots_player_row(
     let name_disp = truncate_to_fit_fonts(&player_label, max_text_w, fonts, 16.0);
     let ship_disp = truncate_to_fit_fonts(&row.ship_name, max_text_w, fonts, 13.5);
 
-    let text_y_offset = (row_h - 42) / 2;
-    draw_text_shadow_fonts(pm, name_color, text_x, ry + 4 + text_y_offset, fonts, 16.0, &name_disp);
-    draw_text_shadow_fonts(pm, ship_color, text_x, ry + 25 + text_y_offset, fonts, 13.5, &ship_disp);
+    let (_, name_h) = text_size_fonts(fonts, 16.0, &name_disp);
+    let (_, ship_h) = text_size_fonts(fonts, 13.5, &ship_disp);
+    let line_gap = 2;
+    let total_block_h = name_h as i32 + line_gap + ship_h as i32;
+    let text_start_y = ry + (row_h - total_block_h) / 2;
+    draw_text_shadow_fonts(pm, name_color, text_x, text_start_y, fonts, 16.0, &name_disp);
+    draw_text_shadow_fonts(pm, ship_color, text_x, text_start_y + name_h as i32 + line_gap, fonts, 13.5, &ship_disp);
 
     // Stat columns: centered vertically and horizontally
-    let stat_y = ry + (row_h - 18) / 2;
+    let stat_scaled = fonts.primary.as_scaled(stat_scale);
+    let stat_ascent = stat_scaled.ascent();
+    let stat_y = (ry as f32 + (row_h as f32 - stat_ascent) / 2.0).round() as i32;
 
     // 2. CIT / TRP (col 1)
     let col1_x = x + padding + player_col_w;

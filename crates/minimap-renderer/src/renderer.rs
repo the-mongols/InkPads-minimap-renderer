@@ -2015,12 +2015,15 @@ impl<'a> MinimapRenderer<'a> {
                 let screen_yaw = std::f32::consts::FRAC_PI_2 - world_yaw;
                 let relation = self.player_relations.get(entity_id).copied().unwrap_or(Relation::new(2));
                 let color = ship_color_rgb(relation, self.division_mates.contains(entity_id));
+                let scale = self.options.ship_scale * (if self.options.large_elements { 1.1 } else { 1.0 });
+                let icon_radius = (crate::assets::ICON_SIZE as f32 / 2.0) * scale;
+                let length = (icon_radius + 8.0).round() as i32;
                 commands.push(DrawCommand::CameraDirection {
                     entity_id: *entity_id,
                     pos: px,
                     yaw: screen_yaw,
                     color,
-                    length: 18,
+                    length,
                 });
             }
         }

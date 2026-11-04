@@ -62,7 +62,7 @@ fn facts_and_damage_golden() {
         .collect();
     facts.sort_by_key(|e| e.entity_id);
 
-    let damage_map = gather_damage_events(h.game_params, h.game_constants, h.version, h.specs, &[&h.replay]);
+    let damage_map = gather_damage_events(h.game_params, h.game_constants, h.version, h.specs, &[&h.replay], None);
     let mut damage: Vec<DmgEntry> = damage_map
         .iter()
         .flat_map(|(aggressor, events)| {
