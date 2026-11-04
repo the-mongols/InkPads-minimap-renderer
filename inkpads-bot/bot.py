@@ -87,6 +87,13 @@ RENDERER_EXE = find_renderer()
 GAME_DIR = Path(WOWS_PATH).resolve()
 
 # Logging setup
+import sys
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('InkpadsBot')
 
@@ -1405,8 +1412,6 @@ async def _render_impl(
     show_config: bool = False,
     cpu_mode: bool = False,
     layout_preset: app_commands.Choice[str] = None,
-    team0_name: str = None,
-    team1_name: str = None
 ):
     # Acknowledge and defer immediately (Discord requires responses within 3 seconds)
     try:
@@ -1547,10 +1552,6 @@ async def _render_impl(
         preset_val = layout_preset.value if layout_preset else ("D" if red_replay else "A")
         if preset_val == "D":
             cmd.append("--kots-layout")
-            if team0_name and team0_name.strip():
-                cmd.extend(["--team0-name", team0_name.strip()])
-            if team1_name and team1_name.strip():
-                cmd.extend(["--team1-name", team1_name.strip()])
         elif preset_val == "A":
             # Option A: Standard Default (16:10 side stats panel layout)
             cmd.extend(["--discord-layout", "--stats-panel-width", "720"])
@@ -1820,8 +1821,6 @@ if FORCE_CPU:
         show_trails="Display ship movement trails (heatmap)",
         show_config="Show detection and weapon range circles",
         layout_preset="Layout preset (default: D for dual-render, A for single replay)",
-        team0_name="(Optional) Custom name/tag for Green / Team 0 (auto-detected if omitted)",
-        team1_name="(Optional) Custom name/tag for Red / Team 1 (auto-detected if omitted)"
     )
     @app_commands.choices(layout_preset=LAYOUT_CHOICES)
     async def render(
@@ -1831,8 +1830,6 @@ if FORCE_CPU:
         show_trails: bool = False,
         show_config: bool = False,
         layout_preset: app_commands.Choice[str] = None,
-        team0_name: str = None,
-        team1_name: str = None
     ):
         await _render_impl(
             interaction=interaction,
@@ -1842,8 +1839,6 @@ if FORCE_CPU:
             show_config=show_config,
             cpu_mode=False,
             layout_preset=layout_preset,
-            team0_name=team0_name,
-            team1_name=team1_name
         )
 else:
     @bot.tree.command(name="render", description="Render a WoWS replay into a tactical video")
@@ -1856,8 +1851,6 @@ else:
         show_config="Show detection and weapon range circles",
         cpu_mode="Use CPU encoding (slower, but safer if GPU is busy)",
         layout_preset="Layout preset (default: D for dual-render, A for single replay)",
-        team0_name="(Optional) Custom name/tag for Green / Team 0 (auto-detected if omitted)",
-        team1_name="(Optional) Custom name/tag for Red / Team 1 (auto-detected if omitted)"
     )
     @app_commands.choices(layout_preset=LAYOUT_CHOICES)
     async def render(
@@ -1868,8 +1861,6 @@ else:
         show_config: bool = False,
         cpu_mode: bool = False,
         layout_preset: app_commands.Choice[str] = None,
-        team0_name: str = None,
-        team1_name: str = None
     ):
         await _render_impl(
             interaction=interaction,
@@ -1879,8 +1870,6 @@ else:
             show_config=show_config,
             cpu_mode=cpu_mode,
             layout_preset=layout_preset,
-            team0_name=team0_name,
-            team1_name=team1_name
         )
 
 @bot.tree.command(name="ping", description="Check bot status")

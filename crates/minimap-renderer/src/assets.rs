@@ -913,13 +913,25 @@ impl GameFonts {
                 return Some(i);
             }
         }
-        None
+        // If no single font covers 100% of the text (e.g. mixed scripts or rare symbols),
+        // pick the fallback that covers the most non-control characters if it beats primary.
+        let primary_count = Self::renderable_count(&self.primary, text);
+        let mut best_idx = None;
+        let mut best_count = primary_count;
+        for (i, fallback) in self.fallbacks.iter().enumerate() {
+            let count = Self::renderable_count(fallback, text);
+            if count > best_count {
+                best_count = count;
+                best_idx = Some(i);
+            }
+        }
+        best_idx
     }
 
     /// Pick the best font that can render all characters in `text`.
     ///
-    /// Tries primary first, then each fallback in order. Returns primary
-    /// if no font fully covers the text.
+    /// Tries primary first, then each fallback in order. Returns the best-matching
+    /// fallback or primary if no font fully covers the text.
     pub fn font_for_text(&self, text: &str) -> &FontArc {
         match self.font_hint_for_text(text) {
             Some(i) => self.fallbacks.get(i).unwrap_or(&self.primary),
@@ -966,10 +978,32 @@ impl GameFonts {
         (font, scale)
     }
 
-    /// Check if a font can render every character in a string.
+    /// Pick the first font that has a glyph for `c` (primary first, then fallbacks),
+    /// returning it along with its corrected `PxScale`.
+    pub fn font_and_scale_for_char(&self, c: char, size: f32) -> (&FontArc, PxScale) {
+        use ab_glyph::Font;
+        if self.primary.glyph_id(c).0 != 0 {
+            return (&self.primary, self.scale(size));
+        }
+        for (i, fallback) in self.fallbacks.iter().enumerate() {
+            if fallback.glyph_id(c).0 != 0 {
+                let scale = self.scale_for_hint(size, crate::draw_command::FontHint::Fallback(i));
+                return (fallback, scale);
+            }
+        }
+        (&self.primary, self.scale(size))
+    }
+
+    /// Check if a font can render every non-control character in a string.
     fn can_render(font: &FontArc, text: &str) -> bool {
         use ab_glyph::Font;
-        text.chars().all(|c| font.glyph_id(c).0 != 0)
+        text.chars().filter(|c| !c.is_control()).all(|c| font.glyph_id(c).0 != 0)
+    }
+
+    /// Count how many non-control characters in `text` have a valid glyph in `font`.
+    fn renderable_count(font: &FontArc, text: &str) -> usize {
+        use ab_glyph::Font;
+        text.chars().filter(|c| !c.is_control() && font.glyph_id(*c).0 != 0).count()
     }
 }
 

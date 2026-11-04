@@ -230,11 +230,11 @@ struct Args {
     ship_scale: Option<f32>,
 
     /// Override team 0 (friendly/North) display name in scoreboard and table (e.g. "[BONKZ]")
-    #[arg(long = "team0-name")]
+    #[arg(long = "team0-name", allow_hyphen_values = true)]
     team0_name: Option<String>,
 
     /// Override team 1 (enemy/South) display name in scoreboard and table (e.g. "[KITED]")
-    #[arg(long = "team1-name")]
+    #[arg(long = "team1-name", allow_hyphen_values = true)]
     team1_name: Option<String>,
 
     /// Override the statistics side panel width in pixels

@@ -2454,7 +2454,12 @@ impl<'a> MinimapRenderer<'a> {
                 let team_color = msg.sender_relation.map(|r| ship_color_rgb(r, is_div_mate)).unwrap_or([255, 255, 255]);
                 let (clan_tag, clan_color, ship_species, ship_name) = if let Some(ref player) = msg.player {
                     let state = player.initial_state();
-                    let tag = state.clan().to_string();
+                    let eid = state.entity_id();
+                    let tag = self
+                        .player_clan_tags
+                        .get(&eid)
+                        .cloned()
+                        .unwrap_or_else(|| state.clan().to_string());
                     let color_raw = state.clan_color();
                     let color = if color_raw != 0 {
                         Some([
@@ -2471,6 +2476,9 @@ impl<'a> MinimapRenderer<'a> {
                 } else {
                     (String::new(), None, None, None)
                 };
+                let player_name = sender_entity
+                    .and_then(|eid| self.player_names.get(&eid).cloned())
+                    .unwrap_or_else(|| msg.sender_name.clone());
                 let message_color = match msg.channel {
                     ChatChannel::Division => [255, 215, 0], // gold
                     ChatChannel::Team => [140, 255, 140],   // light green
@@ -2486,7 +2494,7 @@ impl<'a> MinimapRenderer<'a> {
                 chat_entries.push(ChatEntry {
                     clan_tag,
                     clan_color,
-                    player_name: msg.sender_name.clone(),
+                    player_name,
                     team_color,
                     ship_species,
                     ship_name,
@@ -3159,7 +3167,12 @@ impl<'a> MinimapRenderer<'a> {
                         msg.sender_relation.map(|r| ship_color_rgb(r, is_div_mate)).unwrap_or([255, 255, 255]);
                     let (clan_tag, clan_color, ship_species, ship_name) = if let Some(ref player) = msg.player {
                         let state = player.initial_state();
-                        let tag = state.clan().to_string();
+                        let eid = state.entity_id();
+                        let tag = self
+                            .player_clan_tags
+                            .get(&eid)
+                            .cloned()
+                            .unwrap_or_else(|| state.clan().to_string());
                         let color_raw = state.clan_color();
                         let color = if color_raw != 0 {
                             Some([
@@ -3176,6 +3189,9 @@ impl<'a> MinimapRenderer<'a> {
                     } else {
                         (String::new(), None, None, None)
                     };
+                    let player_name = sender_entity
+                        .and_then(|eid| self.player_names.get(&eid).cloned())
+                        .unwrap_or_else(|| msg.sender_name.clone());
                     let message_color = match msg.channel {
                         ChatChannel::Division => [255, 215, 0],
                         ChatChannel::Team => [140, 255, 140],
@@ -3193,7 +3209,7 @@ impl<'a> MinimapRenderer<'a> {
                         kind: ActivityFeedKind::Chat(ChatEntry {
                             clan_tag,
                             clan_color,
-                            player_name: msg.sender_name.clone(),
+                            player_name,
                             team_color,
                             ship_species,
                             ship_name,
@@ -3821,6 +3837,8 @@ fn extract_tournament_team_name(
             let is_region = last.eq_ignore_ascii_case("eu")
                 || last.eq_ignore_ascii_case("na")
                 || last.eq_ignore_ascii_case("asia")
+                || last.eq_ignore_ascii_case("sea")
+                || last.eq_ignore_ascii_case("cn")
                 || last.eq_ignore_ascii_case("cis")
                 || last.to_ascii_uppercase().starts_with("KOTS");
             if is_region {

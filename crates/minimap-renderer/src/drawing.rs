@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use ab_glyph::Font;
-use ab_glyph::FontArc;
 use ab_glyph::PxScale;
 use ab_glyph::ScaleFont;
 use image::Rgb;
@@ -190,6 +189,119 @@ fn draw_text_alpha(
         cursor_x += scaled.h_advance(glyph_id);
         last_glyph_id = Some(glyph_id);
     }
+}
+
+/// Drawtext with automatic CJK font selection and per-glyph fallback onto a Pixmap.
+fn draw_text_alpha_fonts(
+    pm: &mut Pixmap,
+    color: [u8; 3],
+    alpha: f32,
+    x: i32,
+    y: i32,
+    fonts: &GameFonts,
+    size: f32,
+    text: &str,
+) {
+    let (base_font, base_scale) = fonts.font_and_scale(text, size);
+    let base_scaled = base_font.as_scaled(base_scale);
+    let mut cursor_x = x as f32;
+    let baseline_y = y as f32 + base_scaled.ascent();
+    let w = pm.width() as i32;
+    let h = pm.height() as i32;
+    let data = pm.data_mut();
+
+    let mut last_base_glyph_id = None;
+    for c in text.chars() {
+        let base_gid = base_scaled.glyph_id(c);
+        let (char_font, char_scale, glyph_id) = if base_gid.0 != 0 {
+            if let Some(last) = last_base_glyph_id {
+                cursor_x += base_scaled.kern(last, base_gid);
+            }
+            last_base_glyph_id = Some(base_gid);
+            (base_font, base_scale, base_gid)
+        } else {
+            last_base_glyph_id = None;
+            let (fb_font, fb_scale) = fonts.font_and_scale_for_char(c, size);
+            let fb_gid = fb_font.as_scaled(fb_scale).glyph_id(c);
+            (fb_font, fb_scale, fb_gid)
+        };
+
+        let glyph = glyph_id.with_scale_and_position(char_scale, ab_glyph::point(cursor_x, baseline_y));
+        if let Some(outlined) = char_font.outline_glyph(glyph) {
+            let bounds = outlined.px_bounds();
+            outlined.draw(|gx, gy, coverage| {
+                let px = gx as i32 + bounds.min.x as i32;
+                let py = gy as i32 + bounds.min.y as i32;
+                if px < 0 || px >= w || py < 0 || py >= h {
+                    return;
+                }
+                let cov = (coverage * alpha).clamp(0.0, 1.0);
+                if cov < 0.01 {
+                    return;
+                }
+                let idx = (py as usize * w as usize + px as usize) * 4;
+                let bg_r = data[idx] as f32;
+                let bg_g = data[idx + 1] as f32;
+                let bg_b = data[idx + 2] as f32;
+                let bg_a = data[idx + 3] as f32;
+                let src_r = color[0] as f32 * cov;
+                let src_g = color[1] as f32 * cov;
+                let src_b = color[2] as f32 * cov;
+                let src_a = 255.0 * cov;
+                let inv_a = 1.0 - cov;
+                data[idx] = (src_r + bg_r * inv_a).min(255.0) as u8;
+                data[idx + 1] = (src_g + bg_g * inv_a).min(255.0) as u8;
+                data[idx + 2] = (src_b + bg_b * inv_a).min(255.0) as u8;
+                data[idx + 3] = (src_a + bg_a * inv_a).min(255.0) as u8;
+            });
+        }
+        cursor_x += char_font.as_scaled(char_scale).h_advance(glyph_id);
+    }
+}
+
+/// Draw anti-aliased text with automatic CJK font selection and per-glyph fallback.
+fn draw_text_fonts(pm: &mut Pixmap, color: [u8; 3], x: i32, y: i32, fonts: &GameFonts, size: f32, text: &str) {
+    draw_text_alpha_fonts(pm, color, 1.0, x, y, fonts, size, text);
+}
+
+/// Draw text with shadow and automatic CJK font selection and per-glyph fallback.
+fn draw_text_shadow_fonts(
+    pm: &mut Pixmap,
+    color: [u8; 3],
+    x: i32,
+    y: i32,
+    fonts: &GameFonts,
+    size: f32,
+    text: &str,
+) {
+    draw_text_alpha_fonts(pm, [0, 0, 0], 0.8, x + 1, y + 1, fonts, size, text);
+    draw_text_alpha_fonts(pm, color, 1.0, x, y, fonts, size, text);
+}
+
+/// Measure width and height of text with automatic CJK font selection and per-glyph fallback.
+fn text_size_fonts(fonts: &GameFonts, size: f32, text: &str) -> (u32, u32) {
+    let (base_font, base_scale) = fonts.font_and_scale(text, size);
+    let base_scaled = base_font.as_scaled(base_scale);
+    let mut w = 0.0f32;
+    let mut last_base_glyph_id = None;
+    for c in text.chars() {
+        let base_gid = base_scaled.glyph_id(c);
+        if base_gid.0 != 0 {
+            if let Some(last) = last_base_glyph_id {
+                w += base_scaled.kern(last, base_gid);
+            }
+            w += base_scaled.h_advance(base_gid);
+            last_base_glyph_id = Some(base_gid);
+        } else {
+            last_base_glyph_id = None;
+            let (fb_font, fb_scale) = fonts.font_and_scale_for_char(c, size);
+            let fb_scaled = fb_font.as_scaled(fb_scale);
+            let fb_gid = fb_scaled.glyph_id(c);
+            w += fb_scaled.h_advance(fb_gid);
+        }
+    }
+    let h = base_scaled.ascent() - base_scaled.descent();
+    (w.ceil() as u32, h.ceil() as u32)
 }
 
 /// Draw anti-aliased text onto a Pixmap at (x, y) with the given color.
@@ -470,19 +582,19 @@ fn draw_ship_labels(
     let mut cur_y = base_y;
 
     if let Some(name) = player_name {
-        let (font, scale) = fonts.font_and_scale(name, 10.0 * scale_factor);
+        let size = 10.0 * scale_factor;
         let color = if !color_on_ship { name_color.unwrap_or([255, 255, 255]) } else { [255, 255, 255] };
-        let (w, _) = text_size(scale, font, name);
+        let (w, _) = text_size_fonts(fonts, size, name);
         let tx = x - w as i32 / 2;
-        draw_text_shadow(pm, color, tx, cur_y, scale, font, name);
+        draw_text_shadow_fonts(pm, color, tx, cur_y, fonts, size, name);
         cur_y += line_height;
     }
     if let Some(name) = ship_name {
-        let (font, scale) = fonts.font_and_scale(name, 12.0 * scale_factor);
+        let size = 12.0 * scale_factor;
         let color = name_color.unwrap_or([255, 255, 255]);
-        let (w, _) = text_size(scale, font, name);
+        let (w, _) = text_size_fonts(fonts, size, name);
         let tx = x - w as i32 / 2;
-        draw_text_shadow(pm, color, tx, cur_y, scale, font, name);
+        draw_text_shadow_fonts(pm, color, tx, cur_y, fonts, size, name);
         cur_y += line_height;
     }
 
@@ -688,7 +800,7 @@ fn draw_score_bar(
         let pill_h = 62.0f32;
         let pill_y = (bar_height - pill_h) / 2.0;
 
-        let name_scale = fonts.scale(30.0);
+        let name_size = 30.0f32;
         let score_scale = fonts.scale(38.0);
         let eta_scale = fonts.scale(20.0);
         let pill_color = [10, 12, 16];
@@ -698,7 +810,7 @@ fn draw_score_bar(
         let t0_name = team0_name.unwrap_or("[ALPHA]");
         let t0_score_str = format!("{}", team0_score);
 
-        let (t0_nw, t0_nh) = text_size(name_scale, font_bold, t0_name);
+        let (t0_nw, t0_nh) = text_size_fonts(fonts, name_size, t0_name);
         let (t0_sw, t0_sh) = text_size(score_scale, font_bold, &t0_score_str);
         let t0_pill_w = 14.0 + t0_nw as f32 + 16.0 + t0_sw as f32 + 16.0;
         let t0_pill_x = 12.0f32;
@@ -708,7 +820,7 @@ fn draw_score_bar(
         draw_filled_rect(pm, t0_pill_x, pill_y + 6.0, 4.0, pill_h - 12.0, team0_color, 1.0);
 
         let t0_name_y = (pill_y + (pill_h - t0_nh as f32) / 2.0).round() as i32;
-        draw_text(pm, [255, 255, 255], (t0_pill_x + 14.0).round() as i32, t0_name_y, name_scale, font_bold, t0_name);
+        draw_text_fonts(pm, [255, 255, 255], (t0_pill_x + 14.0).round() as i32, t0_name_y, fonts, name_size, t0_name);
 
         let t0_score_x = (t0_pill_x + 14.0 + t0_nw as f32 + 16.0).round() as i32;
         let t0_score_y = (pill_y + (pill_h - t0_sh as f32) / 2.0).round() as i32;
@@ -718,7 +830,7 @@ fn draw_score_bar(
         let t1_name = team1_name.unwrap_or("[BRAVO]");
         let t1_score_str = format!("{}", team1_score);
 
-        let (t1_nw, t1_nh) = text_size(name_scale, font_bold, t1_name);
+        let (t1_nw, t1_nh) = text_size_fonts(fonts, name_size, t1_name);
         let (t1_sw, t1_sh) = text_size(score_scale, font_bold, &t1_score_str);
         let t1_pill_w = 16.0 + t1_sw as f32 + 16.0 + t1_nw as f32 + 14.0;
         let t1_pill_x = width - 12.0 - t1_pill_w;
@@ -733,7 +845,7 @@ fn draw_score_bar(
 
         let t1_name_x = (t1_pill_x + 16.0 + t1_sw as f32 + 16.0).round() as i32;
         let t1_name_y = (pill_y + (pill_h - t1_nh as f32) / 2.0).round() as i32;
-        draw_text(pm, [255, 255, 255], t1_name_x, t1_name_y, name_scale, font_bold, t1_name);
+        draw_text_fonts(pm, [255, 255, 255], t1_name_x, t1_name_y, fonts, name_size, t1_name);
 
         // ── Center Match Clock Flanking ETAs ──
         // The match clock is centered at width / 2.0 (~105px wide for "00:00" at scale 36.0).
@@ -1140,21 +1252,15 @@ fn draw_kill_feed(
         let has_cause_icon = death_cause_icons.contains_key(cause_key);
         let cause_w = if has_cause_icon { cause_icon_size } else { 0 } as u32;
 
-        // Pick appropriate fonts for each text segment
-        let (killer_name_font, killer_name_scale) = fonts.font_and_scale(&entry.killer_name, 12.0);
-        let (victim_name_font, victim_name_scale) = fonts.font_and_scale(&entry.victim_name, 12.0);
+        // Measure all text segments with CJK fallback support
         let killer_ship = entry.killer_ship_name.as_deref().unwrap_or("");
         let victim_ship = entry.victim_ship_name.as_deref().unwrap_or("");
-        let (killer_ship_font, killer_ship_scale) = fonts.font_and_scale(killer_ship, 12.0);
-        let (victim_ship_font, victim_ship_scale) = fonts.font_and_scale(victim_ship, 12.0);
-
-        // Measure all text segments
-        let (killer_name_w, _) = text_size(killer_name_scale, killer_name_font, &entry.killer_name);
+        let (killer_name_w, _) = text_size_fonts(fonts, 12.0, &entry.killer_name);
         let (killer_ship_w, _) =
-            if !killer_ship.is_empty() { text_size(killer_ship_scale, killer_ship_font, killer_ship) } else { (0, 0) };
-        let (victim_name_w, _) = text_size(victim_name_scale, victim_name_font, &entry.victim_name);
+            if !killer_ship.is_empty() { text_size_fonts(fonts, 12.0, killer_ship) } else { (0, 0) };
+        let (victim_name_w, _) = text_size_fonts(fonts, 12.0, &entry.victim_name);
         let (victim_ship_w, _) =
-            if !victim_ship.is_empty() { text_size(victim_ship_scale, victim_ship_font, victim_ship) } else { (0, 0) };
+            if !victim_ship.is_empty() { text_size_fonts(fonts, 12.0, victim_ship) } else { (0, 0) };
 
         // Determine if we have icons
         let has_killer_icon =
@@ -1192,7 +1298,7 @@ fn draw_kill_feed(
         let mut x = start_x + left_margin;
 
         // Killer name (team-colored)
-        draw_text_shadow(pm, entry.killer_color, x, y, killer_name_scale, killer_name_font, &entry.killer_name);
+        draw_text_shadow_fonts(pm, entry.killer_color, x, y, fonts, 12.0, &entry.killer_name);
         x += killer_name_w as i32;
 
         // Killer ship icon (friendly=left, enemy=right)
@@ -1207,7 +1313,7 @@ fn draw_kill_feed(
 
         // Killer ship name
         if killer_ship_w > 0 {
-            draw_text_shadow(pm, entry.killer_color, x, y, killer_ship_scale, killer_ship_font, killer_ship);
+            draw_text_shadow_fonts(pm, entry.killer_color, x, y, fonts, 12.0, killer_ship);
             x += killer_ship_w as i32;
         }
 
@@ -1220,7 +1326,7 @@ fn draw_kill_feed(
         x += cause_w as i32 + gap * 2;
 
         // Victim name (team-colored)
-        draw_text_shadow(pm, entry.victim_color, x, y, victim_name_scale, victim_name_font, &entry.victim_name);
+        draw_text_shadow_fonts(pm, entry.victim_color, x, y, fonts, 12.0, &entry.victim_name);
         x += victim_name_w as i32;
 
         // Victim ship icon (friendly=left, enemy=right)
@@ -1235,7 +1341,7 @@ fn draw_kill_feed(
 
         // Victim ship name
         if victim_ship_w > 0 {
-            draw_text_shadow(pm, entry.victim_color, x, y, victim_ship_scale, victim_ship_font, victim_ship);
+            draw_text_shadow_fonts(pm, entry.victim_color, x, y, fonts, 12.0, victim_ship);
         }
     }
 }
@@ -1354,15 +1460,14 @@ fn force_break_word(word: &str, max_width: u32, scale: PxScale, font: &impl Font
     }
 }
 
-/// Truncate `text` with ellipsis so it fits within `max_width` pixels.
-/// Returns the original string if it already fits.
-fn truncate_to_fit(text: &str, max_width: u32, scale: PxScale, font: &impl Font) -> String {
-    let (w, _) = text_size(scale, font, text);
+/// Truncate `text` with ellipsis so it fits within `max_width` pixels using CJK fallback fonts.
+fn truncate_to_fit_fonts(text: &str, max_width: u32, fonts: &GameFonts, size: f32) -> String {
+    let (w, _) = text_size_fonts(fonts, size, text);
     if w <= max_width {
         return text.to_string();
     }
     let ellipsis = "..";
-    let (ew, _) = text_size(scale, font, ellipsis);
+    let (ew, _) = text_size_fonts(fonts, size, ellipsis);
     if ew >= max_width {
         return ellipsis.to_string();
     }
@@ -1370,7 +1475,7 @@ fn truncate_to_fit(text: &str, max_width: u32, scale: PxScale, font: &impl Font)
     let mut truncated = String::new();
     for ch in text.chars() {
         let candidate = format!("{}{}", truncated, ch);
-        let (cw, _) = text_size(scale, font, &candidate);
+        let (cw, _) = text_size_fonts(fonts, size, &candidate);
         if cw > target {
             break;
         }
@@ -1394,7 +1499,6 @@ fn draw_chat_overlay(
     y_offset: u32,
     x_offset: u32,
 ) {
-    let font = &fonts.primary;
     if entries.is_empty() {
         return;
     }
@@ -1403,8 +1507,6 @@ fn draw_chat_overlay(
     let max_box_width = (minimap_w / 4) as i32; // 1/4 of minimap = 192px
     let margin = 6i32;
     let inner_width = (max_box_width - margin * 2) as u32;
-    let header_scale = fonts.scale(11.0);
-    let msg_scale = fonts.scale(11.0);
     let line_height = 14i32;
     let entry_gap = 6i32;
     let icon_size = 12i32;
@@ -1415,8 +1517,8 @@ fn draw_chat_overlay(
         name_line: String,
         /// Color for clan tag portion (if present)
         clan_color: Option<[u8; 3]>,
-        /// Length of clan tag prefix (including brackets and space), 0 if none
-        clan_prefix_len: usize,
+        /// Character count of clan tag prefix (including brackets and space), 0 if none
+        clan_prefix_chars: usize,
         /// Line 2: ship species key for icon + ship name
         ship_line: Option<String>,
         ship_species: Option<String>,
@@ -1429,21 +1531,19 @@ fn draw_chat_overlay(
     let mut total_height = margin; // top padding
 
     for entry in entries {
-        // Line 1: "[CLAN] PlayerName" -- pick font based on player name
+        // Line 1: "[CLAN] PlayerName" -- pick font with CJK fallback support
         let clan_prefix = if !entry.clan_tag.is_empty() { format!("[{}] ", entry.clan_tag) } else { String::new() };
         let full_name_line = format!("{}{}", clan_prefix, entry.player_name);
-        let (name_font, name_font_scale) = fonts.font_and_scale(&entry.player_name, 11.0);
-        let name_line = truncate_to_fit(&full_name_line, inner_width, name_font_scale, name_font);
+        let name_line = truncate_to_fit_fonts(&full_name_line, inner_width, fonts, 11.0);
         let clan_color =
             if !entry.clan_tag.is_empty() { Some(entry.clan_color.unwrap_or(entry.team_color)) } else { None };
 
         // Line 2: ship icon + ship name (if available)
         let has_ship_line = entry.ship_name.is_some();
         let ship_line = entry.ship_name.as_ref().map(|name| {
-            let (sf, ss) = fonts.font_and_scale(name, 11.0);
             let icon_reserved = (icon_size + 2) as u32;
             let available = inner_width.saturating_sub(icon_reserved);
-            truncate_to_fit(name, available, ss, sf)
+            truncate_to_fit_fonts(name, available, fonts, 11.0)
         });
 
         // Message lines (word-wrapped), using the font selected by font_hint
@@ -1461,7 +1561,7 @@ fn draw_chat_overlay(
         layouts.push(EntryLayout {
             name_line,
             clan_color,
-            clan_prefix_len: clan_prefix.len(),
+            clan_prefix_chars: clan_prefix.chars().count(),
             ship_line,
             ship_species: entry.ship_species.clone(),
             msg_lines,
@@ -1508,21 +1608,21 @@ fn draw_chat_overlay(
         let x = box_x + margin;
         if let Some(clan_rgb) = layout.clan_color {
             // Draw clan prefix in clan color, rest in team color
-            let clan_text: String = layout.name_line.chars().take(layout.clan_prefix_len).collect();
-            let name_text: String = layout.name_line.chars().skip(layout.clan_prefix_len).collect();
-            let (cw, _) = text_size(header_scale, font, &clan_text);
-            draw_text(pm, apply_opacity(clan_rgb, opacity), x, cur_y, header_scale, font, &clan_text);
-            draw_text(
+            let clan_text: String = layout.name_line.chars().take(layout.clan_prefix_chars).collect();
+            let name_text: String = layout.name_line.chars().skip(layout.clan_prefix_chars).collect();
+            let (cw, _) = text_size_fonts(fonts, 11.0, &clan_text);
+            draw_text_fonts(pm, apply_opacity(clan_rgb, opacity), x, cur_y, fonts, 11.0, &clan_text);
+            draw_text_fonts(
                 pm,
                 apply_opacity(entry.team_color, opacity),
                 x + cw as i32,
                 cur_y,
-                header_scale,
-                font,
+                fonts,
+                11.0,
                 &name_text,
             );
         } else {
-            draw_text(pm, apply_opacity(entry.team_color, opacity), x, cur_y, header_scale, font, &layout.name_line);
+            draw_text_fonts(pm, apply_opacity(entry.team_color, opacity), x, cur_y, fonts, 11.0, &layout.name_line);
         }
         cur_y += line_height;
 
@@ -1544,18 +1644,14 @@ fn draw_chat_overlay(
                 }
                 sx += icon_size + 2;
             }
-            draw_text(pm, apply_opacity(entry.team_color, opacity), sx, cur_y, header_scale, font, ship_name);
+            draw_text_fonts(pm, apply_opacity(entry.team_color, opacity), sx, cur_y, fonts, 11.0, ship_name);
             cur_y += line_height;
         }
 
-        // Message lines (using font selected by font_hint)
-        let msg_font: &FontArc = match entry.font_hint {
-            FontHint::Primary => &fonts.primary,
-            FontHint::Fallback(i) => fonts.fallbacks.get(i).unwrap_or(&fonts.primary),
-        };
+        // Message lines (using CJK fallback font resolution)
         let msg_color = apply_opacity(entry.message_color, opacity);
         for line in &layout.msg_lines {
-            draw_text(pm, msg_color, box_x + margin, cur_y, msg_scale, msg_font, line);
+            draw_text_fonts(pm, msg_color, box_x + margin, cur_y, fonts, 11.0, line);
             cur_y += line_height;
         }
 
@@ -2477,9 +2573,7 @@ impl RenderTarget for ImageTarget {
                     draw_circle_outline(&mut self.canvas, x, y, r, *color, *alpha, 1.0);
                 }
                 if let Some(text) = label {
-                    let font = self.fonts.font_for_text(text);
-                    let scale = self.fonts.scale(11.0);
-                    let (tw, th) = text_size(scale, font, text);
+                    let (tw, th) = text_size_fonts(&self.fonts, 11.0, text);
                     let tw = tw as i32;
                     let th = th as i32;
                     let cx = x as i32;
@@ -2534,7 +2628,7 @@ impl RenderTarget for ImageTarget {
                     }
 
                     self.placed_labels.push(best);
-                    draw_text_shadow(&mut self.canvas, *color, best[0], best[1], scale, font, text);
+                    draw_text_shadow_fonts(&mut self.canvas, *color, best[0], best[1], &self.fonts, 11.0, text);
                 }
             }
             DrawCommand::KillFeed { entries } => {
@@ -2665,39 +2759,38 @@ impl RenderTarget for ImageTarget {
                 if show_player {
                     let clan_prefix = clan_tag.as_ref().filter(|t| !t.is_empty()).map(|t| format!("[{t}] "));
                     let name_part = player_name.as_deref().unwrap_or("");
-
-                    let (name_font, name_font_scale) = self.fonts.font_and_scale(name_part, 16.0 * scale_factor);
+                    let name_size = 16.0 * scale_factor;
 
                     let clan_w =
-                        clan_prefix.as_ref().map(|cp| text_size(name_font_scale, name_font, cp).0).unwrap_or(0);
+                        clan_prefix.as_ref().map(|cp| text_size_fonts(&self.fonts, name_size, cp).0).unwrap_or(0);
                     let name_w =
-                        if !name_part.is_empty() { text_size(name_font_scale, name_font, name_part).0 } else { 0 };
+                        if !name_part.is_empty() { text_size_fonts(&self.fonts, name_size, name_part).0 } else { 0 };
                     let total_w = clan_w + name_w;
                     let mut cx = inner_x + (inner_w - total_w as i32) / 2;
 
                     if let Some(ref cp) = clan_prefix {
                         let cc = clan_color.unwrap_or([255, 255, 255]);
-                        draw_text_shadow(&mut self.canvas, cc, cx, label_y, name_font_scale, name_font, cp);
+                        draw_text_shadow_fonts(&mut self.canvas, cc, cx, label_y, &self.fonts, name_size, cp);
                         cx += clan_w as i32;
                     }
                     if !name_part.is_empty() {
-                        draw_text_shadow(
+                        draw_text_shadow_fonts(
                             &mut self.canvas,
                             [255, 255, 255],
                             cx,
                             label_y,
-                            name_font_scale,
-                            name_font,
+                            &self.fonts,
+                            name_size,
                             name_part,
                         );
                     }
                     label_y += (22.0 * scale_factor).round() as i32;
                 }
                 if let Some(name) = ship_name {
-                    let (ship_font, ship_font_scale) = self.fonts.font_and_scale(name, 20.0 * scale_factor);
-                    let (tw, _) = text_size(ship_font_scale, ship_font, name);
+                    let ship_size = 20.0 * scale_factor;
+                    let (tw, _) = text_size_fonts(&self.fonts, ship_size, name);
                     let tx = inner_x + (inner_w - tw as i32) / 2;
-                    draw_text_shadow(&mut self.canvas, [180, 180, 180], tx, label_y, ship_font_scale, ship_font, name);
+                    draw_text_shadow_fonts(&mut self.canvas, [180, 180, 180], tx, label_y, &self.fonts, ship_size, name);
                 }
 
                 let left_second_y = start_y + text_group_h + gap1;
@@ -3140,7 +3233,6 @@ impl RenderTarget for ImageTarget {
                 let padding = (8.0 * sf).round() as i32;
                 let inner_w = *width - padding * 2;
 
-                let msg_scale = self.fonts.scale(13.0 * sf);
                 let kill_font_size = 16.0 * sf;
                 let kill_name_scale = self.fonts.scale(kill_font_size);
                 let kill_row_h = (28.0 * sf).round() as i32;
@@ -3241,14 +3333,12 @@ impl RenderTarget for ImageTarget {
                         let name_max_w = (remaining_w / 2).max(40);
 
                         // Killer name
-                        let (kf, ks) = self.fonts.font_and_scale(&kill.killer_name, kill_font_size);
-                        let killer_display = truncate_to_fit(&kill.killer_name, name_max_w as u32, ks, kf);
-                        let (kw, _) = text_size(ks, kf, &killer_display);
+                        let killer_display = truncate_to_fit_fonts(&kill.killer_name, name_max_w as u32, &self.fonts, kill_font_size);
+                        let (kw, _) = text_size_fonts(&self.fonts, kill_font_size, &killer_display);
 
                         // Victim name
-                        let (vf, vs) = self.fonts.font_and_scale(&kill.victim_name, kill_font_size);
-                        let victim_display = truncate_to_fit(&kill.victim_name, name_max_w as u32, vs, vf);
-                        let (vw, _) = text_size(vs, vf, &victim_display);
+                        let victim_display = truncate_to_fit_fonts(&kill.victim_name, name_max_w as u32, &self.fonts, kill_font_size);
+                        let (vw, _) = text_size_fonts(&self.fonts, kill_font_size, &victim_display);
 
                         // Calculate total width of this line (prefix only)
                         let prefix = " | ";
@@ -3262,7 +3352,7 @@ impl RenderTarget for ImageTarget {
                         cx += pw as i32;
 
                         // Killer name
-                        draw_text_shadow(&mut self.canvas, kill.killer_color, cx, ky, ks, kf, &killer_display);
+                        draw_text_shadow_fonts(&mut self.canvas, kill.killer_color, cx, ky, &self.fonts, kill_font_size, &killer_display);
                         cx += kw as i32 + gap;
 
                         // Killer ship icon
@@ -3289,7 +3379,7 @@ impl RenderTarget for ImageTarget {
                         }
 
                         // Victim name
-                        draw_text_shadow(&mut self.canvas, kill.victim_color, cx, ky, vs, vf, &victim_display);
+                        draw_text_shadow_fonts(&mut self.canvas, kill.victim_color, cx, ky, &self.fonts, kill_font_size, &victim_display);
                         cx += vw as i32 + gap;
 
                         // Victim ship icon
@@ -3319,7 +3409,8 @@ impl RenderTarget for ImageTarget {
                             FontHint::Primary => &self.fonts.primary,
                             FontHint::Fallback(i) => self.fonts.fallbacks.get(i).unwrap_or(&self.fonts.primary),
                         };
-                        let msg_lines = word_wrap(&chat.message, right_w as u32, msg_scale, msg_font);
+                        let entry_msg_scale = self.fonts.scale_for_hint(13.0 * sf, chat.font_hint);
+                        let msg_lines = word_wrap(&chat.message, right_w as u32, entry_msg_scale, msg_font);
                         let h = chat_header_h + msg_lines.len().max(1) as i32 * chat_line_h + 2;
                         chat_heights.push(h);
                     }
@@ -3344,19 +3435,15 @@ impl RenderTarget for ImageTarget {
                     if let ActivityFeedKind::Chat(chat) = &entry.kind {
                         let mut cx = right_x;
 
-                        // Clan tag + Player name
-                        let (chat_name_font, chat_name_scale) = self.fonts.font_and_scale(&chat.player_name, 14.0);
-
                         let ship_icon_w = if chat.ship_species.is_some() { icon_size + gap } else { 0 };
                         let mut ship_name_w = 0i32;
                         if let Some(ref ship_name) = chat.ship_name {
-                            let (ship_font, ship_scale) = self.fonts.font_and_scale(ship_name, 14.0);
-                            let (sw, _) = text_size(ship_scale, ship_font, ship_name);
+                            let (sw, _) = text_size_fonts(&self.fonts, 14.0, ship_name);
                             ship_name_w = sw as i32;
                         }
                         let clan_w = if !chat.clan_tag.is_empty() {
                             let clan_text = format!("[{}] ", chat.clan_tag);
-                            let (cw, _) = text_size(chat_name_scale, chat_name_font, &clan_text);
+                            let (cw, _) = text_size_fonts(&self.fonts, 14.0, &clan_text);
                             cw as i32
                         } else {
                             0
@@ -3374,13 +3461,13 @@ impl RenderTarget for ImageTarget {
                         if !chat.clan_tag.is_empty() {
                             let clan_color = chat.clan_color.unwrap_or(chat.team_color);
                             let clan_text = format!("[{}] ", chat.clan_tag);
-                            draw_text_shadow(
+                            draw_text_shadow_fonts(
                                 &mut self.canvas,
                                 clan_color,
                                 cx,
                                 cy,
-                                chat_name_scale,
-                                chat_name_font,
+                                &self.fonts,
+                                14.0,
                                 &clan_text,
                             );
                             cx += clan_w;
@@ -3388,17 +3475,17 @@ impl RenderTarget for ImageTarget {
 
                         // Player Name
                         let player_display =
-                            truncate_to_fit(&chat.player_name, player_name_w as u32, chat_name_scale, chat_name_font);
-                        draw_text_shadow(
+                            truncate_to_fit_fonts(&chat.player_name, player_name_w as u32, &self.fonts, 14.0);
+                        draw_text_shadow_fonts(
                             &mut self.canvas,
                             chat.team_color,
                             cx,
                             cy,
-                            chat_name_scale,
-                            chat_name_font,
+                            &self.fonts,
+                            14.0,
                             &player_display,
                         );
-                        let (nw, text_h) = text_size(chat_name_scale, chat_name_font, &player_display);
+                        let (nw, text_h) = text_size_fonts(&self.fonts, 14.0, &player_display);
                         cx += nw as i32 + gap;
 
                         // Ship Icon
@@ -3414,14 +3501,13 @@ impl RenderTarget for ImageTarget {
                         if ship_name_w > 0
                             && let Some(ref ship_name) = chat.ship_name
                         {
-                            let (ship_font, ship_scale) = self.fonts.font_and_scale(ship_name, 14.0);
-                            draw_text_shadow(
+                            draw_text_shadow_fonts(
                                 &mut self.canvas,
                                 chat.team_color,
                                 cx,
                                 cy,
-                                ship_scale,
-                                ship_font,
+                                &self.fonts,
+                                14.0,
                                 ship_name,
                             );
                         }
@@ -3433,15 +3519,16 @@ impl RenderTarget for ImageTarget {
                             FontHint::Primary => &self.fonts.primary,
                             FontHint::Fallback(idx) => self.fonts.fallbacks.get(idx).unwrap_or(&self.fonts.primary),
                         };
-                        let msg_lines = word_wrap(&chat.message, right_w as u32, msg_scale, msg_font);
+                        let entry_msg_scale = self.fonts.scale_for_hint(13.0 * sf, chat.font_hint);
+                        let msg_lines = word_wrap(&chat.message, right_w as u32, entry_msg_scale, msg_font);
                         for line in &msg_lines {
-                            draw_text_shadow(
+                            draw_text_shadow_fonts(
                                 &mut self.canvas,
                                 chat.message_color,
                                 right_x,
                                 cy,
-                                msg_scale,
-                                msg_font,
+                                &self.fonts,
+                                13.0 * sf,
                                 line,
                             );
                             cy += chat_line_h;
@@ -3612,8 +3699,8 @@ fn draw_inkpads_teammate_table(
             player_label
         };
 
-        let name_display = truncate_to_fit(&label_with_ship, (player_col_w - 6) as u32, font_scale, font);
-        draw_text_shadow(pm, text_color, rx, ry + (row_h - font_size as i32) / 2, font_scale, font, &name_display);
+        let name_display = truncate_to_fit_fonts(&label_with_ship, (player_col_w - 6) as u32, fonts, font_size);
+        draw_text_shadow_fonts(pm, text_color, rx, ry + (row_h - font_size as i32) / 2, fonts, font_size, &name_display);
         rx += player_col_w;
 
         // Stats
@@ -3669,9 +3756,7 @@ fn draw_inkpads_inline_feeds(
     let left_w = (width as f32 * 0.40) as i32;
     let right_w = width - left_w;
     let padding = 10i32;
-    let font = &fonts.primary;
     let font_size = 18.0f32;
-    let font_scale = fonts.scale(font_size);
 
     // Box background
     draw_filled_rect(pm, x as f32, y as f32, width as f32, height as f32, [24, 28, 36], 0.85);
@@ -3696,12 +3781,12 @@ fn draw_inkpads_inline_feeds(
             break;
         }
         if let ActivityFeedKind::Kill(kill) = &entry.kind {
-            let killer_short = truncate_to_fit(&kill.killer_name, (left_w / 2 - 16) as u32, font_scale, font);
-            let victim_short = truncate_to_fit(&kill.victim_name, (left_w / 2 - 16) as u32, font_scale, font);
+            let killer_short = truncate_to_fit_fonts(&kill.killer_name, (left_w / 2 - 16) as u32, fonts, font_size);
+            let victim_short = truncate_to_fit_fonts(&kill.victim_name, (left_w / 2 - 16) as u32, fonts, font_size);
 
             let mut cx = kill_x;
-            draw_text_shadow(pm, kill.killer_color, cx, ky, font_scale, font, &killer_short);
-            let (kw, _) = text_size(font_scale, font, &killer_short);
+            draw_text_shadow_fonts(pm, kill.killer_color, cx, ky, fonts, font_size, &killer_short);
+            let (kw, _) = text_size_fonts(fonts, font_size, &killer_short);
             cx += kw as i32 + 6;
 
             let cause_key = death_cause_icon_key(&kill.cause);
@@ -3710,7 +3795,7 @@ fn draw_inkpads_inline_feeds(
                 cx += kill_icon_size + 6;
             }
 
-            draw_text_shadow(pm, kill.victim_color, cx, ky, font_scale, font, &victim_short);
+            draw_text_shadow_fonts(pm, kill.victim_color, cx, ky, fonts, font_size, &victim_short);
             ky += kill_row_h;
         }
     }
@@ -3720,7 +3805,7 @@ fn draw_inkpads_inline_feeds(
     let chat_w = right_w - padding * 2;
     let inter_block_gap = 14i32;
     let line_h = 24i32;
-    let msg_scale = fonts.scale(17.0f32);
+    let msg_font_size = 17.0f32;
 
     let mut cy = y + padding;
     for entry in chat_entries.iter() {
@@ -3735,13 +3820,13 @@ fn draw_inkpads_inline_feeds(
                 chat.player_name.clone()
             };
 
-            let header_disp = truncate_to_fit(&header_text, chat_w as u32, font_scale, font);
-            draw_text_shadow(pm, chat.team_color, chat_x, cy, font_scale, font, &header_disp);
+            let header_disp = truncate_to_fit_fonts(&header_text, chat_w as u32, fonts, font_size);
+            draw_text_shadow_fonts(pm, chat.team_color, chat_x, cy, fonts, font_size, &header_disp);
             cy += line_h;
 
             // Message text line
-            let msg_disp = truncate_to_fit(&chat.message, chat_w as u32, msg_scale, font);
-            draw_text_shadow(pm, chat.message_color, chat_x, cy, msg_scale, font, &msg_disp);
+            let msg_disp = truncate_to_fit_fonts(&chat.message, chat_w as u32, fonts, msg_font_size);
+            draw_text_shadow_fonts(pm, chat.message_color, chat_x, cy, fonts, msg_font_size, &msg_disp);
             cy += line_h;
 
             // Explicit 14px Inter-block Spacing Gap
@@ -3931,9 +4016,8 @@ fn draw_kots_dual_tables(
     draw_filled_rect(pm, x as f32, y as f32, width as f32, banner_h as f32, [24, 29, 40], 0.95);
     draw_filled_rect(pm, x as f32, y as f32, 6.0, banner_h as f32, top_color, 1.0);
 
-    let team_scale = fonts.scale(22.0);
-    draw_text_shadow(pm, [255, 255, 255], x + padding + 6, y + 10, team_scale, &fonts.primary, top_name);
-    let (top_tnw, _) = text_size(team_scale, &fonts.primary, top_name);
+    draw_text_shadow_fonts(pm, [255, 255, 255], x + padding + 6, y + 10, fonts, 22.0, top_name);
+    let (top_tnw, _) = text_size_fonts(fonts, 22.0, top_name);
 
     let spawn_scale = fonts.scale(13.0);
     let top_spawn_text = format!("({})", top_spawn);
@@ -3978,8 +4062,6 @@ fn draw_kots_dual_tables(
     let t0_row_count = top_rows.len() as i32;
     let t0_row_h = if t0_row_count > 0 { (t0_avail_h / t0_row_count).clamp(36, 62) } else { 50 };
 
-    let p_name_scale = fonts.scale(16.0);
-    let p_ship_scale = fonts.scale(13.5);
     let stat_scale = fonts.scale(18.5);
 
     let mut ry0 = t0_start_y;
@@ -3989,7 +4071,7 @@ fn draw_kots_dual_tables(
         }
         draw_kots_player_row(
             pm, x, ry0, width, t0_row_h, padding, player_col_w, stat_col_w, i, row, fonts,
-            ship_icons, top_color, p_name_scale, p_ship_scale, stat_scale,
+            ship_icons, top_color, stat_scale,
         );
         ry0 += t0_row_h;
     }
@@ -3998,7 +4080,6 @@ fn draw_kots_dual_tables(
     // 4. TOP TEAM TOTAL ROW (Meets in Center: t0_total_y .. center_y - 2)
     // ─────────────────────────────────────────────────────────────
     let total_scale = fonts.scale(21.0);
-    let label_scale = fonts.scale(18.0);
 
     let draw_stat_chip_text = |pm: &mut Pixmap, col_x: i32, row_y: i32, text: &str, color: [u8; 3]| {
         let chip_margin = 4;
@@ -4038,8 +4119,8 @@ fn draw_kots_dual_tables(
         format!("{} TOTAL", top_name.trim())
     };
     let top_label_y = t0_total_y + (total_h - 18) / 2;
-    draw_text_shadow(pm, [230, 238, 250], x + padding + 6, top_label_y, label_scale, &fonts.primary, &top_team_label);
-    draw_text_shadow(pm, [230, 238, 250], x + padding + 7, top_label_y, label_scale, &fonts.primary, &top_team_label);
+    draw_text_shadow_fonts(pm, [230, 238, 250], x + padding + 6, top_label_y, fonts, 18.0, &top_team_label);
+    draw_text_shadow_fonts(pm, [230, 238, 250], x + padding + 7, top_label_y, fonts, 18.0, &top_team_label);
 
     let top_cits: u32 = top_rows.iter().map(|r| r.citadels).sum();
     let top_torps: u32 = top_rows.iter().map(|r| r.torp_hits).sum();
@@ -4155,8 +4236,8 @@ fn draw_kots_dual_tables(
         format!("{} TOTAL", bot_name.trim())
     };
     let bot_label_y = t1_total_y + (total_h - 18) / 2;
-    draw_text_shadow(pm, [230, 238, 250], x + padding + 6, bot_label_y, label_scale, &fonts.primary, &bot_team_label);
-    draw_text_shadow(pm, [230, 238, 250], x + padding + 7, bot_label_y, label_scale, &fonts.primary, &bot_team_label);
+    draw_text_shadow_fonts(pm, [230, 238, 250], x + padding + 6, bot_label_y, fonts, 18.0, &bot_team_label);
+    draw_text_shadow_fonts(pm, [230, 238, 250], x + padding + 7, bot_label_y, fonts, 18.0, &bot_team_label);
 
     let bot_cits: u32 = bot_rows.iter().map(|r| r.citadels).sum();
     let bot_torps: u32 = bot_rows.iter().map(|r| r.torp_hits).sum();
@@ -4228,7 +4309,7 @@ fn draw_kots_dual_tables(
         }
         draw_kots_player_row(
             pm, x, ry1, width, t1_row_h, padding, player_col_w, stat_col_w, i, row, fonts,
-            ship_icons, bot_color, p_name_scale, p_ship_scale, stat_scale,
+            ship_icons, bot_color, stat_scale,
         );
         ry1 += t1_row_h;
     }
@@ -4244,8 +4325,8 @@ fn draw_kots_dual_tables(
     draw_filled_rect(pm, x as f32, bot_banner_y as f32, width as f32, banner_h as f32, [24, 29, 40], 0.95);
     draw_filled_rect(pm, x as f32, bot_banner_y as f32, 6.0, banner_h as f32, bot_color, 1.0);
 
-    draw_text_shadow(pm, [255, 255, 255], x + padding + 6, bot_banner_y + 10, team_scale, &fonts.primary, bot_name);
-    let (bot_tnw, _) = text_size(team_scale, &fonts.primary, bot_name);
+    draw_text_shadow_fonts(pm, [255, 255, 255], x + padding + 6, bot_banner_y + 10, fonts, 22.0, bot_name);
+    let (bot_tnw, _) = text_size_fonts(fonts, 22.0, bot_name);
 
     let bot_spawn_text = format!("({})", bot_spawn);
     draw_text_shadow(
@@ -4314,8 +4395,6 @@ fn draw_kots_player_row(
     fonts: &GameFonts,
     ship_icons: &HashMap<String, ShipIcon>,
     team_color: [u8; 3],
-    p_name_scale: PxScale,
-    p_ship_scale: PxScale,
     stat_scale: PxScale,
 ) {
     // Zebra striping background
@@ -4389,12 +4468,12 @@ fn draw_kots_player_row(
 
     let text_x = icon_x + icon_size + 8;
     let max_text_w = (player_col_w - (icon_size + 16)).max(40) as u32;
-    let name_disp = truncate_to_fit(&player_label, max_text_w, p_name_scale, &fonts.primary);
-    let ship_disp = truncate_to_fit(&row.ship_name, max_text_w, p_ship_scale, &fonts.primary);
+    let name_disp = truncate_to_fit_fonts(&player_label, max_text_w, fonts, 16.0);
+    let ship_disp = truncate_to_fit_fonts(&row.ship_name, max_text_w, fonts, 13.5);
 
     let text_y_offset = (row_h - 42) / 2;
-    draw_text_shadow(pm, name_color, text_x, ry + 4 + text_y_offset, p_name_scale, &fonts.primary, &name_disp);
-    draw_text_shadow(pm, ship_color, text_x, ry + 25 + text_y_offset, p_ship_scale, &fonts.primary, &ship_disp);
+    draw_text_shadow_fonts(pm, name_color, text_x, ry + 4 + text_y_offset, fonts, 16.0, &name_disp);
+    draw_text_shadow_fonts(pm, ship_color, text_x, ry + 25 + text_y_offset, fonts, 13.5, &ship_disp);
 
     // Stat columns: centered vertically and horizontally
     let stat_y = ry + (row_h - 18) / 2;
@@ -4467,4 +4546,75 @@ fn draw_kots_player_row(
 
     // Row border
     draw_line(pm, x as f32, (ry + row_h) as f32, (x + width) as f32, (ry + row_h) as f32, [45, 52, 65], 0.4, 1.0);
+}
+
+#[cfg(test)]
+mod cjk_tests {
+    use super::*;
+    use ab_glyph::FontArc;
+
+    #[test]
+    fn cjk_brackets_and_characters_render_with_fallback_fonts() {
+        let primary_path = std::path::Path::new("../../game_data/extracted/gui/fonts/Warhelios.ttf");
+        let cn_path = std::path::Path::new("../../game_data/extracted/gui/fonts/Source_Han_Sans_CN_Bold_WH.ttf");
+        let jp_path = std::path::Path::new("../../game_data/extracted/gui/fonts/Source_Han_Sans_JP_Bold_WH.ttf");
+        let ko_path = std::path::Path::new("../../game_data/extracted/gui/fonts/WarheliosKO_Bold.ttf");
+
+        if !primary_path.exists() || !cn_path.exists() {
+            // Skip if game_data is not present in CI environment
+            return;
+        }
+
+        let primary_bytes = std::fs::read(primary_path).unwrap();
+        let primary = FontArc::try_from_vec(primary_bytes).unwrap();
+        let cond_bold = primary.clone();
+
+        let mut fallbacks = Vec::new();
+        for p in [ko_path, jp_path, cn_path] {
+            if p.exists() {
+                if let Ok(bytes) = std::fs::read(p) {
+                    if let Ok(font) = FontArc::try_from_vec(bytes) {
+                        fallbacks.push(font);
+                    }
+                }
+            }
+        }
+
+        let fallback_scale_factors = vec![1.0; fallbacks.len()];
+        let fonts = GameFonts {
+            primary,
+            fallbacks,
+            primary_scale_factor: 1.0,
+            fallback_scale_factors,
+            primary_bytes: Vec::new(),
+            fallback_bytes: Vec::new(),
+            cond_bold,
+            cond_bold_scale_factor: 1.0,
+        };
+
+        // 1. Verify `[中文]` width is significantly wider than empty `[]`
+        let (empty_w, _) = text_size_fonts(&fonts, 22.0, "[]");
+        let (cjk_w, _) = text_size_fonts(&fonts, 22.0, "[中文]");
+        assert!(
+            cjk_w > empty_w + 20,
+            "Expected CJK team tag '[中文]' width ({cjk_w}) to be much wider than '[]' ({empty_w})"
+        );
+
+        // 2. Verify `[中文]` actually draws pixels between the brackets on a Pixmap
+        let mut pm_empty = Pixmap::new(200, 50).unwrap();
+        let mut pm_cjk = Pixmap::new(200, 50).unwrap();
+        draw_text_shadow_fonts(&mut pm_empty, [255, 255, 255], 10, 10, &fonts, 22.0, "[]");
+        draw_text_shadow_fonts(&mut pm_cjk, [255, 255, 255], 10, 10, &fonts, 22.0, "[中文]");
+
+        let lit_empty = pm_empty.pixels().iter().filter(|p| p.alpha() > 0).count();
+        let lit_cjk = pm_cjk.pixels().iter().filter(|p| p.alpha() > 0).count();
+        assert!(
+            lit_cjk > lit_empty * 2,
+            "Expected '[中文]' to draw significantly more pixels ({lit_cjk}) than '[]' ({lit_empty})"
+        );
+
+        // 3. Verify mixed CJK + Korean + Japanese string falls back per-character
+        let (mixed_w, _) = text_size_fonts(&fonts, 18.0, "[中文] 가나다 あいう TOTAL");
+        assert!(mixed_w > cjk_w);
+    }
 }

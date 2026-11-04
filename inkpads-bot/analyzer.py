@@ -848,7 +848,7 @@ class ReplayAnalyzer:
         counts = self.team_clan_counts.get(team_id)
         if not counts: return None
         # Filter out empty tags and find the most common one
-        valid = {k: v for k, v in counts.items() if k and len(k) > 1}
+        valid = {k: v for k, v in counts.items() if k and k.strip()}
         if not valid: return None
         return max(valid, key=valid.get)
 
