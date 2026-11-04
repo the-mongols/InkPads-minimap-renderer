@@ -539,13 +539,22 @@ fn main() -> Result<(), Report> {
     );
 
     let roster_map = match args.roster_json.as_deref() {
-        Some(path) => match wows_minimap_renderer::roster::load_roster_map(path) {
-            Ok(map) => Some(map),
-            Err(e) => {
-                warn!(error = ?e, path = %path.display(), "Failed to load tournament roster JSON; proceeding without roster overrides");
-                None
+        Some(path) => {
+            let (roster_team0, roster_team1) = wows_minimap_renderer::roster::load_roster_team_names(path);
+            if options.team0_name.is_none() && roster_team0.is_some() {
+                options.team0_name = roster_team0;
             }
-        },
+            if options.team1_name.is_none() && roster_team1.is_some() {
+                options.team1_name = roster_team1;
+            }
+            match wows_minimap_renderer::roster::load_roster_map(path) {
+                Ok(map) => Some(map),
+                Err(e) => {
+                    warn!(error = ?e, path = %path.display(), "Failed to load tournament roster JSON; proceeding without roster overrides");
+                    None
+                }
+            }
+        }
         None => None,
     };
 

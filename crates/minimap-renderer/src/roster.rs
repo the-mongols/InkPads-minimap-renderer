@@ -267,9 +267,135 @@ fn parse_roster_value(val: &serde_json::Value, map: &mut HashMap<i64, RosterEntr
     }
 }
 
-/// Normalizes clan/team tag by removing surrounding brackets and excess whitespace.
+/// Translates hardcoded Chinese tournament team names to their official English tags.
+pub fn translate_cn_team_tag(raw: &str) -> &str {
+    let s = raw
+        .trim()
+        .trim_start_matches(|c| c == '[' || c == '【' || c == '(' || c == '（')
+        .trim_end_matches(|c| c == ']' || c == '】' || c == ')' || c == '）')
+        .trim();
+
+    if s.contains("唐宋元明清") || s.eq_ignore_ascii_case("TSYMQ") {
+        "TSYMQ"
+    } else if s.contains("团子大家族") || s.eq_ignore_ascii_case("CL") {
+        "CL"
+    } else if s.contains("御兽宗") || s.eq_ignore_ascii_case("YuShr") {
+        "YuShr"
+    } else if s.contains("鸽子窝") || s.eq_ignore_ascii_case("GZW") {
+        "GZW"
+    } else if s.eq_ignore_ascii_case("TIVAT") {
+        "TIVAT"
+    } else if s.eq_ignore_ascii_case("MAJO") {
+        "MAJO"
+    } else if s.eq_ignore_ascii_case("QTDD") {
+        "QTDD"
+    } else if s.eq_ignore_ascii_case("HFC") {
+        "HFC"
+    } else {
+        s
+    }
+}
+
+/// Normalizes clan/team tag by removing surrounding brackets and excess whitespace,
+/// and mapping Chinese tournament team names to their official English tags.
 pub fn clean_tag(raw: &str) -> String {
-    raw.trim().trim_start_matches('[').trim_end_matches(']').trim().to_string()
+    let s = raw
+        .trim()
+        .trim_start_matches(|c| c == '[' || c == '【')
+        .trim_end_matches(|c| c == ']' || c == '】')
+        .trim();
+    translate_cn_team_tag(s).to_string()
+}
+
+/// Extracts team 0 and team 1 tags/names from a tournament roster JSON payload if present.
+pub fn extract_team_names_from_roster_json(json_str: &str) -> (Option<String>, Option<String>) {
+    let val: serde_json::Value = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(_) => {
+            let sanitized = sanitize_trailing_commas(json_str);
+            match serde_json::from_str(&sanitized) {
+                Ok(v) => v,
+                Err(_) => return (None, None),
+            }
+        }
+    };
+
+    let mut t0: Option<String> = None;
+    let mut t1: Option<String> = None;
+
+    if let Some(obj) = val.as_object() {
+        t0 = obj
+            .get("team0_name")
+            .or_else(|| obj.get("team0Name"))
+            .and_then(|v| v.as_str())
+            .map(clean_tag);
+        t1 = obj
+            .get("team1_name")
+            .or_else(|| obj.get("team1Name"))
+            .and_then(|v| v.as_str())
+            .map(clean_tag);
+
+        if t0.is_none() || t1.is_none() {
+            let list = obj
+                .get("replays")
+                .or_else(|| obj.get("teams"))
+                .or_else(|| obj.get("clans"))
+                .and_then(|v| v.as_array());
+            if let Some(arr) = list {
+                if t0.is_none() && !arr.is_empty() {
+                    t0 = arr[0]
+                        .get("tag")
+                        .or_else(|| arr[0].get("clan"))
+                        .or_else(|| arr[0].get("team"))
+                        .or_else(|| arr[0].get("team_name"))
+                        .or_else(|| arr[0].get("teamName"))
+                        .and_then(|v| v.as_str())
+                        .map(clean_tag);
+                }
+                if t1.is_none() && arr.len() > 1 {
+                    t1 = arr[1]
+                        .get("tag")
+                        .or_else(|| arr[1].get("clan"))
+                        .or_else(|| arr[1].get("team"))
+                        .or_else(|| arr[1].get("team_name"))
+                        .or_else(|| arr[1].get("teamName"))
+                        .and_then(|v| v.as_str())
+                        .map(clean_tag);
+                }
+            }
+        }
+    } else if let Some(arr) = val.as_array() {
+        if !arr.is_empty() {
+            t0 = arr[0]
+                .get("tag")
+                .or_else(|| arr[0].get("clan"))
+                .or_else(|| arr[0].get("team"))
+                .or_else(|| arr[0].get("team_name"))
+                .or_else(|| arr[0].get("teamName"))
+                .and_then(|v| v.as_str())
+                .map(clean_tag);
+        }
+        if arr.len() > 1 {
+            t1 = arr[1]
+                .get("tag")
+                .or_else(|| arr[1].get("clan"))
+                .or_else(|| arr[1].get("team"))
+                .or_else(|| arr[1].get("team_name"))
+                .or_else(|| arr[1].get("teamName"))
+                .and_then(|v| v.as_str())
+                .map(clean_tag);
+        }
+    }
+
+    (t0, t1)
+}
+
+/// Loads team names from a roster mapping file path.
+pub fn load_roster_team_names<P: AsRef<Path>>(path: P) -> (Option<String>, Option<String>) {
+    match std::fs::read_to_string(path) {
+        Ok(content) => extract_team_names_from_roster_json(&content),
+        Err(_) => (None, None),
+    }
 }
 
 #[cfg(test)]
@@ -404,5 +530,70 @@ mod tests {
         let p3 = map.get(&3021443170).unwrap();
         assert_eq!(p3.name, "xknb66666");
         assert_eq!(p3.tag.as_deref(), Some("-WZU-"));
+    }
+
+    #[test]
+    fn test_translate_cn_team_tag_all_seeds() {
+        // 1st seed
+        assert_eq!(translate_cn_team_tag("唐宋元明清"), "TSYMQ");
+        assert_eq!(translate_cn_team_tag("唐宋元明清（TSYMQ）"), "TSYMQ");
+        assert_eq!(translate_cn_team_tag("唐宋元明清(TSYMQ)"), "TSYMQ");
+        assert_eq!(translate_cn_team_tag("[唐宋元明清]"), "TSYMQ");
+        assert_eq!(translate_cn_team_tag("【唐宋元明清】"), "TSYMQ");
+        assert_eq!(translate_cn_team_tag("TSYMQ"), "TSYMQ");
+        assert_eq!(translate_cn_team_tag("tsymq"), "TSYMQ");
+
+        // 2nd seed
+        assert_eq!(translate_cn_team_tag("团子大家族"), "CL");
+        assert_eq!(translate_cn_team_tag("团子大家族（CL）"), "CL");
+        assert_eq!(translate_cn_team_tag("CL"), "CL");
+
+        // 3rd seed
+        assert_eq!(translate_cn_team_tag("御兽宗"), "YuShr");
+        assert_eq!(translate_cn_team_tag("御兽宗（YuShr）"), "YuShr");
+        assert_eq!(translate_cn_team_tag("YuShr"), "YuShr");
+        assert_eq!(translate_cn_team_tag("yushr"), "YuShr");
+
+        // 4th seed
+        assert_eq!(translate_cn_team_tag("TIVAT"), "TIVAT");
+
+        // 5th seed
+        assert_eq!(translate_cn_team_tag("MAJO"), "MAJO");
+
+        // 6th seed
+        assert_eq!(translate_cn_team_tag("QTDD"), "QTDD");
+
+        // 7th seed
+        assert_eq!(translate_cn_team_tag("HFC"), "HFC");
+
+        // 8th seed
+        assert_eq!(translate_cn_team_tag("鸽子窝"), "GZW");
+        assert_eq!(translate_cn_team_tag("鸽子窝（GZW）"), "GZW");
+        assert_eq!(translate_cn_team_tag("GZW"), "GZW");
+
+        // Non-CN teams preserved
+        assert_eq!(translate_cn_team_tag("-TWA-"), "-TWA-");
+        assert_eq!(translate_cn_team_tag("RAIN"), "RAIN");
+    }
+
+    #[test]
+    fn test_extract_team_names_from_roster_json_cn() {
+        let json_data = r#"
+        {
+          "replays": [
+            {
+              "tag": "唐宋元明清（TSYMQ）",
+              "replay": "https://wows-tournaments.com/api/replay1"
+            },
+            {
+              "tag": "QTDD",
+              "replay": "https://wows-tournaments.com/api/replay2"
+            }
+          ]
+        }
+        "#;
+        let (t0, t1) = extract_team_names_from_roster_json(json_data);
+        assert_eq!(t0.as_deref(), Some("TSYMQ"));
+        assert_eq!(t1.as_deref(), Some("QTDD"));
     }
 }

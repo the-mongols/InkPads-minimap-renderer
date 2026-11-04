@@ -3789,7 +3789,8 @@ fn species_hierarchy(species: Option<&str>) -> u8 {
 }
 
 fn format_team_tag(tag: &str) -> String {
-    let t = tag.trim();
+    let translated = crate::roster::translate_cn_team_tag(tag);
+    let t = translated.trim();
     if t.is_empty() {
         return String::new();
     }
@@ -3797,6 +3798,33 @@ fn format_team_tag(tag: &str) -> String {
         t.to_string()
     } else {
         format!("[{}]", t)
+    }
+}
+
+fn match_cn_team_from_username(name: &str) -> Option<&'static str> {
+    let lower = name.to_ascii_lowercase();
+    if name.contains("唐宋元明清") || lower.starts_with("tsymq") {
+        Some("TSYMQ")
+    } else if name.contains("团子大家族")
+        || lower.starts_with("cl_")
+        || lower.starts_with("cl-")
+        || (lower.starts_with("cl") && name.chars().nth(2).map(|c| c.is_ascii_digit()).unwrap_or(false))
+    {
+        Some("CL")
+    } else if name.contains("御兽宗") || lower.starts_with("yushr") {
+        Some("YuShr")
+    } else if name.contains("鸽子窝") || lower.starts_with("gzw") {
+        Some("GZW")
+    } else if lower.starts_with("tivat") {
+        Some("TIVAT")
+    } else if lower.starts_with("majo") {
+        Some("MAJO")
+    } else if lower.starts_with("qtdd") {
+        Some("QTDD")
+    } else if lower.starts_with("hfc") {
+        Some("HFC")
+    } else {
+        None
     }
 }
 
@@ -3825,7 +3853,21 @@ fn extract_tournament_team_name(
         return format_team_tag(dominant_clan);
     }
 
-    // 2. Check tournament username pattern: <TEAM>_<PLAYER>_<REGION>
+    // 2. Direct Chinese tournament team recognition from usernames
+    // (Handles press accounts where usernames are e.g. 唐宋元明清_CC, TSYMQ01, QTDD_Dou without requiring delimiter)
+    let mut cn_team_counts: HashMap<&'static str, usize> = HashMap::new();
+    for &name in combatant_names {
+        if let Some(team) = match_cn_team_from_username(name.trim()) {
+            *cn_team_counts.entry(team).or_insert(0) += 1;
+        }
+    }
+    if let Some((&dominant_cn_team, &count)) = cn_team_counts.iter().max_by_key(|(_, c)| *c)
+        && (count >= 2 || (count >= 1 && combatant_names.len() <= 2))
+    {
+        return format_team_tag(dominant_cn_team);
+    }
+
+    // 3. Check tournament username pattern: <TEAM>_<PLAYER>_<REGION>
     // e.g. S_D_M_arch_KOTS19EU, BONKZ_Player_KOTS19NA
     let mut prefix_counts: HashMap<String, usize> = HashMap::new();
     for &name in combatant_names {
@@ -4045,5 +4087,57 @@ mod torpedo_range_tests {
         let total_elapsed_distance = 160.0;
         let dist_distance = 5.0 * total_elapsed_distance; // 800 BW
         assert!(dist_distance > 700.0);
+    }
+}
+
+#[cfg(test)]
+mod tournament_team_extraction_tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_chinese_team_names_from_usernames() {
+        // Player usernames with underscore delimiter e.g. 唐宋元明清_CC
+        let t1_names = vec!["唐宋元明清_CC", "唐宋元明清_02", "唐宋元明清_03"];
+        let t1_clans = vec!["", "", ""];
+        assert_eq!(
+            extract_tournament_team_name(None, &t1_names, &t1_clans, "BRAVO"),
+            "[TSYMQ]"
+        );
+
+        // Player usernames with seed 6 QTDD_Dou
+        let t2_names = vec!["QTDD_Dou", "QTDD_02", "QTDD_03"];
+        let t2_clans = vec!["", "", ""];
+        assert_eq!(
+            extract_tournament_team_name(None, &t2_names, &t2_clans, "ALPHA"),
+            "[QTDD]"
+        );
+
+        // Press account usernames without underscore delimiter
+        let t3_names = vec!["TSYMQ01", "TSYMQ02", "TSYMQ03"];
+        let t3_clans = vec!["", "", ""];
+        assert_eq!(
+            extract_tournament_team_name(None, &t3_names, &t3_clans, "ALPHA"),
+            "[TSYMQ]"
+        );
+
+        let t4_names = vec!["YuShr01", "YuShr02", "YuShr03"];
+        let t4_clans = vec!["", "", ""];
+        assert_eq!(
+            extract_tournament_team_name(None, &t4_names, &t4_clans, "ALPHA"),
+            "[YuShr]"
+        );
+
+        let t5_names = vec!["鸽子窝01", "鸽子窝02"];
+        let t5_clans = vec!["", "", ""];
+        assert_eq!(
+            extract_tournament_team_name(None, &t5_names, &t5_clans, "ALPHA"),
+            "[GZW]"
+        );
+
+        // Override name with full Chinese name + English tag
+        assert_eq!(
+            extract_tournament_team_name(Some("团子大家族（CL）"), &t1_names, &t1_clans, "ALPHA"),
+            "[CL]"
+        );
     }
 }

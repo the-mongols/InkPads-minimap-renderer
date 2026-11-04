@@ -439,12 +439,33 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
                 else:
                     cmd.extend(["--discord-layout", "--stats-panel-width", "720"])
 
-            # Explicit team name overrides if specified in payload
+            # Explicit team name overrides if specified in payload or replays
             t0_name = data.get("team0_name") or data.get("team0Name")
             t1_name = data.get("team1_name") or data.get("team1Name")
+
+            if not t0_name and len(replays) > 0 and isinstance(replays[0], dict):
+                t0_name = (
+                    replays[0].get("tag")
+                    or replays[0].get("clan")
+                    or replays[0].get("team")
+                    or replays[0].get("team_name")
+                    or replays[0].get("teamName")
+                )
+
+            if not t1_name and len(replays) > 1 and isinstance(replays[1], dict):
+                t1_name = (
+                    replays[1].get("tag")
+                    or replays[1].get("clan")
+                    or replays[1].get("team")
+                    or replays[1].get("team_name")
+                    or replays[1].get("teamName")
+                )
+
             if t0_name:
+                t0_name = translate_cn_team_tag(str(t0_name).strip())
                 cmd.extend(["--team0-name", str(t0_name).strip()])
             if t1_name:
+                t1_name = translate_cn_team_tag(str(t1_name).strip())
                 cmd.extend(["--team1-name", str(t1_name).strip()])
 
             logger.info(f"[{session_id}] Executing renderer CLI command (layout: {layout_opt}, target: {target_size_mib} MiB)...")
@@ -529,14 +550,18 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
             elif len(replays) >= 2 and isinstance(replays[0], dict) and isinstance(replays[1], dict) and (replays[0].get("tag") or replays[1].get("tag")):
                 r0_tag = replays[0].get("tag") or ""
                 r1_tag = replays[1].get("tag") or ""
-                clean_r0 = f"[{r0_tag.strip('[]')}]" if r0_tag else (team_alpha or "[ALPHA]")
-                clean_r1 = f"[{r1_tag.strip('[]')}]" if r1_tag else (team_bravo or "[BRAVO]")
+                r0_trans = translate_cn_team_tag(r0_tag) or ""
+                r1_trans = translate_cn_team_tag(r1_tag) or ""
+                clean_r0 = f"[{r0_trans.strip('[]')}]" if r0_trans else (team_alpha or "[ALPHA]")
+                clean_r1 = f"[{r1_trans.strip('[]')}]" if r1_trans else (team_bravo or "[BRAVO]")
                 embed_title = f"{clean_r0} vs. {clean_r1}"
             elif is_dual:
                 r0_tag = replays[0].get("tag") if len(replays) > 0 and isinstance(replays[0], dict) else ""
                 r1_tag = replays[1].get("tag") if len(replays) > 1 and isinstance(replays[1], dict) else ""
-                clean_r0 = f"[{r0_tag.strip('[]')}]" if r0_tag else ""
-                clean_r1 = f"[{r1_tag.strip('[]')}]" if r1_tag else ""
+                r0_trans = translate_cn_team_tag(r0_tag) or ""
+                r1_trans = translate_cn_team_tag(r1_tag) or ""
+                clean_r0 = f"[{r0_trans.strip('[]')}]" if r0_trans else ""
+                clean_r1 = f"[{r1_trans.strip('[]')}]" if r1_trans else ""
                 t1 = team_alpha if (team_alpha and team_alpha not in ("[ALPHA]", "Alpha Team")) else (f"[{f_clan}]" if f_clan else (clean_r0 or "[ALPHA]"))
                 t2 = team_bravo if (team_bravo and team_bravo not in ("[BRAVO]", "Bravo Team")) else (f"[{e_clan}]" if e_clan else (clean_r1 or "[BRAVO]"))
                 embed_title = f"{t1} vs. {t2}"
@@ -594,6 +619,10 @@ async def process_tournament_render(message: discord.Message, callback_url: str,
                         "guildId": str(posted_msg.guild.id) if getattr(posted_msg, "guild", None) else None,
                         "messageUrl": posted_msg.jump_url,
                         "jumpUrl": posted_msg.jump_url,
+                        "winner": winner_name,
+                        "teamAlpha": team_alpha,
+                        "teamBravo": team_bravo,
+                        "matchResult": outcome,
                     }
                     logger.info(f"[{session_id}] Sending callback to {callback_url} with params {cb_params} and payload {payload}")
                     try:
@@ -915,13 +944,56 @@ def format_date_time(raw_dt):
     except Exception:
         return raw_dt
 
+CN_TEAM_TAGS = {
+    "唐宋元明清": "TSYMQ",
+    "TSYMQ": "TSYMQ",
+    "团子大家族": "CL",
+    "CL": "CL",
+    "御兽宗": "YuShr",
+    "YUSHR": "YuShr",
+    "YuShr": "YuShr",
+    "TIVAT": "TIVAT",
+    "MAJO": "MAJO",
+    "QTDD": "QTDD",
+    "HFC": "HFC",
+    "鸽子窝": "GZW",
+    "GZW": "GZW",
+}
+
+def translate_cn_team_tag(raw: Optional[str]) -> Optional[str]:
+    if not raw:
+        return raw
+    s = str(raw).strip().strip("[]【】()（）").strip()
+    s_upper = s.upper()
+    if "唐宋元明清" in s or s_upper == "TSYMQ":
+        return "TSYMQ"
+    if "团子大家族" in s or s_upper == "CL":
+        return "CL"
+    if "御兽宗" in s or s_upper == "YUSHR":
+        return "YuShr"
+    if "鸽子窝" in s or s_upper == "GZW":
+        return "GZW"
+    if s_upper == "TIVAT":
+        return "TIVAT"
+    if s_upper == "MAJO":
+        return "MAJO"
+    if s_upper == "QTDD":
+        return "QTDD"
+    if s_upper == "HFC":
+        return "HFC"
+    return s
+
 def extract_winning_team(stderr_text: str) -> str:
     if not stderr_text:
         return ""
     m = re.search(r'WINNING_TEAM:\s*([^\r\n]+)', stderr_text)
     if m:
         raw = m.group(1).strip()
-        return re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', raw).strip()
+        cleaned = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', raw).strip()
+        if cleaned.startswith("[") and cleaned.endswith("]"):
+            tag = cleaned[1:-1]
+            return f"[{translate_cn_team_tag(tag)}]"
+        return translate_cn_team_tag(cleaned)
     return ""
 
 def extract_team_alpha(stderr_text: str) -> str:
@@ -930,7 +1002,11 @@ def extract_team_alpha(stderr_text: str) -> str:
     m = re.search(r'TEAM_ALPHA:\s*([^\r\n]+)', stderr_text)
     if m:
         raw = m.group(1).strip()
-        return re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', raw).strip()
+        cleaned = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', raw).strip()
+        if cleaned.startswith("[") and cleaned.endswith("]"):
+            tag = cleaned[1:-1]
+            return f"[{translate_cn_team_tag(tag)}]"
+        return translate_cn_team_tag(cleaned)
     return ""
 
 def extract_team_bravo(stderr_text: str) -> str:
@@ -939,7 +1015,11 @@ def extract_team_bravo(stderr_text: str) -> str:
     m = re.search(r'TEAM_BRAVO:\s*([^\r\n]+)', stderr_text)
     if m:
         raw = m.group(1).strip()
-        return re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', raw).strip()
+        cleaned = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', raw).strip()
+        if cleaned.startswith("[") and cleaned.endswith("]"):
+            tag = cleaned[1:-1]
+            return f"[{translate_cn_team_tag(tag)}]"
+        return translate_cn_team_tag(cleaned)
     return ""
 
 def extract_match_result(stderr_text: str) -> str:
