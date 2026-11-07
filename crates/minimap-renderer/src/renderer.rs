@@ -445,6 +445,8 @@ pub struct MinimapRenderer<'a> {
     ship_param_ids: HashMap<EntityId, GameParamId>,
     ship_display_names: HashMap<EntityId, String>,
     player_relations: HashMap<EntityId, Relation>,
+    /// Map of entity_id -> team_id (0 or 1) for all ships/players.
+    player_teams: HashMap<EntityId, i64>,
     /// Per-ship consumable icon names: (entity_id, Consumable) -> PCY name (e.g. "PCY015_SpeedBoosterPremium")
     ship_ability_icons: HashMap<(EntityId, Recognized<Consumable>), String>,
     /// Per-ship consumable variants for detection radius lookup: (entity_id, Consumable) -> (ability_name, variant_name)
@@ -555,6 +557,7 @@ impl<'a> MinimapRenderer<'a> {
             ship_param_ids: HashMap::new(),
             ship_display_names: HashMap::new(),
             player_relations: HashMap::new(),
+            player_teams: HashMap::new(),
             ship_ability_icons: HashMap::new(),
             ship_ability_variants: HashMap::new(),
             ship_ability_radii: HashMap::new(),
@@ -777,6 +780,7 @@ impl<'a> MinimapRenderer<'a> {
         self.ship_param_ids.clear();
         self.ship_display_names.clear();
         self.player_relations.clear();
+        self.player_teams.clear();
         self.ship_ability_icons.clear();
         self.ship_ability_variants.clear();
         self.ship_ability_radii.clear();
@@ -787,6 +791,9 @@ impl<'a> MinimapRenderer<'a> {
         self.division_mates.clear();
         self.players_populated = false;
         self.self_team_id = None;
+        self.team0_is_north = None;
+        self.team0_name_resolved = None;
+        self.team1_name_resolved = None;
         self.position_history.clear();
         // Note: self_silhouette is an asset, not frame state — preserved across reset.
         self.self_entity_id = None;
@@ -817,6 +824,7 @@ impl<'a> MinimapRenderer<'a> {
             }
 
             self.player_relations.insert(*entity_id, player.relation());
+            self.player_teams.insert(*entity_id, player.initial_state().team_id() as i64);
             if let Some(species) = player.vehicle().species().and_then(|s| s.known()) {
                 self.player_species.insert(*entity_id, species.name().to_string());
             }
@@ -913,9 +921,11 @@ impl<'a> MinimapRenderer<'a> {
             for (entity_id, player) in players {
                 if player.relation().is_self() {
                     self.self_entity_id = Some(*entity_id);
-                    if let Some(props) = controller.vehicle_props(*entity_id) {
-                        self.self_team_id = Some(props.team_id() as i64);
-                    }
+                    let team_id = controller
+                        .vehicle_props(*entity_id)
+                        .map(|props| props.team_id() as i64)
+                        .unwrap_or_else(|| player.initial_state().team_id() as i64);
+                    self.self_team_id = Some(team_id);
                     break;
                 }
             }
@@ -1155,17 +1165,20 @@ impl<'a> MinimapRenderer<'a> {
 
     /// Calculate team advantage from current controller state.
     ///
-    /// The result is normalized so that team0 = friendly (replay owner's team)
-    /// and team1 = enemy. When the replay owner is on internal team 1, all
-    /// per-team values are swapped. See TEAM_ADVANTAGE_SCORING.md for details.
-    fn calculate_team_advantage(&self, controller: &BattleView<'_>) -> crate::advantage::AdvantageResult {
-        use crate::advantage::ScoringParams;
-        use crate::advantage::TeamState;
+    /// The result is normalized so that team0 = friendly (replay owner's team in normal layout,
+    /// North spawn team in KOTS layout) and team1 = enemy. When `swap` is true, all per-team
+    /// values are swapped. See TEAM_ADVANTAGE_SCORING.md for details.
+    fn calculate_team_advantage(
+        &self,
+        controller: &BattleView<'_>,
+        swap: bool,
+    ) -> crate::advantage::AdvantageResult {
         use crate::advantage::calculate_advantage;
         use crate::advantage::swap_breakdown;
+        use crate::advantage::ScoringParams;
+        use crate::advantage::TeamState;
 
         let players = controller.player_entities();
-        let swap = self.self_team_id == Some(1);
 
         let mut teams = [TeamState::new(), TeamState::new()];
 
@@ -1266,8 +1279,20 @@ impl<'a> MinimapRenderer<'a> {
         let get_player_y = |entity_id: &EntityId| -> Option<f32> {
             if let Some(t) = ship_positions.get(entity_id) {
                 Some(map_info.world_to_minimap(t.pos, MINIMAP_SIZE).y)
+            } else if let Some(mm) = minimap_positions.get(entity_id) {
+                Some(map_info.normalized_to_minimap(&mm.pos, MINIMAP_SIZE).y)
+            } else if let Some(tl) = self.position_timeline.as_ref()
+                && let Some(track) = tl.get(entity_id)
+            {
+                if let Some((_, pos)) = track.world.first() {
+                    Some(map_info.world_to_minimap(*pos, MINIMAP_SIZE).y)
+                } else if let Some((_, pos)) = track.minimap.first() {
+                    Some(map_info.normalized_to_minimap(pos, MINIMAP_SIZE).y)
+                } else {
+                    None
+                }
             } else {
-                minimap_positions.get(entity_id).map(|mm| map_info.normalized_to_minimap(&mm.pos, MINIMAP_SIZE).y)
+                None
             }
         };
 
@@ -1304,6 +1329,41 @@ impl<'a> MinimapRenderer<'a> {
         }
     }
 
+    /// Resolve an entity's relation and display color.
+    ///
+    /// In KOTS layout, the team that spawned North is normalized to Alpha (Friendly / Green)
+    /// and South to Bravo (Enemy / Red). No entity is treated as `is_self` or division mate.
+    /// In normal layouts, the perspective is relative to the recording player.
+    fn resolve_entity_relation_and_color(
+        &self,
+        entity_id: &EntityId,
+        effective_friendly_team: Option<i64>,
+    ) -> (Relation, [u8; 3]) {
+        if self.options.kots_layout {
+            if let Some(friendly_team) = effective_friendly_team {
+                let team = self.player_teams.get(entity_id).copied().or_else(|| {
+                    let rel = self.player_relations.get(entity_id)?;
+                    let self_team = self.self_team_id?;
+                    if rel.is_enemy() {
+                        Some(1 - self_team)
+                    } else {
+                        Some(self_team)
+                    }
+                });
+                if let Some(team) = team {
+                    if team == friendly_team {
+                        return (Relation::new(1), TEAM0_COLOR); // North / Alpha = Green
+                    } else {
+                        return (Relation::new(2), TEAM1_COLOR); // South / Bravo = Red
+                    }
+                }
+            }
+        }
+        let relation = self.player_relations.get(entity_id).copied().unwrap_or(Relation::new(2));
+        let is_div = if self.options.kots_layout { false } else { self.division_mates.contains(entity_id) };
+        (relation, ship_color_rgb(relation, is_div))
+    }
+
     /// Produce draw commands for the current frame from controller state.
     pub fn draw_frame(&mut self, controller: &BattleView<'_>) -> Vec<DrawCommand> {
         let Some(map_info) = self.map_info.clone() else {
@@ -1316,6 +1376,22 @@ impl<'a> MinimapRenderer<'a> {
         self.populate_players(controller);
         let mut commands = Vec::new();
 
+        let team0_is_north = if self.options.kots_layout {
+            self.is_team0_north(controller, &map_info)
+        } else {
+            false
+        };
+        let effective_friendly_team: Option<i64> = if self.options.kots_layout {
+            Some(if team0_is_north { 0 } else { 1 })
+        } else {
+            self.self_team_id
+        };
+        let swap = if self.options.kots_layout {
+            !team0_is_north
+        } else {
+            self.self_team_id == Some(1)
+        };
+
         // 1. Score bar
         let max_score = controller.scoring_rules().map(|r| r.team_win_score as i32).unwrap_or(1000);
         if self.options.show_score {
@@ -1323,22 +1399,23 @@ impl<'a> MinimapRenderer<'a> {
             if scores.len() >= 2 || self.options.kots_layout {
                 // For KOTS, we determine North vs South spawn.
                 // If team 0 spawned South, we swap so that team 0 in the UI is ALWAYS North spawn!
-                let swap = if self.options.kots_layout {
-                    let team0_is_north = self.is_team0_north(controller, &map_info);
-                    !team0_is_north
-                } else {
-                    self.self_team_id == Some(1)
-                };
                 let (friendly_idx, enemy_idx) = if swap { (1, 0) } else { (0, 1) };
                 let friendly_score = scores.get(friendly_idx).map(|s| s.score).unwrap_or(0);
                 let enemy_score = scores.get(enemy_idx).map(|s| s.score).unwrap_or(0);
 
+                let advantage_result = if (self.options.show_score_timer || self.options.show_advantage)
+                    && scores.len() >= 2
+                {
+                    Some(self.calculate_team_advantage(controller, swap))
+                } else {
+                    None
+                };
+
                 // Score timers: time to win from cap income
-                let (team0_timer, team1_timer) = if self.options.show_score_timer && scores.len() >= 2 {
-                    let result = self.calculate_team_advantage(controller);
+                let (team0_timer, team1_timer) = if self.options.show_score_timer && let Some(ref result) = advantage_result {
                     let bd = &result.breakdown;
-                    let friendly_pps = if swap { bd.team1_pps } else { bd.team0_pps };
-                    let enemy_pps = if swap { bd.team0_pps } else { bd.team1_pps };
+                    let friendly_pps = bd.team0_pps;
+                    let enemy_pps = bd.team1_pps;
                     (
                         format_score_timer(friendly_score, max_score as i64, friendly_pps),
                         format_score_timer(enemy_score, max_score as i64, enemy_pps),
@@ -1348,8 +1425,7 @@ impl<'a> MinimapRenderer<'a> {
                 };
 
                 // Team advantage indicator
-                let (advantage, advantage_breakdown) = if self.options.show_advantage && scores.len() >= 2 {
-                    let result = self.calculate_team_advantage(controller);
+                let (advantage, advantage_breakdown) = if self.options.show_advantage && let Some(result) = advantage_result {
                     let adv = match result.advantage {
                         crate::advantage::TeamAdvantage::Team0(level) => Some((level, 0u8)),
                         crate::advantage::TeamAdvantage::Team1(level) => Some((level, 1u8)),
@@ -1396,15 +1472,21 @@ impl<'a> MinimapRenderer<'a> {
                     })
                     .unzip();
 
+                let (team0_override, team1_override) = if swap {
+                    (self.options.team1_name.as_deref(), self.options.team0_name.as_deref())
+                } else {
+                    (self.options.team0_name.as_deref(), self.options.team1_name.as_deref())
+                };
+
                 let team0_name = extract_tournament_team_name(
-                    self.options.team0_name.as_deref(),
+                    team0_override,
                     &friendly_names,
                     &friendly_clans,
                     "ALPHA",
                 );
 
                 let team1_name = extract_tournament_team_name(
-                    self.options.team1_name.as_deref(),
+                    team1_override,
                     &enemy_names,
                     &enemy_clans,
                     "BRAVO",
@@ -1444,8 +1526,7 @@ impl<'a> MinimapRenderer<'a> {
         {
             let captured = controller.captured_buffs();
             if !captured.is_empty() {
-                let swap = self.self_team_id == Some(1);
-                let friendly_team = if swap { 1i64 } else { 0i64 };
+                let friendly_team = effective_friendly_team.unwrap_or(0);
 
                 // Aggregate: (team_id, marker_name) -> (count, sorting)
                 let mut buff_counts: HashMap<(i64, String), (u32, i64)> = HashMap::new();
@@ -1495,7 +1576,7 @@ impl<'a> MinimapRenderer<'a> {
                 };
                 let px = map_info.world_to_minimap(pos, MINIMAP_SIZE);
                 let px_radius = (cp.radius / map_info.space_size as f32 * MINIMAP_SIZE as f32) as i32;
-                let color = cap_point_color(cp.team_id, self.self_team_id);
+                let color = cap_point_color(cp.team_id, effective_friendly_team);
                 let is_base = cp
                     .control_point_type
                     .as_ref()
@@ -1514,14 +1595,14 @@ impl<'a> MinimapRenderer<'a> {
                     letter.to_string()
                 };
                 let flag_icon = if is_base {
-                    let key = cap_point_flag_key(cp.team_id, self.self_team_id);
+                    let key = cap_point_flag_key(cp.team_id, effective_friendly_team);
                     self.flag_icons.get(key).cloned()
                 } else {
                     None
                 };
                 let progress = cp.progress.0 as f32;
                 let invader_color = if cp.has_invaders && cp.invader_team >= 0 {
-                    Some(cap_point_color(cp.invader_team, self.self_team_id))
+                    Some(cap_point_color(cp.invader_team, effective_friendly_team))
                 } else {
                     None
                 };
@@ -1546,7 +1627,7 @@ impl<'a> MinimapRenderer<'a> {
                 }
                 let px = map_info.world_to_minimap(bz.position, MINIMAP_SIZE);
                 let px_radius = (bz.radius / map_info.space_size as f32 * MINIMAP_SIZE as f32) as i32;
-                let color = cap_point_color(bz.team_id, self.self_team_id);
+                let color = cap_point_color(bz.team_id, effective_friendly_team);
                 let marker_name = bz.drop_params_id.and_then(|id| {
                     let param = GameParamProvider::game_param_by_id(self.game_params, id)?;
                     let drop = param.drop_data()?;
@@ -1622,10 +1703,10 @@ impl<'a> MinimapRenderer<'a> {
                 // Color the salvo by its owner's actual relation. Skip rather than guess
                 // when the owner is not in the arena roster -- a wrong-colored tracer is
                 // worse than none.
-                let Some(relation) = self.player_relations.get(&owner).copied() else {
+                let (_relation, color) = self.resolve_entity_relation_and_color(&owner, effective_friendly_team);
+                if !self.player_relations.contains_key(&owner) && !self.player_teams.contains_key(&owner) {
                     continue;
-                };
-                let color = ship_color_rgb(relation, self.division_mates.contains(&owner));
+                }
                 // Resolve the salvo's projectile once (all shots share it): caliber sets
                 // the tracer length (larger guns draw longer) and ammo type tints the tip.
                 let salvo_param = GameParamProvider::game_param_by_id(self.game_params, shot.salvo.params_id);
@@ -1745,11 +1826,10 @@ impl<'a> MinimapRenderer<'a> {
                 let owner = torp.torpedo.owner_id;
                 // Color by the owner's actual relation; skip rather than guess when the
                 // owner is not in the arena roster.
-                let Some(relation) = self.player_relations.get(&owner).copied() else {
+                let (_relation, color) = self.resolve_entity_relation_and_color(&owner, effective_friendly_team);
+                if !self.player_relations.contains_key(&owner) && !self.player_teams.contains_key(&owner) {
                     continue;
-                };
-                let is_div = self.division_mates.contains(&owner);
-                let color = ship_color_rgb(relation, is_div);
+                }
                 commands.push(DrawCommand::Torpedo { pos: map_info.world_to_minimap(world, MINIMAP_SIZE), color });
             }
         }
@@ -1787,9 +1867,9 @@ impl<'a> MinimapRenderer<'a> {
                 }
                 let px = map_info.world_to_minimap(building.position, MINIMAP_SIZE);
 
-                // Determine relation (ally/enemy/neutral) relative to recording player
+                // Determine relation (ally/enemy/neutral) relative to recording player / KOTS orientation
                 let team = building.team_id.raw();
-                let is_ally = self.self_team_id.is_some_and(|t| t == team);
+                let is_ally = effective_friendly_team.is_some_and(|t| t == team);
                 let is_neutral = team < 0;
 
                 let relation = if !building.is_alive {
@@ -1811,7 +1891,7 @@ impl<'a> MinimapRenderer<'a> {
                 };
 
                 let color = if building.is_alive {
-                    cap_point_color(building.team_id.raw(), self.self_team_id)
+                    cap_point_color(building.team_id.raw(), effective_friendly_team)
                 } else {
                     [40, 40, 40]
                 };
@@ -1846,6 +1926,11 @@ impl<'a> MinimapRenderer<'a> {
         // Lazily resolve species for non-player vehicle entities (e.g. NPC enemies
         // in Operations) by looking up ship_params_id from shipConfig in GameParams.
         for entity_id in &all_ship_ids {
+            if !self.player_teams.contains_key(entity_id)
+                && let Some(props) = controller.vehicle_props(*entity_id)
+            {
+                self.player_teams.insert(*entity_id, props.team_id() as i64);
+            }
             if !self.player_species.contains_key(entity_id)
                 && let Some(props) = controller.vehicle_props(*entity_id)
             {
@@ -1878,8 +1963,8 @@ impl<'a> MinimapRenderer<'a> {
                 continue;
             }
 
-            let relation = self.player_relations.get(entity_id).copied().unwrap_or(Relation::new(2));
-            let color = ship_color_rgb(relation, self.division_mates.contains(entity_id));
+            let (relation, color) = self.resolve_entity_relation_and_color(entity_id, effective_friendly_team);
+            let is_self = if self.options.kots_layout { false } else { relation.is_self() };
             let species = self.player_species.get(entity_id).cloned();
             let player_name =
                 if self.options.show_player_names { self.player_names.get(entity_id).cloned() } else { None };
@@ -1945,7 +2030,7 @@ impl<'a> MinimapRenderer<'a> {
                         color: Some(color),
                         visibility: ShipVisibility::Visible,
                         opacity: 1.0,
-                        is_self: relation.is_self(),
+                        is_self,
                         player_name: player_name.clone(),
                         ship_name: ship_name.clone(),
                         is_detected_teammate,
@@ -1982,7 +2067,7 @@ impl<'a> MinimapRenderer<'a> {
                     color: None,
                     visibility: ShipVisibility::Undetected,
                     opacity: UNDETECTED_OPACITY,
-                    is_self: relation.is_self(),
+                    is_self: if self.options.kots_layout { false } else { relation.is_self() },
                     player_name: None,
                     ship_name: None,
                     is_detected_teammate: false,
@@ -2013,8 +2098,7 @@ impl<'a> MinimapRenderer<'a> {
                 // targetLocalPos yaw is compass bearing (0=north, CW positive).
                 // Convert to screen math coords: screen_yaw = PI/2 - compass_yaw
                 let screen_yaw = std::f32::consts::FRAC_PI_2 - world_yaw;
-                let relation = self.player_relations.get(entity_id).copied().unwrap_or(Relation::new(2));
-                let color = ship_color_rgb(relation, self.division_mates.contains(entity_id));
+                let (_relation, color) = self.resolve_entity_relation_and_color(entity_id, effective_friendly_team);
                 let scale = self.options.ship_scale * (if self.options.large_elements { 1.1 } else { 1.0 });
                 let icon_radius = (crate::assets::ICON_SIZE as f32 / 2.0) * scale;
                 let length = (icon_radius + 8.0).round() as i32;
@@ -2045,7 +2129,8 @@ impl<'a> MinimapRenderer<'a> {
                     .map(|mm| std::f32::consts::FRAC_PI_2 - mm.heading.0.to_radians())
                     .or_else(|| ship_positions.get(entity_id).map(|t| t.yaw.0))
                     .unwrap_or(0.0);
-                let relation = self.player_relations.get(entity_id).copied().unwrap_or(Relation::new(2));
+                let (relation, _) = self.resolve_entity_relation_and_color(entity_id, effective_friendly_team);
+                let is_self = if self.options.kots_layout { false } else { relation.is_self() };
                 let player_name =
                     if self.options.show_player_names { self.player_names.get(entity_id).cloned() } else { None };
                 let ship_name =
@@ -2056,7 +2141,7 @@ impl<'a> MinimapRenderer<'a> {
                     yaw,
                     species,
                     color: None,
-                    is_self: relation.is_self(),
+                    is_self,
                     player_name,
                     ship_name,
                 });
@@ -2070,13 +2155,25 @@ impl<'a> MinimapRenderer<'a> {
                 let px = map_info.world_to_minimap(plane.position.to_world_pos(), MINIMAP_SIZE);
 
                 let info = self.squadron_info.get(&plane_id);
-                // Use player_relations to determine if the plane is enemy.
+                // Use player_relations / effective_friendly_team to determine if the plane is enemy.
                 // PlaneId::owner_id() extracts the ship entity_id from the packed plane ID.
                 let owner_entity = plane.plane_id.owner_id();
-                let is_enemy = self.player_relations.get(&owner_entity).map(|r| r.is_enemy()).unwrap_or_else(|| {
-                    // Fallback: compare plane's absolute team_id against self player's team
-                    self.self_team_id.map(|self_team| plane.team_id != self_team as u32).unwrap_or(false)
-                });
+                let is_enemy = if self.options.kots_layout {
+                    if let Some(friendly_team) = effective_friendly_team {
+                        if let Some(&team) = self.player_teams.get(&owner_entity) {
+                            team != friendly_team
+                        } else {
+                            plane.team_id != friendly_team as u32
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    self.player_relations.get(&owner_entity).map(|r| r.is_enemy()).unwrap_or_else(|| {
+                        // Fallback: compare plane's absolute team_id against self player's team
+                        self.self_team_id.map(|self_team| plane.team_id != self_team as u32).unwrap_or(false)
+                    })
+                };
 
                 let icon_base = info.map(|i| i.icon_base.as_str()).unwrap_or("fighter");
                 let icon_dir = info.map(|i| i.icon_dir).unwrap_or("consumables");
@@ -2142,7 +2239,7 @@ impl<'a> MinimapRenderer<'a> {
                     continue;
                 };
 
-                let relation = self.player_relations.get(entity_id).copied().unwrap_or(Relation::new(2));
+                let (relation, _) = self.resolve_entity_relation_and_color(entity_id, effective_friendly_team);
                 let is_friendly = relation.is_self() || relation.is_ally();
 
                 // Check if this entity has an HP bar rendered
@@ -2218,7 +2315,11 @@ impl<'a> MinimapRenderer<'a> {
                     continue;
                 };
                 let player_name = player_name.clone();
-                let is_self = self.player_relations.get(entity_id).map(|r| r.is_self()).unwrap_or(false);
+                let is_self = if self.options.kots_layout {
+                    false
+                } else {
+                    self.player_relations.get(entity_id).map(|r| r.is_self()).unwrap_or(false)
+                };
 
                 let Some(&ship_param_id) = self.ship_param_ids.get(entity_id) else {
                     continue;
@@ -2404,19 +2505,23 @@ impl<'a> MinimapRenderer<'a> {
                         self.player_names.get(&kill.killer).cloned().unwrap_or_else(|| format!("#{}", kill.killer));
                     let victim_name =
                         self.player_names.get(&kill.victim).cloned().unwrap_or_else(|| format!("#{}", kill.victim));
-                    let killer_relation = self.player_relations.get(&kill.killer).copied().unwrap_or(Relation::new(2));
-                    let victim_relation = self.player_relations.get(&kill.victim).copied().unwrap_or(Relation::new(2));
+                    let (killer_relation, killer_color) =
+                        self.resolve_entity_relation_and_color(&kill.killer, effective_friendly_team);
+                    let (victim_relation, victim_color) =
+                        self.resolve_entity_relation_and_color(&kill.victim, effective_friendly_team);
+                    let killer_is_friendly = killer_relation.is_self() || killer_relation.is_ally();
+                    let victim_is_friendly = victim_relation.is_self() || victim_relation.is_ally();
                     recent_kills.push(KillFeedEntry {
                         killer_name,
                         killer_species: self.player_species.get(&kill.killer).cloned(),
                         killer_ship_name: self.ship_display_names.get(&kill.killer).cloned(),
-                        killer_color: ship_color_rgb(killer_relation, self.division_mates.contains(&kill.killer)),
-                        killer_is_friendly: killer_relation.is_self() || killer_relation.is_ally(),
+                        killer_color,
+                        killer_is_friendly,
                         victim_name,
                         victim_species: self.player_species.get(&kill.victim).cloned(),
                         victim_ship_name: self.ship_display_names.get(&kill.victim).cloned(),
-                        victim_color: ship_color_rgb(victim_relation, self.division_mates.contains(&kill.victim)),
-                        victim_is_friendly: victim_relation.is_self() || victim_relation.is_ally(),
+                        victim_color,
+                        victim_is_friendly,
                         cause: kill.cause.clone(),
                     });
                     if recent_kills.len() >= 5 {
@@ -2453,8 +2558,16 @@ impl<'a> MinimapRenderer<'a> {
                     1.0
                 };
                 let sender_entity = msg.player.as_ref().map(|p| p.initial_state().entity_id());
-                let is_div_mate = sender_entity.map(|eid| self.division_mates.contains(&eid)).unwrap_or(false);
-                let team_color = msg.sender_relation.map(|r| ship_color_rgb(r, is_div_mate)).unwrap_or([255, 255, 255]);
+                let is_div_mate = if self.options.kots_layout {
+                    false
+                } else {
+                    sender_entity.map(|eid| self.division_mates.contains(&eid)).unwrap_or(false)
+                };
+                let team_color = if let Some(eid) = sender_entity {
+                    self.resolve_entity_relation_and_color(&eid, effective_friendly_team).1
+                } else {
+                    msg.sender_relation.map(|r| ship_color_rgb(r, is_div_mate)).unwrap_or([255, 255, 255])
+                };
                 let (clan_tag, clan_color, ship_species, ship_name) = if let Some(ref player) = msg.player {
                     let state = player.initial_state();
                     let eid = state.entity_id();
@@ -2539,7 +2652,21 @@ impl<'a> MinimapRenderer<'a> {
 
         // 11. Battle result overlay (shown as soon as winner is known)
         if let Some(wt) = controller.winning_team() {
-            let (result, color, custom_subtitle) = if self.has_merged_perspectives {
+            let (result, color, custom_subtitle) = if self.options.kots_layout {
+                let friendly_team = if team0_is_north { 0i8 } else { 1i8 };
+                let enemy_team = 1 - friendly_team;
+                if wt == friendly_team {
+                    let name = self.team0_name_resolved.as_deref().unwrap_or("ALPHA");
+                    let sub = if name == "ALPHA" { "ALPHA TEAM WON".to_string() } else { format!("{name} WON") };
+                    (BattleResult::Victory, [76, 232, 170], Some(sub))
+                } else if wt == enemy_team {
+                    let name = self.team1_name_resolved.as_deref().unwrap_or("BRAVO");
+                    let sub = if name == "BRAVO" { "BRAVO TEAM WON".to_string() } else { format!("{name} WON") };
+                    (BattleResult::Victory, [254, 77, 42], Some(sub))
+                } else {
+                    (BattleResult::Draw, [255, 165, 0], Some("MATCH DRAW".to_string()))
+                }
+            } else if self.has_merged_perspectives {
                 match wt {
                     0 => (BattleResult::Victory, [76, 232, 170], Some("ALPHA TEAM WON".to_string())),
                     1 => (BattleResult::Victory, [254, 77, 42], Some("BRAVO TEAM WON".to_string())),
@@ -2624,15 +2751,21 @@ impl<'a> MinimapRenderer<'a> {
                     })
                     .unzip();
 
+                let (team0_override, team1_override) = if swap {
+                    (self.options.team1_name.as_deref(), self.options.team0_name.as_deref())
+                } else {
+                    (self.options.team0_name.as_deref(), self.options.team1_name.as_deref())
+                };
+
                 let team0_name = extract_tournament_team_name(
-                    self.options.team0_name.as_deref(),
+                    team0_override,
                     &friendly_names,
                     &friendly_clans,
                     "ALPHA",
                 );
 
                 let team1_name = extract_tournament_team_name(
-                    self.options.team1_name.as_deref(),
+                    team1_override,
                     &enemy_names,
                     &enemy_clans,
                     "BRAVO",
@@ -2641,7 +2774,7 @@ impl<'a> MinimapRenderer<'a> {
                 self.team0_name_resolved = Some(team0_name.clone());
                 self.team1_name_resolved = Some(team1_name.clone());
 
-                let team_advantage_result = self.calculate_team_advantage(controller);
+                let team_advantage_result = self.calculate_team_advantage(controller, swap);
                 let raw_leverage = 1.0 + (team_advantage_result.breakdown.total.0 - team_advantage_result.breakdown.total.1).abs() / 100.0;
                 let leverage_index = raw_leverage.clamp(1.0, 2.5);
 
@@ -2933,7 +3066,7 @@ impl<'a> MinimapRenderer<'a> {
                         locked
                     } else {
                         let eval_clock = death_clock.unwrap_or(clock);
-                        let team_advantage_result = self.calculate_team_advantage(controller);
+                        let team_advantage_result = self.calculate_team_advantage(controller, swap);
                         let raw_leverage = 1.0 + (team_advantage_result.breakdown.total.0 - team_advantage_result.breakdown.total.1).abs() / 100.0;
                         let _leverage_index = raw_leverage.clamp(1.0, 2.5);
 
@@ -2964,7 +3097,7 @@ impl<'a> MinimapRenderer<'a> {
                         combined
                     }
                 } else {
-                    let team_advantage_result = self.calculate_team_advantage(controller);
+                    let team_advantage_result = self.calculate_team_advantage(controller, swap);
                     let raw_leverage = 1.0 + (team_advantage_result.breakdown.total.0 - team_advantage_result.breakdown.total.1).abs() / 100.0;
                     let leverage_index = raw_leverage.clamp(1.0, 2.5);
 
@@ -3138,21 +3271,25 @@ impl<'a> MinimapRenderer<'a> {
                         self.player_names.get(&kill.killer).cloned().unwrap_or_else(|| format!("#{}", kill.killer));
                     let victim_name =
                         self.player_names.get(&kill.victim).cloned().unwrap_or_else(|| format!("#{}", kill.victim));
-                    let killer_relation = self.player_relations.get(&kill.killer).copied().unwrap_or(Relation::new(2));
-                    let victim_relation = self.player_relations.get(&kill.victim).copied().unwrap_or(Relation::new(2));
+                    let (killer_relation, killer_color) =
+                        self.resolve_entity_relation_and_color(&kill.killer, effective_friendly_team);
+                    let (victim_relation, victim_color) =
+                        self.resolve_entity_relation_and_color(&kill.victim, effective_friendly_team);
+                    let killer_is_friendly = killer_relation.is_self() || killer_relation.is_ally();
+                    let victim_is_friendly = victim_relation.is_self() || victim_relation.is_ally();
                     activity_entries.push(ActivityFeedEntry {
                         clock: kill.clock,
                         kind: ActivityFeedKind::Kill(KillFeedEntry {
                             killer_name,
                             killer_species: self.player_species.get(&kill.killer).cloned(),
                             killer_ship_name: self.ship_display_names.get(&kill.killer).cloned(),
-                            killer_color: ship_color_rgb(killer_relation, self.division_mates.contains(&kill.killer)),
-                            killer_is_friendly: killer_relation.is_self() || killer_relation.is_ally(),
+                            killer_color,
+                            killer_is_friendly,
                             victim_name,
                             victim_species: self.player_species.get(&kill.victim).cloned(),
                             victim_ship_name: self.ship_display_names.get(&kill.victim).cloned(),
-                            victim_color: ship_color_rgb(victim_relation, self.division_mates.contains(&kill.victim)),
-                            victim_is_friendly: victim_relation.is_self() || victim_relation.is_ally(),
+                            victim_color,
+                            victim_is_friendly,
                             cause: kill.cause.clone(),
                         }),
                     });
@@ -3165,9 +3302,16 @@ impl<'a> MinimapRenderer<'a> {
                         continue;
                     }
                     let sender_entity = msg.player.as_ref().map(|p| p.initial_state().entity_id());
-                    let is_div_mate = sender_entity.map(|eid| self.division_mates.contains(&eid)).unwrap_or(false);
-                    let team_color =
-                        msg.sender_relation.map(|r| ship_color_rgb(r, is_div_mate)).unwrap_or([255, 255, 255]);
+                    let is_div_mate = if self.options.kots_layout {
+                        false
+                    } else {
+                        sender_entity.map(|eid| self.division_mates.contains(&eid)).unwrap_or(false)
+                    };
+                    let team_color = if let Some(eid) = sender_entity {
+                        self.resolve_entity_relation_and_color(&eid, effective_friendly_team).1
+                    } else {
+                        msg.sender_relation.map(|r| ship_color_rgb(r, is_div_mate)).unwrap_or([255, 255, 255])
+                    };
                     let (clan_tag, clan_color, ship_species, ship_name) = if let Some(ref player) = msg.player {
                         let state = player.initial_state();
                         let eid = state.entity_id();
@@ -3294,7 +3438,7 @@ impl<'a> MinimapRenderer<'a> {
 
                 // Sabermetric Win Probability Added (WPA) calculation:
                 // Leverage index Lt based on current advantage gap
-                let team_advantage_result = self.calculate_team_advantage(controller);
+                let team_advantage_result = self.calculate_team_advantage(controller, swap);
                 let raw_leverage = 1.0 + (team_advantage_result.breakdown.total.0 - team_advantage_result.breakdown.total.1).abs() / 100.0;
                 let leverage_index = raw_leverage.clamp(1.0, 2.5);
 
@@ -4142,5 +4286,148 @@ mod tournament_team_extraction_tests {
             extract_tournament_team_name(Some("团子大家族（CL）"), &t1_names, &t1_clans, "ALPHA"),
             "[CL]"
         );
+    }
+}
+
+#[cfg(test)]
+mod kots_normalization_tests {
+    use super::*;
+    use crate::renderer::RenderOptions;
+    use wows_replays::types::{EntityId, Relation};
+    use wowsunpack::data::Version;
+    use wowsunpack::game_params::provider::GameMetadataProvider;
+
+    #[test]
+    fn test_kots_relation_resolution_north_is_friendly() {
+        let gp = GameMetadataProvider::from_params_no_specs(Vec::new()).unwrap();
+        let version = Version::default();
+        let mut options = RenderOptions::default();
+        options.kots_layout = true;
+
+        let mut renderer = MinimapRenderer::new(None, &gp, version, options);
+
+        // Player 100 on team 0, Player 200 on team 1
+        let p_team0 = EntityId::from(100);
+        let p_team1 = EntityId::from(200);
+
+        renderer.player_teams.insert(p_team0, 0);
+        renderer.player_teams.insert(p_team1, 1);
+
+        // Case A: Team 0 is North (effective_friendly_team = Some(0))
+        // Team 0 should be Relation::new(1) (Ally) and TEAM0_COLOR (Green)
+        // Team 1 should be Relation::new(2) (Enemy) and TEAM1_COLOR (Red)
+        let (rel0, col0) = renderer.resolve_entity_relation_and_color(&p_team0, Some(0));
+        assert!(rel0.is_ally());
+        assert!(!rel0.is_self());
+        assert_eq!(col0, TEAM0_COLOR);
+
+        let (rel1, col1) = renderer.resolve_entity_relation_and_color(&p_team1, Some(0));
+        assert!(rel1.is_enemy());
+        assert_eq!(col1, TEAM1_COLOR);
+
+        // Case B: Team 1 is North (effective_friendly_team = Some(1))
+        // Team 1 should be Relation::new(1) (Ally) and TEAM0_COLOR (Green)
+        // Team 0 should be Relation::new(2) (Enemy) and TEAM1_COLOR (Red)
+        let (rel0_b, col0_b) = renderer.resolve_entity_relation_and_color(&p_team0, Some(1));
+        assert!(rel0_b.is_enemy());
+        assert_eq!(col0_b, TEAM1_COLOR);
+
+        let (rel1_b, col1_b) = renderer.resolve_entity_relation_and_color(&p_team1, Some(1));
+        assert!(rel1_b.is_ally());
+        assert!(!rel1_b.is_self());
+        assert_eq!(col1_b, TEAM0_COLOR);
+    }
+
+    #[test]
+    fn test_kots_fallback_to_player_relations_when_team_id_missing() {
+        let gp = GameMetadataProvider::from_params_no_specs(Vec::new()).unwrap();
+        let version = Version::default();
+        let mut options = RenderOptions::default();
+        options.kots_layout = true;
+
+        let mut renderer = MinimapRenderer::new(None, &gp, version, options);
+        // Primary replay recorded from South spawn (self_team_id = 1)
+        renderer.self_team_id = Some(1);
+
+        let p_south = EntityId::from(101);
+        let p_north = EntityId::from(201);
+
+        // From perspective of recording client (South spawn):
+        // p_south is Ally (Relation 1), p_north is Enemy (Relation 2)
+        renderer.player_relations.insert(p_south, Relation::new(1));
+        renderer.player_relations.insert(p_north, Relation::new(2));
+
+        // North spawn is friendly in KOTS:
+        // effective_friendly_team is North (team 0).
+        // p_north (Enemy of self_team 1) => team 0 => matches friendly_team (North) => Green!
+        // p_south (Ally of self_team 1) => team 1 => Enemy of friendly_team => Red!
+        let (rel_north, col_north) = renderer.resolve_entity_relation_and_color(&p_north, Some(0));
+        assert!(rel_north.is_ally());
+        assert!(!rel_north.is_self());
+        assert_eq!(col_north, TEAM0_COLOR);
+
+        let (rel_south, col_south) = renderer.resolve_entity_relation_and_color(&p_south, Some(0));
+        assert!(rel_south.is_enemy());
+        assert_eq!(col_south, TEAM1_COLOR);
+    }
+
+    #[test]
+    fn test_standard_layout_preserves_recording_player_perspective() {
+        let gp = GameMetadataProvider::from_params_no_specs(Vec::new()).unwrap();
+        let version = Version::default();
+        let mut options = RenderOptions::default();
+        options.kots_layout = false;
+
+        let mut renderer = MinimapRenderer::new(None, &gp, version, options);
+        renderer.self_team_id = Some(1);
+
+        let p_self = EntityId::from(101);
+        let p_enemy = EntityId::from(201);
+
+        renderer.player_relations.insert(p_self, Relation::new(0)); // Self
+        renderer.player_relations.insert(p_enemy, Relation::new(2)); // Enemy
+
+        let (rel_self, col_self) = renderer.resolve_entity_relation_and_color(&p_self, Some(1));
+        assert!(rel_self.is_self());
+        assert_eq!(col_self, [255, 255, 255]); // Self color is white
+
+        let (rel_enemy, col_enemy) = renderer.resolve_entity_relation_and_color(&p_enemy, Some(1));
+        assert!(rel_enemy.is_enemy());
+        assert_eq!(col_enemy, TEAM1_COLOR); // Enemy color is red
+    }
+
+    #[test]
+    fn test_kots_team_name_overrides_follow_game_teams() {
+        // When Team 0 is "[RAIN]" and Team 1 is "[OMNI]"
+        let opt_t0 = Some("[RAIN]".to_string());
+        let opt_t1 = Some("[OMNI]".to_string());
+
+        // Case A: Team 0 spawns North (swap = false)
+        // North team should get Team 0's override "[RAIN]"
+        // South team should get Team 1's override "[OMNI]"
+        let swap_a = false;
+        let (north_override_a, south_override_a) = if swap_a {
+            (opt_t1.as_deref(), opt_t0.as_deref())
+        } else {
+            (opt_t0.as_deref(), opt_t1.as_deref())
+        };
+        let t0_name_a = extract_tournament_team_name(north_override_a, &[], &[], "ALPHA");
+        let t1_name_a = extract_tournament_team_name(south_override_a, &[], &[], "BRAVO");
+        assert_eq!(t0_name_a, "[RAIN]");
+        assert_eq!(t1_name_a, "[OMNI]");
+
+        // Case B: Team 0 spawns South (swap = true, e.g. Okinawa)
+        // North team (Game Team 1) should get Team 1's override "[OMNI]"
+        // South team (Game Team 0) should get Team 0's override "[RAIN]"
+        let swap_b = true;
+        let (north_override_b, south_override_b) = if swap_b {
+            (opt_t1.as_deref(), opt_t0.as_deref())
+        } else {
+            (opt_t0.as_deref(), opt_t1.as_deref())
+        };
+        let t0_name_b = extract_tournament_team_name(north_override_b, &[], &[], "ALPHA");
+        let t1_name_b = extract_tournament_team_name(south_override_b, &[], &[], "BRAVO");
+        assert_eq!(t0_name_b, "[OMNI]");
+        assert_eq!(t1_name_b, "[RAIN]");
     }
 }
