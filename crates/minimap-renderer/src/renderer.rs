@@ -1310,6 +1310,8 @@ impl<'a> MinimapRenderer<'a> {
             }
             let eid = player.initial_state().entity_id();
             if let Some(y) = get_player_y(&eid) {
+                let name = self.player_names.get(&eid).map(|s| s.as_str()).unwrap_or(player.initial_state().username());
+                tracing::debug!(player = %name, team_id = %player.initial_state().team_id(), y = %y, "Player spawn position");
                 if player.initial_state().team_id() == 0 {
                     sum0 += y;
                     count0 += 1;
@@ -1321,10 +1323,14 @@ impl<'a> MinimapRenderer<'a> {
         }
 
         if count0 > 0 && count1 > 0 {
-            let is_north = (sum0 / count0 as f32) < (sum1 / count1 as f32);
+            let avg0 = sum0 / count0 as f32;
+            let avg1 = sum1 / count1 as f32;
+            let is_north = avg0 < avg1;
+            tracing::debug!(count0, count1, avg0, avg1, is_north, "is_team0_north calculated from positions");
             self.team0_is_north = Some(is_north);
             is_north
         } else {
+            tracing::warn!(count0, count1, "is_team0_north had 0 counts! Falling back to true");
             true
         }
     }
@@ -1392,6 +1398,64 @@ impl<'a> MinimapRenderer<'a> {
             self.self_team_id == Some(1)
         };
 
+        let (friendly_game_team, enemy_game_team) = if swap { (1, 0) } else { (0, 1) };
+
+        if self.team0_name_resolved.is_none() || self.team1_name_resolved.is_none() {
+            let (friendly_names, friendly_clans): (Vec<&str>, Vec<&str>) = controller
+                .player_entities()
+                .values()
+                .filter(|p| {
+                    let is_spec = p.relation().value() == 3
+                        || p.vehicle().id().raw() == 0
+                        || (p.initial_state().team_id() != 0 && p.initial_state().team_id() != 1);
+                    if is_spec { return false; }
+                    p.initial_state().team_id() == friendly_game_team
+                })
+                .map(|p| {
+                    let eid = p.initial_state().entity_id();
+                    let name = self.player_names.get(&eid).map(|s| s.as_str()).unwrap_or(p.initial_state().username());
+                    let clan = self.player_clan_tags.get(&eid).map(|s| s.as_str()).unwrap_or(p.initial_state().clan());
+                    (name, clan)
+                })
+                .unzip();
+
+            let (enemy_names, enemy_clans): (Vec<&str>, Vec<&str>) = controller
+                .player_entities()
+                .values()
+                .filter(|p| {
+                    let is_spec = p.relation().value() == 3
+                        || p.vehicle().id().raw() == 0
+                        || (p.initial_state().team_id() != 0 && p.initial_state().team_id() != 1);
+                    if is_spec { return false; }
+                    p.initial_state().team_id() == enemy_game_team
+                })
+                .map(|p| {
+                    let eid = p.initial_state().entity_id();
+                    let name = self.player_names.get(&eid).map(|s| s.as_str()).unwrap_or(p.initial_state().username());
+                    let clan = self.player_clan_tags.get(&eid).map(|s| s.as_str()).unwrap_or(p.initial_state().clan());
+                    (name, clan)
+                })
+                .unzip();
+
+            let (t0_res, t1_res) = resolve_kots_team_names(
+                self.options.team0_name.as_deref(),
+                self.options.team1_name.as_deref(),
+                &friendly_names,
+                &friendly_clans,
+                &enemy_names,
+                &enemy_clans,
+                swap,
+            );
+
+            if !friendly_names.is_empty() || !enemy_names.is_empty() {
+                self.team0_name_resolved = Some(t0_res);
+                self.team1_name_resolved = Some(t1_res);
+            }
+        }
+
+        let team0_name = self.team0_name_resolved.clone().unwrap_or_else(|| "[ALPHA]".to_string());
+        let team1_name = self.team1_name_resolved.clone().unwrap_or_else(|| "[BRAVO]".to_string());
+
         // 1. Score bar
         let max_score = controller.scoring_rules().map(|r| r.team_win_score as i32).unwrap_or(1000);
         if self.options.show_score {
@@ -1436,65 +1500,6 @@ impl<'a> MinimapRenderer<'a> {
                     (None, None)
                 };
 
-                let (friendly_names, friendly_clans): (Vec<&str>, Vec<&str>) = controller
-                    .player_entities()
-                    .values()
-                    .filter(|p| {
-                        let is_spec = p.relation().value() == 3
-                            || p.vehicle().id().raw() == 0
-                            || (p.initial_state().team_id() != 0 && p.initial_state().team_id() != 1);
-                        if is_spec { return false; }
-                        if swap { p.initial_state().team_id() == 1 } else { p.initial_state().team_id() == 0 }
-                    })
-                    .map(|p| {
-                        let eid = p.initial_state().entity_id();
-                        let name = self.player_names.get(&eid).map(|s| s.as_str()).unwrap_or(p.initial_state().username());
-                        let clan = self.player_clan_tags.get(&eid).map(|s| s.as_str()).unwrap_or(p.initial_state().clan());
-                        (name, clan)
-                    })
-                    .unzip();
-
-                let (enemy_names, enemy_clans): (Vec<&str>, Vec<&str>) = controller
-                    .player_entities()
-                    .values()
-                    .filter(|p| {
-                        let is_spec = p.relation().value() == 3
-                            || p.vehicle().id().raw() == 0
-                            || (p.initial_state().team_id() != 0 && p.initial_state().team_id() != 1);
-                        if is_spec { return false; }
-                        if swap { p.initial_state().team_id() == 0 } else { p.initial_state().team_id() == 1 }
-                    })
-                    .map(|p| {
-                        let eid = p.initial_state().entity_id();
-                        let name = self.player_names.get(&eid).map(|s| s.as_str()).unwrap_or(p.initial_state().username());
-                        let clan = self.player_clan_tags.get(&eid).map(|s| s.as_str()).unwrap_or(p.initial_state().clan());
-                        (name, clan)
-                    })
-                    .unzip();
-
-                let (team0_override, team1_override) = if swap {
-                    (self.options.team1_name.as_deref(), self.options.team0_name.as_deref())
-                } else {
-                    (self.options.team0_name.as_deref(), self.options.team1_name.as_deref())
-                };
-
-                let team0_name = extract_tournament_team_name(
-                    team0_override,
-                    &friendly_names,
-                    &friendly_clans,
-                    "ALPHA",
-                );
-
-                let team1_name = extract_tournament_team_name(
-                    team1_override,
-                    &enemy_names,
-                    &enemy_clans,
-                    "BRAVO",
-                );
-
-                self.team0_name_resolved = Some(team0_name.clone());
-                self.team1_name_resolved = Some(team1_name.clone());
-
                 commands.push(DrawCommand::ScoreBar {
                     team0: friendly_score as i32,
                     team1: enemy_score as i32,
@@ -1504,8 +1509,8 @@ impl<'a> MinimapRenderer<'a> {
                     team0_timer,
                     team1_timer,
                     advantage,
-                    team0_name: Some(team0_name),
-                    team1_name: Some(team1_name),
+                    team0_name: Some(team0_name.clone()),
+                    team1_name: Some(team1_name.clone()),
                 });
 
                 if let Some(breakdown) = advantage_breakdown {
@@ -2711,69 +2716,6 @@ impl<'a> MinimapRenderer<'a> {
             };
 
             if self.options.kots_layout {
-                let swap = {
-                    let team0_is_north = self.is_team0_north(controller, &map_info);
-                    !team0_is_north
-                };
-                let (friendly_names, friendly_clans): (Vec<&str>, Vec<&str>) = controller
-                    .player_entities()
-                    .values()
-                    .filter(|p| {
-                        let is_spec = p.relation().value() == 3
-                            || p.vehicle().id().raw() == 0
-                            || (p.initial_state().team_id() != 0 && p.initial_state().team_id() != 1);
-                        if is_spec { return false; }
-                        if swap { p.initial_state().team_id() == 1 } else { p.initial_state().team_id() == 0 }
-                    })
-                    .map(|p| {
-                        let eid = p.initial_state().entity_id();
-                        let name = self.player_names.get(&eid).map(|s| s.as_str()).unwrap_or(p.initial_state().username());
-                        let clan = self.player_clan_tags.get(&eid).map(|s| s.as_str()).unwrap_or(p.initial_state().clan());
-                        (name, clan)
-                    })
-                    .unzip();
-
-                let (enemy_names, enemy_clans): (Vec<&str>, Vec<&str>) = controller
-                    .player_entities()
-                    .values()
-                    .filter(|p| {
-                        let is_spec = p.relation().value() == 3
-                            || p.vehicle().id().raw() == 0
-                            || (p.initial_state().team_id() != 0 && p.initial_state().team_id() != 1);
-                        if is_spec { return false; }
-                        if swap { p.initial_state().team_id() == 0 } else { p.initial_state().team_id() == 1 }
-                    })
-                    .map(|p| {
-                        let eid = p.initial_state().entity_id();
-                        let name = self.player_names.get(&eid).map(|s| s.as_str()).unwrap_or(p.initial_state().username());
-                        let clan = self.player_clan_tags.get(&eid).map(|s| s.as_str()).unwrap_or(p.initial_state().clan());
-                        (name, clan)
-                    })
-                    .unzip();
-
-                let (team0_override, team1_override) = if swap {
-                    (self.options.team1_name.as_deref(), self.options.team0_name.as_deref())
-                } else {
-                    (self.options.team0_name.as_deref(), self.options.team1_name.as_deref())
-                };
-
-                let team0_name = extract_tournament_team_name(
-                    team0_override,
-                    &friendly_names,
-                    &friendly_clans,
-                    "ALPHA",
-                );
-
-                let team1_name = extract_tournament_team_name(
-                    team1_override,
-                    &enemy_names,
-                    &enemy_clans,
-                    "BRAVO",
-                );
-
-                self.team0_name_resolved = Some(team0_name.clone());
-                self.team1_name_resolved = Some(team1_name.clone());
-
                 let team_advantage_result = self.calculate_team_advantage(controller, swap);
                 let raw_leverage = 1.0 + (team_advantage_result.breakdown.total.0 - team_advantage_result.breakdown.total.1).abs() / 100.0;
                 let leverage_index = raw_leverage.clamp(1.0, 2.5);
@@ -4060,6 +4002,148 @@ fn extract_tournament_team_name(
     format_team_tag(default_name)
 }
 
+fn normalize_for_match(s: &str) -> String {
+    let clean = crate::roster::clean_tag(s);
+    let trimmed = clean.trim_matches(|c: char| !c.is_alphanumeric());
+    trimmed.to_ascii_uppercase()
+}
+
+fn score_team_match(
+    ovr: &str,
+    detected_name: &str,
+    combatant_names: &[&str],
+    combatant_clans: &[&str],
+) -> usize {
+    let norm_ovr = normalize_for_match(ovr);
+    if norm_ovr.is_empty() {
+        return 0;
+    }
+
+    let mut score = 0usize;
+
+    // 1. Match against auto-detected tournament team name
+    let norm_det = normalize_for_match(detected_name);
+    if !norm_det.is_empty() {
+        if norm_ovr == norm_det {
+            score += 100;
+        } else if norm_ovr.len() >= 3 && (norm_det.contains(&norm_ovr) || norm_ovr.contains(&norm_det)) {
+            score += 50;
+        }
+    }
+
+    // 2. Match against combatant clans
+    for &clan in combatant_clans {
+        let norm_clan = normalize_for_match(clan);
+        if !norm_clan.is_empty() {
+            if norm_clan == norm_ovr {
+                score += 10;
+            } else if norm_ovr.len() >= 3 && norm_clan.contains(&norm_ovr) {
+                score += 5;
+            }
+        }
+    }
+
+    // 3. Match against combatant usernames / prefixes / Chinese team recognition
+    for &name in combatant_names {
+        let trimmed = name.trim();
+        let upper_name = trimmed.to_ascii_uppercase();
+
+        if upper_name.starts_with(&format!("{}_", norm_ovr))
+            || upper_name.starts_with(&format!("{}-", norm_ovr))
+            || upper_name.starts_with(&format!("[{}]", norm_ovr))
+            || upper_name.starts_with(&format!("[-{}-]", norm_ovr))
+        {
+            score += 8;
+        } else if norm_ovr.len() >= 3 && upper_name.starts_with(&norm_ovr) {
+            score += 5;
+        }
+
+        // Chinese tournament name matching
+        if let Some(cn_team) = match_cn_team_from_username(trimmed) {
+            if normalize_for_match(cn_team) == norm_ovr {
+                score += 10;
+            }
+        }
+    }
+
+    score
+}
+
+pub fn resolve_kots_team_names(
+    opt_t0: Option<&str>,
+    opt_t1: Option<&str>,
+    friendly_names: &[&str],
+    friendly_clans: &[&str],
+    enemy_names: &[&str],
+    enemy_clans: &[&str],
+    swap: bool,
+) -> (String, String) {
+    let detected_friendly = extract_tournament_team_name(None, friendly_names, friendly_clans, "ALPHA");
+    let detected_enemy = extract_tournament_team_name(None, enemy_names, enemy_clans, "BRAVO");
+
+    let t0 = opt_t0.map(|s| s.trim()).filter(|s| !s.is_empty());
+    let t1 = opt_t1.map(|s| s.trim()).filter(|s| !s.is_empty());
+
+    match (t0, t1) {
+        (Some(o0), Some(o1)) => {
+            let s0_f = score_team_match(o0, &detected_friendly, friendly_names, friendly_clans);
+            let s0_e = score_team_match(o0, &detected_enemy, enemy_names, enemy_clans);
+            let s1_f = score_team_match(o1, &detected_friendly, friendly_names, friendly_clans);
+            let s1_e = score_team_match(o1, &detected_enemy, enemy_names, enemy_clans);
+
+            let score_direct = s0_f + s1_e;
+            let score_swapped = s1_f + s0_e;
+
+            if score_direct > score_swapped {
+                (format_team_tag(o0), format_team_tag(o1))
+            } else if score_swapped > score_direct {
+                (format_team_tag(o1), format_team_tag(o0))
+            } else {
+                // Scores are tied (e.g. arbitrary non-matching overrides or empty rosters).
+                // Fall back to game team positional assignment.
+                if swap {
+                    (format_team_tag(o1), format_team_tag(o0))
+                } else {
+                    (format_team_tag(o0), format_team_tag(o1))
+                }
+            }
+        }
+        (Some(o0), None) => {
+            let s0_f = score_team_match(o0, &detected_friendly, friendly_names, friendly_clans);
+            let s0_e = score_team_match(o0, &detected_enemy, enemy_names, enemy_clans);
+
+            if s0_f > s0_e {
+                (format_team_tag(o0), detected_enemy)
+            } else if s0_e > s0_f {
+                (detected_friendly, format_team_tag(o0))
+            } else {
+                if swap {
+                    (detected_friendly, format_team_tag(o0))
+                } else {
+                    (format_team_tag(o0), detected_enemy)
+                }
+            }
+        }
+        (None, Some(o1)) => {
+            let s1_f = score_team_match(o1, &detected_friendly, friendly_names, friendly_clans);
+            let s1_e = score_team_match(o1, &detected_enemy, enemy_names, enemy_clans);
+
+            if s1_e > s1_f {
+                (detected_friendly, format_team_tag(o1))
+            } else if s1_f > s1_e {
+                (format_team_tag(o1), detected_enemy)
+            } else {
+                if swap {
+                    (format_team_tag(o1), detected_enemy)
+                } else {
+                    (detected_friendly, format_team_tag(o1))
+                }
+            }
+        }
+        (None, None) => (detected_friendly, detected_enemy),
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::SampledPos;
@@ -4398,36 +4482,104 @@ mod kots_normalization_tests {
 
     #[test]
     fn test_kots_team_name_overrides_follow_game_teams() {
-        // When Team 0 is "[RAIN]" and Team 1 is "[OMNI]"
-        let opt_t0 = Some("[RAIN]".to_string());
-        let opt_t1 = Some("[OMNI]".to_string());
+        // When Team 0 is "[RAIN]" and Team 1 is "[OMNI]" with no combatants (scores tie)
+        let opt_t0 = Some("[RAIN]");
+        let opt_t1 = Some("[OMNI]");
 
         // Case A: Team 0 spawns North (swap = false)
-        // North team should get Team 0's override "[RAIN]"
-        // South team should get Team 1's override "[OMNI]"
-        let swap_a = false;
-        let (north_override_a, south_override_a) = if swap_a {
-            (opt_t1.as_deref(), opt_t0.as_deref())
-        } else {
-            (opt_t0.as_deref(), opt_t1.as_deref())
-        };
-        let t0_name_a = extract_tournament_team_name(north_override_a, &[], &[], "ALPHA");
-        let t1_name_a = extract_tournament_team_name(south_override_a, &[], &[], "BRAVO");
+        let (t0_name_a, t1_name_a) = super::resolve_kots_team_names(opt_t0, opt_t1, &[], &[], &[], &[], false);
         assert_eq!(t0_name_a, "[RAIN]");
         assert_eq!(t1_name_a, "[OMNI]");
 
         // Case B: Team 0 spawns South (swap = true, e.g. Okinawa)
-        // North team (Game Team 1) should get Team 1's override "[OMNI]"
-        // South team (Game Team 0) should get Team 0's override "[RAIN]"
-        let swap_b = true;
-        let (north_override_b, south_override_b) = if swap_b {
-            (opt_t1.as_deref(), opt_t0.as_deref())
-        } else {
-            (opt_t0.as_deref(), opt_t1.as_deref())
-        };
-        let t0_name_b = extract_tournament_team_name(north_override_b, &[], &[], "ALPHA");
-        let t1_name_b = extract_tournament_team_name(south_override_b, &[], &[], "BRAVO");
+        let (t0_name_b, t1_name_b) = super::resolve_kots_team_names(opt_t0, opt_t1, &[], &[], &[], &[], true);
         assert_eq!(t0_name_b, "[OMNI]");
         assert_eq!(t1_name_b, "[RAIN]");
+    }
+
+    #[test]
+    fn test_kots_team_name_overrides_match_combatants_regardless_of_order() {
+        // North team is THROW
+        let north_names = vec!["THROW_Alice", "THROW_Bob"];
+        let north_clans = vec!["THROW", "THROW"];
+
+        // South team is TWA
+        let south_names = vec!["TWA_Charlie", "TWA_Dave"];
+        let south_clans = vec!["-TWA-", "-TWA-"];
+
+        // Case A: Overrides passed in opposite order: Team 0 is "[-TWA-]", Team 1 is "[THROW]"
+        // Even with swap = false, THROW is matched to North and TWA is matched to South!
+        let (t0_a, t1_a) = super::resolve_kots_team_names(
+            Some("[-TWA-]"),
+            Some("[THROW]"),
+            &north_names,
+            &north_clans,
+            &south_names,
+            &south_clans,
+            false,
+        );
+        assert_eq!(t0_a, "[THROW]");
+        assert_eq!(t1_a, "[-TWA-]");
+
+        // Case B: Overrides passed in matching order: Team 0 is "[THROW]", Team 1 is "[-TWA-]"
+        let (t0_b, t1_b) = super::resolve_kots_team_names(
+            Some("[THROW]"),
+            Some("[-TWA-]"),
+            &north_names,
+            &north_clans,
+            &south_names,
+            &south_clans,
+            false,
+        );
+        assert_eq!(t0_b, "[THROW]");
+        assert_eq!(t1_b, "[-TWA-]");
+
+        // Case C: Same match, but Game Team 0 spawned South (swap = true)
+        // Now North is TWA and South is THROW
+        let (t0_c, t1_c) = super::resolve_kots_team_names(
+            Some("[-TWA-]"),
+            Some("[THROW]"),
+            &south_names, // North is now TWA
+            &south_clans,
+            &north_names, // South is now THROW
+            &north_clans,
+            true,
+        );
+        assert_eq!(t0_c, "[-TWA-]");
+        assert_eq!(t1_c, "[THROW]");
+    }
+
+    #[test]
+    fn test_kots_team_name_auto_detection_and_single_override() {
+        let north_names = vec!["THROW_Alice", "THROW_Bob"];
+        let north_clans = vec!["THROW", "THROW"];
+        let south_names = vec!["TWA_Charlie", "TWA_Dave"];
+        let south_clans = vec!["-TWA-", "-TWA-"];
+
+        // No overrides: auto-detected from dominant clans
+        let (t0_auto, t1_auto) = super::resolve_kots_team_names(
+            None,
+            None,
+            &north_names,
+            &north_clans,
+            &south_names,
+            &south_clans,
+            false,
+        );
+        assert_eq!(t0_auto, "[THROW]");
+        assert_eq!(t1_auto, "[-TWA-]");
+
+        // Single override matching South team
+        let (t0_s, t1_s) = super::resolve_kots_team_names(
+            Some("[-TWA-]"),
+            None,
+            &north_names,
+            &north_clans,
+            &south_names,
+            &south_clans,
+            false,
+        );
+        assert_eq!(t0_s, "[THROW]");
+        assert_eq!(t1_s, "[-TWA-]");
     }
 }
